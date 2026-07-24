@@ -1,4 +1,4 @@
-#include <Arduino.h>
+#include <stdint.h>
 #include <string.h>
 #include "rid_messages.h"
 
@@ -38,11 +38,11 @@ static uint16_t encodeAlt1000(float alt) {
     float encoded = (alt + 1000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
-    return (uint16_t)(encoded + 0.5f);  // 四舍五入
+    return (uint16_t)(encoded + 0.5f);
 }
 
 // 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m
-// GB 46750-2025 Table 3-011 — 注意偏移是 9000 不是 1000
+// GB 46750-2025 Table 3-011 — 偏移量是 9000 不是 1000
 static uint16_t encodeRelHeight(float h) {
     float encoded = (h + 9000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
@@ -73,7 +73,7 @@ static uint16_t encodeSpeed(float mps) {
 static uint8_t encodeVSpeed(float mps) {
     uint8_t dir = (mps < 0.0f) ? 0x80 : 0x00;
     float absVal = (mps < 0.0f) ? -mps : mps;
-    uint8_t val = (uint8_t)(absVal * 2.0f + 0.5f);  // 四舍五入
+    uint8_t val = (uint8_t)(absVal * 2.0f + 0.5f);
     if (val > 127) val = 127;
     return dir | val;
 }
@@ -85,7 +85,8 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
                           uint8_t opCategory, uint8_t uaClass,
                           uint8_t opLocType, uint8_t coordSys,
                           uint8_t horizAcc, uint8_t vertAcc,
-                          uint8_t speedAcc, uint8_t tsAcc) {
+                          uint8_t speedAcc, uint8_t tsAcc,
+                          uint64_t timestampMs) {
     memset(&pkt, 0, sizeof(pkt));
 
     pkt.dataType = GB46750_DATA_TYPE;
@@ -176,9 +177,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     c[pos++] = speedAcc;
 
     // 020 时间戳 (6 bytes LE, Unix ms)
-    // Stage 1 使用 millis() 模拟; Stage 2 替换为 GPS/NTP 时间
-    uint64_t unixMs = (uint64_t)millis();
-    writeTimestamp(c + pos, unixMs);
+    writeTimestamp(c + pos, timestampMs);
     pos += 6;
 
     // 021 时间戳精度

@@ -80,12 +80,14 @@ struct FlightData {
 // --- API ---
 
 // 构建 GB 46750-2025 完整数据包
+// timestampMs: Unix 毫秒时间戳 (Stage 1 使用 esp_timer_get_time()/1000, Stage 2 GPS RMC)
 void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
                           const char* uasId, const char* realNameId,
                           uint8_t opCategory, uint8_t uaClass,
                           uint8_t opLocType, uint8_t coordSys,
                           uint8_t horizAcc, uint8_t vertAcc,
-                          uint8_t speedAcc, uint8_t tsAcc);
+                          uint8_t speedAcc, uint8_t tsAcc,
+                          uint64_t timestampMs);
 
 // 将数据包序列化为字节数组，返回实际长度
 uint16_t gb46750_serialize(const GB46750Packet& pkt, uint8_t* out, uint16_t maxLen);
