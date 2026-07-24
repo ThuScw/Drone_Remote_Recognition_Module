@@ -51,20 +51,31 @@
 // GB 42590-2023 A.2.3.5.5: 全飞行周期持续监测模块状态
 #define SELF_TEST_INTERVAL_MS 5000
 
-// ================= 模拟飞行数据 =================
-// Stage 1: 固定模拟数据验证链路
-// Stage 2: 替换为 UART 飞控/GPS 真实数据
+// 任务看门狗超时 (毫秒) — 主循环卡死超过此时长触发系统复位
+#define WATCHDOG_TIMEOUT_MS 5000
 
-#define MOCK_LATITUDE      31.230416f
-#define MOCK_LONGITUDE    121.473701f
-#define MOCK_GEO_ALT      120.5f    // 大地高度 (m)
-#define MOCK_BARO_ALT     118.2f    // 气压高度 (m)
-#define MOCK_HEIGHT_AGL    50.0f    // 相对高度 (m)
-#define MOCK_SPEED         15.0f    // 地速 (m/s)
-#define MOCK_HEADING      275.0f    // 航迹角 (度, 真北顺时针)
-#define MOCK_VSPEED         2.5f    // 垂直速度 (m/s, 正=上升)
-#define MOCK_OP_LAT        31.230500f
-#define MOCK_OP_LON       121.473800f
-#define MOCK_OP_ALT        10.0f
+// ================= 模拟飞行数据 =================
+// Stage 1: 模拟飞行循环验证广播链路
+// Stage 2: 替换为 UART 飞控/GPS 真实数据 — 仅需实现 FlightData 填充
+
+// 起飞点 (上海, WGS-84)
+#define MOCK_LATITUDE       31.230416f
+#define MOCK_LONGITUDE     121.473701f
+#define MOCK_GEO_BASE_ALT  120.5f       // 地面大地高度 (m)
+
+// 遥控站/操作员位置 (固定)
+#define MOCK_OP_LAT         31.230500f
+#define MOCK_OP_LON        121.473800f
+#define MOCK_OP_ALT         10.0f
+
+// 仿真阶段时长 (毫秒)
+#define SIM_GROUND_WAIT_MS   5000       // 地面等待
+#define SIM_TAKEOFF_MS      10000       // 起飞爬升
+#define SIM_CRUISE_MS       40000       // 巡航飞行
+#define SIM_LANDING_MS      10000       // 降落
+
+// 巡航参数
+#define SIM_CRUISE_ALT      50.0f       // 巡航高度 AGL (m)
+#define SIM_CRUISE_SPEED    15.0f       // 巡航地速 (m/s)
 
 #endif // CONFIG_H
