@@ -103,12 +103,21 @@ extern "C" void app_main(void) {
         // Broadcast via BLE5 Extended Advertising
         if (broadcastActive && (nowMs - lastBroadcastTime >= BROADCAST_INTERVAL_MS)) {
             lastBroadcastTime = nowMs;
-            broadcaster.updateAndBroadcast(gbPacket);
 
+            // Serialize and print full packet hex for verification
+            uint8_t serialized[GB46750_MAX_PACKET];
+            uint16_t len = gb46750_serialize(gbPacket, serialized, sizeof(serialized));
             printf("[TX] Status=%s | Alt=%.1fm | Spd=%.1fm/s | Hdg=%.0f\n",
                    statusNames[currentFlightData.opStatus],
                    currentFlightData.geoAlt, currentFlightData.speed,
                    currentFlightData.heading);
+            printf("[TX] Packet (%d bytes): ", len);
+            for (uint16_t i = 0; i < len; i++) {
+                printf("%02X ", serialized[i]);
+            }
+            printf("\n");
+
+            broadcaster.updateAndBroadcast(gbPacket);
         }
 
         // Runtime Continuous Self-Test (GB 42590-2023 A.2.3.5.5)
@@ -121,17 +130,11 @@ extern "C" void app_main(void) {
     }
 }
 
-// --- Flight data update (30s phase rotation for demo) ---
+// --- Flight data update (keep AIRBORNE for stable broadcast demo) ---
 static void updateFlightData(void) {
-    uint64_t nowMs = (uint64_t)(esp_timer_get_time() / 1000);
-    uint32_t cycle = (uint32_t)((nowMs / 30000) % 4);
-
-    switch (cycle) {
-        case 0: currentFlightData.opStatus = STATUS_GROUND;    break;
-        case 1: currentFlightData.opStatus = STATUS_AIRBORNE;  break;
-        case 2: currentFlightData.opStatus = STATUS_EMERGENCY; break;
-        case 3: currentFlightData.opStatus = STATUS_AIRBORNE;  break;
-    }
+    // Stage 1 验证阶段：始终保持 AIRBORNE，确保广播稳定
+    // 后续阶段可以恢复 30s 状态轮换用于测试状态机
+    currentFlightData.opStatus = STATUS_AIRBORNE;
 
     currentFlightData.lat       = MOCK_LATITUDE;
     currentFlightData.lon       = MOCK_LONGITUDE;

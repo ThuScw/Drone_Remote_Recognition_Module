@@ -121,6 +121,12 @@ bool BleRidBroadcaster::runtimeCheck() {
 void BleRidBroadcaster::updateAndBroadcast(const GB46750Packet& pkt) {
     if (!_initialized || !s_synced) return;
 
+    // Stage 1: 首次配置后保持广播持续运行，不再重复重启
+    // 避免频繁 stop/start 导致手机扫描错过
+    if (_advertising) {
+        return;  // 已在广播，直接返回
+    }
+
     // 1. Serialize GB46750 packet (78 bytes)
     uint8_t payload[GB46750_MAX_PACKET];
     uint16_t payloadLen = gb46750_serialize(pkt, payload, sizeof(payload));
@@ -137,15 +143,22 @@ void BleRidBroadcaster::updateAndBroadcast(const GB46750Packet& pkt) {
     printf("\n");
 
     // 2. Build raw BLE advertising data:
-    //    AD Flags (3B) + AD Service Data 16-bit UUID (2+2+78=82B) = 85B total
-    //    Service Data AD: [Len][Type=0x16][UUID=0x0D50 LE][78B GB46750 payload]
-    uint8_t advData[96];
+    //    AD Flags (3B) + AD Complete Local Name (variable) + AD Service Data (variable)
+    uint8_t advData[128];
     uint8_t *p = advData;
 
     // AD Flags: LE General Discoverable + BR/EDR Not Supported
-    *p++ = 0x02;  // Length = Type(1) + Data(1) = 2, no wait Len field counts only what follows
+    *p++ = 0x02;  // Length = Type(1) + Data(1) = 2
     *p++ = 0x01;  // AD Type: Flags
     *p++ = 0x06;  // Flags value
+
+    // AD Complete Local Name (Type 0x09)
+    const char* deviceName = "ESP32C5_RID";
+    size_t nameLen = strlen(deviceName);
+    *p++ = (uint8_t)(1 + nameLen);  // Length = Type(1) + Name(N)
+    *p++ = 0x09;                     // AD Type: Complete Local Name
+    memcpy(p, deviceName, nameLen);
+    p += nameLen;
 
     // AD Service Data (16-bit UUID)
     *p++ = 1 + 2 + (uint8_t)payloadLen;  // Length = Type(1) + UUID(2) + Data(N)
@@ -157,14 +170,7 @@ void BleRidBroadcaster::updateAndBroadcast(const GB46750Packet& pkt) {
 
     uint16_t advDataLen = p - advData;
 
-    // 3. Stop any existing extended advertising
-    if (_advertising) {
-        ble_gap_ext_adv_stop(0);
-        vTaskDelay(pdMS_TO_TICKS(50));
-        _advertising = false;
-    }
-
-    // 4. Configure EXT_ADV parameters
+    // 3. Configure EXT_ADV parameters (only once)
     struct ble_gap_ext_adv_params params = {};
     params.own_addr_type = _ownAddrType;
     params.legacy_pdu = 0;                   // Extended Advertising PDU
@@ -181,7 +187,7 @@ void BleRidBroadcaster::updateAndBroadcast(const GB46750Packet& pkt) {
         return;
     }
 
-    // 5. Set advertising data via os_mbuf chain
+    // 4. Set advertising data via os_mbuf chain
     struct os_mbuf *data = os_msys_get_pkthdr(advDataLen, 0);
     if (!data) {
         ESP_LOGE(TAG, "os_msys_get_pkthdr OOM");
@@ -196,14 +202,14 @@ void BleRidBroadcaster::updateAndBroadcast(const GB46750Packet& pkt) {
     }
 
     rc = ble_gap_ext_adv_set_data(0, data);
-    // NimBLE copies data; caller always frees mbuf after call
-    os_mbuf_free_chain(data);
+    // NimBLE takes ownership of mbuf on success; only free on failure
     if (rc != 0) {
+        os_mbuf_free_chain(data);
         ESP_LOGE(TAG, "ext_adv_set_data failed, rc=%d", rc);
         return;
     }
 
-    // 6. Start extended advertising (0 duration = infinite, 0 max_events = unlimited)
+    // 5. Start extended advertising (0 duration = infinite, 0 max_events = unlimited)
     rc = ble_gap_ext_adv_start(0, 0, 0);
     if (rc != 0) {
         ESP_LOGE(TAG, "ext_adv_start failed, rc=%d", rc);
