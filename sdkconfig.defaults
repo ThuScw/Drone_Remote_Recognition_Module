@@ -3,3 +3,59 @@ CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_EXT_ADV=y
 CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=1650
 CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
+
+# 自定义分区表 — flight_log 分区用于飞行数据滚动存储 (GB 46750-2025 5.1.8)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Brownout detection — 电池供电无人机必须启用，防止电压骤降损坏 Flash
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL=7
+
+# ================= 量产安全配置 =================
+# 以下配置用于满足 GB 42590-2023 (安全要求) 与 GB 46860-2025 (唯一识别码防篡改)。
+#
+# 全部启用后固件具备:
+#   - 固件签名校验 → 拒绝未签名/被篡改的固件启动
+#   - Flash 内容加密 → 物理读取 Flash 无法获取固件/密钥/UAS ID
+#   - NVS 分区加密 → 蓝牙配置、运行参数不可篡改
+#   - 调试接口锁定 → JTAG 禁用, ROM Download 关闭
+#
+# 启用流程 (按顺序, 不可逆步骤有标注):
+#   1. espsecure.py generate_signing_key secure_boot_signing_key.pem   # 私钥妥善保管
+#   2. 取消下方所有配置项的注释
+#   3. idf.py reconfigure && idf.py build
+#   4. idf.py -p <PORT> flash monitor                                   # 首次烧录
+
+# --- 固件签名 (Secure Boot V2) ---
+# 仅允许通过签名验证的固件启动。私钥泄露 = 签名体系失效, 需妥善保管。
+# 注意: 密钥文件位于项目根目录, .gitignore 已排除 *.pem 防误提交。
+# CONFIG_SECURE_BOOT=y
+# CONFIG_SECURE_SIGNED_ON_BOOT=y
+# CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
+
+# --- Flash 加密 (Release 模式) ---
+# 密钥写入 eFuse, 烧录后 Flash 内容仅当前芯片可解密。
+# 注意: 加密密钥不可逆写入 eFuse, 加密后无法通过物理 Flash 读取恢复固件。
+#       务必保留原始 .bin 文件用于后续 OTA 签名。
+# CONFIG_SECURE_FLASH_ENC_ENABLED=y
+# CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE=y
+
+# --- NVS 分区加密 ---
+# 保护蓝牙绑定信息、NimBLE 配置等持久化数据不被篡改。
+# 依赖 Flash 加密; 若未启用 Flash 加密则使用独立密钥。
+# CONFIG_NVS_ENCRYPTION=y
+
+# --- 调试接口锁定 (eFuse, 不可逆) ---
+# 禁用 JTAG 物理调试接口, 防止运行时 attach 读取内存 / 注入代码。
+# 烧录即永久生效, 开发阶段保持注释。
+# CONFIG_SECURE_BOOTLOADER_DISABLE_JTAG=y
+
+# --- ROM 下载模式禁用 (eFuse, 不可逆) ---
+# 禁止通过 ROM 引导加载程序 (USB/UART) 绕过 Secure Boot 刷写固件。
+# 烧录即永久生效, 后续仅能通过 OTA 或已签名固件更新。
+# CONFIG_SECURE_DISABLE_ROM_DL_MODE=y
+
+# --- 引导加载程序加固 ---
+# 生产固件应将 bootloader 日志级别设为 WARN 以上, 避免泄露系统信息。
+# CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y

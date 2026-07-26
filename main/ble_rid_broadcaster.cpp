@@ -1,7 +1,9 @@
 #include "ble_rid_broadcaster.h"
+#include "config.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <atomic>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -19,8 +21,8 @@ static const char* TAG = "BLE_RID";
 // --- NimBLE async init bridge (C callbacks need static linkage) ---
 static SemaphoreHandle_t s_syncSemaphore = NULL;
 static uint8_t           s_ownAddrType = 0;
-static volatile bool     s_synced = false;
-static volatile bool     s_needsRecovery = false;
+static std::atomic<bool> s_synced{false};
+static std::atomic<bool> s_needsRecovery{false};
 
 static void on_sync(void) {
     int rc = ble_hs_util_ensure_addr(0);
@@ -69,6 +71,9 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
     s_synced = false;
     s_needsRecovery = false;
 
+    strncpy(_deviceName, deviceName, sizeof(_deviceName) - 1);
+    _deviceName[sizeof(_deviceName) - 1] = '\0';
+
     s_syncSemaphore = xSemaphoreCreateBinary();
     if (!s_syncSemaphore) {
         ESP_LOGE(TAG, "Failed to create sync semaphore");
@@ -80,7 +85,7 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
 
     nimble_port_init();
 
-    ble_svc_gap_device_name_set(deviceName);
+    ble_svc_gap_device_name_set(_deviceName);
 
     nimble_port_freertos_init(host_task);
 
@@ -131,27 +136,101 @@ bool BleRidBroadcaster::runtimeCheck() {
     return true;
 }
 
-// --- Recovery API ---
+// --- Self-Healing: 三级递进恢复 ---
+// Tier 1: 原地重启广播 (stop + start, 同参数)
+// Tier 2: 切换 PHY 重试 (1M ↔ Coded, 对调物理层避开干扰)
+// Tier 3: 完整 NimBLE 重初始化 (复位协议栈, 代价最大)
 
 bool BleRidBroadcaster::needsRecovery() const {
     return s_needsRecovery;
 }
 
-bool BleRidBroadcaster::attemptRecovery() {
-    if (!s_needsRecovery) return true;
+bool BleRidBroadcaster::reinitNimble() {
+    ESP_LOGI(TAG, "Reinitializing NimBLE stack...");
 
-    if (!s_synced) {
-        return false;  // NimBLE 尚未重新同步, 继续等待
+    // 停掉当前 host task
+    int rc = nimble_port_freertos_deinit();
+    if (rc != 0) {
+        ESP_LOGW(TAG, "nimble_port_freertos_deinit rc=%d — continuing", rc);
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 重建信号量
+    if (s_syncSemaphore) {
+        vSemaphoreDelete(s_syncSemaphore);
+    }
+    s_syncSemaphore = xSemaphoreCreateBinary();
+    if (!s_syncSemaphore) {
+        ESP_LOGE(TAG, "reinitNimble: semaphore create failed");
+        return false;
     }
 
-    // Sync 已恢复, 清除恢复标志
+    s_synced = false;
     s_needsRecovery = false;
+
+    ble_hs_cfg.sync_cb = on_sync;
+    ble_hs_cfg.reset_cb = on_reset;
+
+    nimble_port_init();
+    ble_svc_gap_device_name_set(_deviceName);
+    nimble_port_freertos_init(host_task);
+
+    if (xSemaphoreTake(s_syncSemaphore, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGE(TAG, "reinitNimble: sync timeout (5s)");
+        return false;
+    }
+
+    _ownAddrType = s_ownAddrType;
     _consecutiveFailures = 0;
     _updateFailures = 0;
-    _advertising = false;  // 控制器状态已丢失, 需要重新 configure+start
+    _advertising = false;
 
-    ESP_LOGI(TAG, "Recovery: NimBLE re-synced — ready to restart broadcast");
+    ESP_LOGI(TAG, "Nimble reinit complete");
     return true;
+}
+
+BleRidBroadcaster::RecoveryResult BleRidBroadcaster::attemptSelfHeal(const GB46750Packet& pkt) {
+    if (!_initialized) return RecoveryResult::FAILED;
+
+    printf("[SELF-HEAL] Starting recovery sequence...\n");
+
+    // --- Tier 1: 原地重启 (保持当前 PHY, 仅重建广播实例) ---
+    printf("[SELF-HEAL] Tier 1: restart advertising\n");
+    stopBroadcast();
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (startBroadcast(pkt)) {
+        printf("[SELF-HEAL] Tier 1 OK — broadcast restarted\n");
+        _degraded = false;
+        s_needsRecovery = false;
+        return RecoveryResult::RECOVERED;
+    }
+
+    // --- Tier 2: 切换 PHY (对调 1M/Coded 物理层, 规避信道干扰) ---
+    printf("[SELF-HEAL] Tier 2: switching PHY to %s\n",
+           _useAltPhy ? "1M" : "Coded");
+    _useAltPhy = !_useAltPhy;
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (startBroadcast(pkt)) {
+        printf("[SELF-HEAL] Tier 2 OK — alternate PHY (degraded)\n");
+        _degraded = true;
+        s_needsRecovery = false;
+        return RecoveryResult::DEGRADED;
+    }
+
+    // --- Tier 3: 完整 NimBLE 协议栈重初始化 ---
+    printf("[SELF-HEAL] Tier 3: full Nimble reinit\n");
+    _useAltPhy = false;  // 恢复默认 PHY
+    if (reinitNimble()) {
+        if (startBroadcast(pkt)) {
+            printf("[SELF-HEAL] Tier 3 OK — Nimble restarted (degraded)\n");
+            _degraded = true;
+            return RecoveryResult::DEGRADED;
+        }
+    }
+
+    printf("[SELF-HEAL] ALL TIERS FAILED — module requires manual intervention\n");
+    _advertising = false;
+    return RecoveryResult::FAILED;
 }
 
 // --- Private helper ---
@@ -164,7 +243,12 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
         return NULL;
     }
 
-    uint8_t advData[128];
+    // 编译期保证 ADV data 不超 buffer
+    // AD Flags(3) + AD Name(2+maxName) + AD ServiceData(2+2+payload) ≤ buffer
+    constexpr size_t kAdvOverhead = 3 + (2 + 31) + (2 + 2);  // 40
+    uint8_t advData[kAdvOverhead + GB46750_MAX_PACKET];       // 40 + 128 = 168
+    static_assert(sizeof(advData) >= kAdvOverhead + GB46750_MAX_PACKET,
+                  "ADV data exceeds buffer");
     uint8_t *p = advData;
 
     // AD Flags: LE General Discoverable + BR/EDR Not Supported
@@ -173,11 +257,10 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     *p++ = 0x06;
 
     // AD Complete Local Name
-    const char* deviceName = "ESP32C5_RID";
-    size_t nameLen = strlen(deviceName);
+    size_t nameLen = strlen(_deviceName);
     *p++ = (uint8_t)(1 + nameLen);
     *p++ = 0x09;
-    memcpy(p, deviceName, nameLen);
+    memcpy(p, _deviceName, nameLen);
     p += nameLen;
 
     // AD Service Data (16-bit UUID) with GB46750 payload
@@ -221,9 +304,9 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
     params.own_addr_type = _ownAddrType;
     params.legacy_pdu = 0;
     params.primary_phy = BLE_HCI_LE_PHY_1M;
-    params.secondary_phy = BLE_HCI_LE_PHY_1M;
-    params.itvl_min = 160;
-    params.itvl_max = 160;
+    params.secondary_phy = _useAltPhy ? BLE_HCI_LE_PHY_CODED : BLE_HCI_LE_PHY_1M;
+    params.itvl_min = (uint16_t)(BLE_ADV_INTERVAL_MS * 1000 / 625);
+    params.itvl_max = (uint16_t)(BLE_ADV_INTERVAL_MS * 1000 / 625);
     params.channel_map = 0x07;
     params.sid = 0;
 

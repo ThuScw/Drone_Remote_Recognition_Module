@@ -1,0 +1,18 @@
+# ESP32-C5 RID Broadcaster 分区表
+# 目标: 8 MB Flash (4MB Flash 需缩小 flight_log 分区)
+#
+# nvs:        存放蓝牙配置和系统参数
+# otadata:    预留 OTA 支持 (当前使用 single factory app)
+# phy_init:   PHY 校准数据
+# factory:    固件镜像 (约 1-1.5 MB)
+# flight_log: 飞行数据滚动存储 (GB 46750-2025 5.1.8: ≥120飞行小时)
+#
+# 单条记录 96 bytes × 43200 条(120h@10s) = 4.15 MB
+# flight_log 分区 ≥ 5 MB 满足 120h 要求
+
+# Name,       Type, SubType,   Offset,  Size,     Flags
+nvs,          data, nvs,       0x9000,  0x10000,
+otadata,      data, ota,       0x19000, 0x2000,
+phy_init,     data, phy,       0x1B000, 0x1000,
+factory,      app,  factory,   0x20000, 0x180000,
+flight_log,   data, undefined, 0x1A0000, 0x600000,

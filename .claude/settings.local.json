@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "mcp__tavily-search__tavily_search",
+      "Bash(git rm *)",
+      "Bash(python *)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/idf-component-manager/main/examples/.gitignore\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/examples/get-started/blink/.gitignore\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/.gitignore\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/examples/get-started/sample_project/.gitignore\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf-template/master/.gitignore\")"
+    ]
+  }
+}

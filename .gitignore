@@ -1,4 +1,40 @@
+# ===== ESP-IDF Build Output =====
 build/
 sdkconfig
 sdkconfig.old
-.claude/
+*.pyc
+
+# ===== Dependencies (managed by IDF Component Manager) =====
+managed_components/
+dependencies.lock
+
+# ===== IDE & Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+\#*\#
+.dir-locals.el
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Security: NEVER commit signing keys or encrypted assets =====
+*.pem
+*.key
+*.p12
+*.pfx
+secure_boot_signing_key*
+encrypted_*.bin
+pre_encrypted_*.bin
+.flash_encryption_key.bin
+
+# ===== Testing & Coverage =====
+TEST_LOGS/
+coverage_report/
+*.gcda
+*.gcno
+coverage.info

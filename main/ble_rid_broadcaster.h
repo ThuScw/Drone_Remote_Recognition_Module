@@ -9,6 +9,10 @@
 
 class BleRidBroadcaster {
 public:
+    BleRidBroadcaster() = default;
+    BleRidBroadcaster(const BleRidBroadcaster&) = delete;
+    BleRidBroadcaster& operator=(const BleRidBroadcaster&) = delete;
+
     bool begin(const char* deviceName);
     bool selfTest();
     bool runtimeCheck();
@@ -22,20 +26,37 @@ public:
     void stopBroadcast();
     bool isAdvertising() const { return _advertising; }
 
-    // 恢复接口 — BLE 控制器复位后自动检测并恢复
-    bool needsRecovery() const;       // 控制器是否发生过复位
-    bool attemptRecovery();           // 等待 NimBLE 重新同步, 成功返回 true
+    // 自修复结果
+    enum class RecoveryResult {
+        RECOVERED,  // 完全恢复
+        DEGRADED,   // 降级恢复 (备用参数)
+        FAILED      // 三级全部失败
+    };
+
+    // 三级递进自修复 — 广播异常时调用，从轻到重尝试恢复
+    RecoveryResult attemptSelfHeal(const GB46750Packet& pkt);
+
+    // 控制器复位检测 (供主循环轮询)
+    bool needsRecovery() const;
+
     uint8_t getUpdateFailures() const { return _updateFailures; }
+    bool isDegraded() const { return _degraded; }
 
 private:
-    // 构建 BLE5 AD Structure 并写入 os_mbuf, 返回 mbuf 指针 (调用方负责在失败时释放)
+    // 构建 BLE5 AD Structure 并写入 os_mbuf, 返回 mbuf 指针
     struct os_mbuf* buildAdvData(const GB46750Packet& pkt, uint16_t& outLen);
 
+    // NimBLE 完整重初始化 (Tier 3)
+    bool reinitNimble();
+
+    char     _deviceName[32] = {};
     uint8_t  _ownAddrType = 0;
     bool     _initialized = false;
     bool     _advertising = false;
     uint8_t  _consecutiveFailures = 0;
     uint8_t  _updateFailures = 0;
+    bool     _degraded = false;
+    bool     _useAltPhy = false;
 };
 
 #endif // BLE_RID_BROADCASTER_H

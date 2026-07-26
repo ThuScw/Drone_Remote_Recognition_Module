@@ -14,12 +14,14 @@
 
 ```
 main/
-├── config.h                  # 用户配置（UAS ID、精度、定时参数）
+├── config.h                  # 用户配置（UAS ID、精度、定时参数、GPIO引脚）
 ├── flight_data.h             # 数据源接口：void getFlightData(FlightData&, uint64_t)
 ├── flight_data.cpp           # Mock 实现（65s 起降循环）→ Stage 2 替换为 UART 解析
 ├── rid_messages.h/cpp        # GB 46750-2025 协议编码（21 个字段，二进制序列化）
 ├── ble_rid_broadcaster.h/cpp # BLE5 广播控制（NimBLE EXT_ADV，原地更新，复位恢复）
-└── main.cpp                  # 主循环：读数据 → 组包 → 广播 → 自检
+├── indicators.h/cpp          # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
+├── flight_log.h/cpp          # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
+└── main.cpp                  # 主循环：读数据 → 组包 → 广播 → 自检 → 日志
 ```
 
 ### 数据流
@@ -40,6 +42,24 @@ getFlightData()  ──→  FlightData  ──→  gb46750_buildPacket()  ──
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 自动重建广播链路
 - **看门狗**：主循环 5s 无响应 → 系统自动复位
 
+### 硬件接口
+
+| 引脚 | 功能 | 方向 | 说明 |
+|------|------|------|------|
+| GPIO6 (MTMS) | 飞控联锁 RID_OK | 输出 | 自检通过→拉高（飞控允许起飞），异常→拉低（飞控禁止起飞），符合 GB 46750-2025 5.1.7；电平极性可通过 `INTERLOCK_ACTIVE_LEVEL` 配置 |
+| GPIO27 | WS2812B RGB LED | 输出 | RMT 外设驱动，绿色慢闪(0.5Hz)=地面待机，蓝色快闪(2.5Hz)=空中/紧急广播中，红色常亮=模块故障，符合 GB 46750-2025 5.1.5 |
+
+### Flash 要求
+
+为满足 GB 46750-2025 5.1.8 规定的 "不少于 120 飞行小时" 存储要求：
+
+| Flash 容量 | flight_log 分区 | 可存储时长 | 是否满足 |
+|-----------|----------------|-----------|---------|
+| 4 MB | ~2 MB | ~60 h | ✗ |
+| 8 MB | ~6 MB | ~170 h | ✓ |
+
+**量产推荐：ESP32-C5-WROOM-1 (8 MB Flash)**
+
 ## 构建
 
 ### 依赖
@@ -55,15 +75,7 @@ idf.py build
 idf.py -p <串口> flash monitor
 ```
 
-首次使用需配置 NimBLE 选项（已在 `sdkconfig.defaults` 中预设）：
-
-```
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_EXT_ADV=y
-CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=1650
-CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
-```
+首次使用需配置 NimBLE 和自定义分区表（已在 `sdkconfig.defaults` 和 `partitions.csv` 中预设）。
 
 ## 配置文件
 
@@ -146,4 +158,45 @@ void getFlightData(FlightData& fd, uint64_t nowMs);
 - [ ] 将 `flight_data.cpp` 替换为真实飞控 UART 解析实现
 - [ ] 确认飞控输出的运行状态（地面/空中/紧急）与 GB 46750-2025 Table 3-015 的映射关系
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
+- [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
+- [ ] 连接 GPIO27 (WS2812B) 到 RGB LED，验证闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
+- [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
+- [ ] 选用 8 MB Flash 模组以确保存储容量满足 GB 46750-2025 5.1.8
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
+
+## 量产安全配置
+
+### Secure Boot V2
+
+防止恶意固件刷入：
+
+```bash
+# 1. 生成签名密钥 (仅一次, 私钥妥善保管)
+espsecure.py generate_signing_key secure_boot_signing_key.pem
+
+# 2. 在 sdkconfig.defaults 中取消注释:
+#    CONFIG_SECURE_BOOT=y
+#    CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
+
+# 3. 重新配置并构建
+idf.py reconfigure
+idf.py build
+```
+
+首次启用需烧录 bootloader 并将芯片设置为安全模式（一次性操作）。
+
+### Flash 加密
+
+保护固件镜像不被读取/复制：
+
+- 开发阶段：使用 Release 模式 (CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE)
+- 预置密钥到 eFuse, 后续 OTA 使用 `idf.py encrypted-app-flash`
+- 注意：加密后无法通过物理 Flash 读取恢复固件, 务必保留原始 .bin
+
+### Brownout 检测
+
+`sdkconfig.defaults` 已启用。电池供电无人机在机动时电压可能骤降, Brownout 检测器在供电低于阈值时触发安全复位, 避免 Flash 写入损坏。
+
+### 日志控制
+
+量产固件应在 `config.h` 中设置 `CONFIG_RID_VERBOSE_LOG 0`, 关闭 hex dump 和 TX 详细日志以减少 UART 功耗。
