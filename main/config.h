@@ -114,7 +114,13 @@
 // Flash 分区名 (在 partitions.csv 中定义)
 #define FLIGHT_LOG_PARTITION    "flight_log"
 
-// 每条记录: 4B magic + 8B timestamp + 2B len + 数据
+// 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload = 96B
 #define FLIGHT_LOG_MAGIC        0x5249444C  // "RIDL"
+
+// 飞行日志异步写入任务
+#define FLIGHT_LOG_TASK_STACK       3072   // 任务栈 (bytes)
+#define FLIGHT_LOG_TASK_PRIO        1      // 低优先级, 不影响广播
+#define FLIGHT_LOG_QUEUE_DEPTH      16     // 队列深度 (160s 缓冲 @ 10s 间隔)
+#define FLIGHT_LOG_WRITE_TIMEOUT_MS 100    // 队列满时等待超时 (ms)
 
 #endif // CONFIG_H

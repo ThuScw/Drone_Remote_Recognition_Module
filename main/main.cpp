@@ -181,9 +181,16 @@ extern "C" void app_main(void) {
         if (nowMs - lastDataUpdateTime >= DATA_UPDATE_INTERVAL_MS) {
             lastDataUpdateTime = nowMs;
             getFlightData(currentFlightData, nowMs);
-            gb46750_buildPacket(gbPacket, currentFlightData, UAS_ID, REALNAME_ID,
-                                OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
-                                HORIZ_ACC, VERT_ACC, SPEED_ACC, TS_ACC, nowMs);
+
+            // 检查 M (强制) 字段是否齐全 — 缺少任何 M 字段则保留上一包
+            if ((currentFlightData.validMask & FLD_ALL_M) != FLD_ALL_M) {
+                uint32_t missing = FLD_ALL_M & ~currentFlightData.validMask;
+                ESP_LOGW(TAG, "M-field(s) missing (mask=%08lx), keeping previous packet", (unsigned long)missing);
+            } else {
+                gb46750_buildPacket(gbPacket, currentFlightData, UAS_ID, REALNAME_ID,
+                                    OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
+                                    HORIZ_ACC, VERT_ACC, SPEED_ACC, TS_ACC, nowMs);
+            }
         }
 
         // --- Step 2: Handle flight phase transition ---
@@ -294,7 +301,7 @@ extern "C" void app_main(void) {
             uint8_t serialized[GB46750_MAX_PACKET];
             uint16_t len = gb46750_serialize(gbPacket, serialized, sizeof(serialized));
             if (len > 0) {
-                flightLog.writeRecord(serialized, len, nowMs);
+                flightLog.enqueueRecord(serialized, len, nowMs);
             }
         }
 

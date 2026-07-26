@@ -92,95 +92,125 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     pkt.dataType = GB46750_DATA_TYPE;
     pkt.version  = GB46750_VERSION;
 
-    // 数据标识 (3 bytes, 包含所有 M + O 字段)
+    // 数据标识 (3 bytes, 根据有效字段动态生成)
+    // Byte 0: 静态字段始终置位, 动态字段依 validMask
     pkt.dataId[0] = DID_UPIC | DID_REALNAME | DID_OP_CATEGORY | DID_UA_CLASS
-                   | DID_OP_LOC_TYPE | DID_OP_LOC | DID_OP_ALT | DID_EXT_FLAG;
-    pkt.dataId[1] = DID_UA_POS | DID_TRACK_ANGLE | DID_GROUND_SPEED
-                   | DID_REL_HEIGHT | DID_VERT_SPEED | DID_GEO_ALT
-                   | DID_BARO_ALT | DID_EXT_FLAG;
-    pkt.dataId[2] = DID_OP_STATUS | DID_COORD_SYS | DID_HORIZ_ACC
-                   | DID_VERT_ACC | DID_SPEED_ACC | DID_TIMESTAMP | DID_TS_ACC;
+                   | DID_OP_LOC_TYPE | DID_EXT_FLAG;
+    if (fd.validMask & FLD_OP_POS)  pkt.dataId[0] |= DID_OP_LOC;
+    if (fd.validMask & FLD_OP_ALT)  pkt.dataId[0] |= DID_OP_ALT;
+
+    // Byte 1: 全为飞行数据动态字段
+    pkt.dataId[1] = DID_EXT_FLAG;
+    if (fd.validMask & FLD_POS)        pkt.dataId[1] |= DID_UA_POS;
+    if (fd.validMask & FLD_HEADING)    pkt.dataId[1] |= DID_TRACK_ANGLE;
+    if (fd.validMask & FLD_SPEED)      pkt.dataId[1] |= DID_GROUND_SPEED;
+    if (fd.validMask & FLD_HEIGHT_AGL) pkt.dataId[1] |= DID_REL_HEIGHT;
+    if (fd.validMask & FLD_VSPEED)     pkt.dataId[1] |= DID_VERT_SPEED;
+    if (fd.validMask & FLD_GEO_ALT)    pkt.dataId[1] |= DID_GEO_ALT;
+    if (fd.validMask & FLD_BARO_ALT)   pkt.dataId[1] |= DID_BARO_ALT;
+
+    // Byte 2
+    pkt.dataId[2] = DID_COORD_SYS | DID_HORIZ_ACC | DID_VERT_ACC
+                   | DID_SPEED_ACC | DID_TIMESTAMP | DID_TS_ACC;
+    if (fd.validMask & FLD_OP_STATUS)  pkt.dataId[2] |= DID_OP_STATUS;
+
     pkt.dataIdLen = 3;
 
     uint8_t* c = pkt.content;
     uint16_t pos = 0;
 
-    // 001 唯一产品识别码 (20 bytes, big-endian ASCII)
+    // 001 唯一产品识别码 (20 bytes, always)
     size_t uasLen = strlen(uasId);
     for (int i = 0; i < 20; i++) {
         c[pos++] = (i < (int)uasLen) ? (uint8_t)uasId[i] : 0x00;
     }
 
-    // 002 实名登记标志 (8 bytes, big-endian ASCII)
+    // 002 实名登记标志 (8 bytes, always)
     size_t rnLen = strlen(realNameId);
     for (int i = 0; i < 8; i++) {
         c[pos++] = (i < (int)rnLen) ? (uint8_t)realNameId[i] : 0x00;
     }
 
-    // 003 运行类别
+    // 003 运行类别 (always)
     c[pos++] = opCategory;
 
-    // 004 无人机分类
+    // 004 无人机分类 (always)
     c[pos++] = uaClass;
 
-    // 005 遥控站位置类型
+    // 005 遥控站位置类型 (always)
     c[pos++] = opLocType;
 
-    // 006 遥控站位置 (8 bytes LE: int32 lat, int32 lon)
-    encodeLatLon(c + pos, fd.opLat, fd.opLon);
-    pos += 8;
+    // 006 遥控站位置 (conditional on DID_OP_LOC)
+    if (fd.validMask & FLD_OP_POS) {
+        encodeLatLon(c + pos, fd.opLat, fd.opLon);
+        pos += 8;
+    }
 
-    // 007 遥控站高度 (2 bytes LE)
-    writeU16LE(c + pos, encodeAlt1000(fd.opAlt));
-    pos += 2;
+    // 007 遥控站高度 (conditional on DID_OP_ALT)
+    if (fd.validMask & FLD_OP_ALT) {
+        writeU16LE(c + pos, encodeAlt1000(fd.opAlt));
+        pos += 2;
+    }
 
-    // 008 无人机位置 (8 bytes LE)
-    encodeLatLon(c + pos, fd.lat, fd.lon);
-    pos += 8;
+    // 008 无人机位置 (conditional on DID_UA_POS)
+    if (fd.validMask & FLD_POS) {
+        encodeLatLon(c + pos, fd.lat, fd.lon);
+        pos += 8;
+    }
 
-    // 009 航迹角 (2 bytes LE)
-    writeU16LE(c + pos, encodeHeading(fd.heading));
-    pos += 2;
+    // 009 航迹角 (conditional on DID_TRACK_ANGLE)
+    if (fd.validMask & FLD_HEADING) {
+        writeU16LE(c + pos, encodeHeading(fd.heading));
+        pos += 2;
+    }
 
-    // 010 地速 (2 bytes LE)
-    writeU16LE(c + pos, encodeSpeed(fd.speed));
-    pos += 2;
+    // 010 地速 (conditional on DID_GROUND_SPEED)
+    if (fd.validMask & FLD_SPEED) {
+        writeU16LE(c + pos, encodeSpeed(fd.speed));
+        pos += 2;
+    }
 
-    // 011 相对高度 (2 bytes LE)
-    writeU16LE(c + pos, encodeRelHeight(fd.heightAgl));
-    pos += 2;
+    // 011 相对高度 (O, conditional on DID_REL_HEIGHT)
+    if (fd.validMask & FLD_HEIGHT_AGL) {
+        writeU16LE(c + pos, encodeRelHeight(fd.heightAgl));
+        pos += 2;
+    }
 
-    // 012 垂直速度 (1 byte)
-    c[pos++] = encodeVSpeed(fd.vspeed);
+    // 012 垂直速度 (O, conditional on DID_VERT_SPEED)
+    if (fd.validMask & FLD_VSPEED) {
+        c[pos++] = encodeVSpeed(fd.vspeed);
+    }
 
-    // 013 大地高度 (2 bytes LE)
-    writeU16LE(c + pos, encodeAlt1000(fd.geoAlt));
-    pos += 2;
+    // 013 大地高度 (conditional on DID_GEO_ALT)
+    if (fd.validMask & FLD_GEO_ALT) {
+        writeU16LE(c + pos, encodeAlt1000(fd.geoAlt));
+        pos += 2;
+    }
 
-    // 014 气压高度 (2 bytes LE)
-    writeU16LE(c + pos, encodeAlt1000(fd.baroAlt));
-    pos += 2;
+    // 014 气压高度 (O, conditional on DID_BARO_ALT)
+    if (fd.validMask & FLD_BARO_ALT) {
+        writeU16LE(c + pos, encodeAlt1000(fd.baroAlt));
+        pos += 2;
+    }
 
-    // 015 运行状态
-    c[pos++] = fd.opStatus;
+    // 015 运行状态 (conditional on DID_OP_STATUS)
+    if (fd.validMask & FLD_OP_STATUS) {
+        c[pos++] = fd.opStatus;
+    }
 
-    // 016 坐标系类型
+    // 016 坐标系类型 (always)
     c[pos++] = coordSys;
 
-    // 017 水平精度
+    // 017-019 精度 (always)
     c[pos++] = horizAcc;
-
-    // 018 垂直精度
     c[pos++] = vertAcc;
-
-    // 019 速度精度
     c[pos++] = speedAcc;
 
-    // 020 时间戳 (6 bytes LE, Unix ms)
+    // 020 时间戳 (6 bytes LE, always)
     writeTimestamp(c + pos, timestampMs);
     pos += 6;
 
-    // 021 时间戳精度
+    // 021 时间戳精度 (always)
     c[pos++] = tsAcc;
 
     pkt.contentLen = pos;
@@ -203,4 +233,14 @@ uint16_t gb46750_serialize(const GB46750Packet& pkt, uint8_t* out, uint16_t maxL
     pos += pkt.contentLen;
 
     return pos;
+}
+
+bool gb46750_packetVerify(const GB46750Packet& pkt) {
+    if (pkt.dataType != GB46750_DATA_TYPE) return false;
+    if (pkt.version  != GB46750_VERSION)  return false;
+    if (pkt.dataLength != pkt.contentLen) return false;
+    if (pkt.contentLen == 0)              return false;
+    if (pkt.dataIdLen == 0 || pkt.dataIdLen > 8) return false;
+    if (pkt.totalLen != 1 + 1 + 1 + pkt.dataIdLen + pkt.contentLen) return false;
+    return true;
 }

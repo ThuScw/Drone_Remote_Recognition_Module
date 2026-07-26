@@ -63,6 +63,24 @@ struct GB46750Packet {
     uint16_t totalLen;       // 完整数据包长度
 };
 
+// 飞行数据字段有效标志位 — 由数据源置位, 编码侧据此动态生成 dataId
+enum FlightDataField : uint32_t {
+    FLD_POS        = 1 << 0,   // lat, lon
+    FLD_GEO_ALT    = 1 << 1,   // 大地高度
+    FLD_BARO_ALT   = 1 << 2,   // 气压高度
+    FLD_HEIGHT_AGL = 1 << 3,   // 相对高度 (O)
+    FLD_SPEED      = 1 << 4,   // 地速
+    FLD_HEADING    = 1 << 5,   // 航迹角
+    FLD_VSPEED     = 1 << 6,   // 垂直速度 (O)
+    FLD_OP_STATUS  = 1 << 7,   // 运行状态
+    FLD_OP_POS     = 1 << 8,   // 遥控站位置
+    FLD_OP_ALT     = 1 << 9,   // 遥控站高度
+
+    FLD_ALL_M      = FLD_POS | FLD_GEO_ALT | FLD_SPEED | FLD_HEADING
+                   | FLD_OP_STATUS | FLD_OP_POS | FLD_OP_ALT,
+    FLD_ALL        = FLD_ALL_M | FLD_BARO_ALT | FLD_HEIGHT_AGL | FLD_VSPEED,
+};
+
 // 飞行数据输入结构体
 struct FlightData {
     float lat, lon;          // 纬度/经度 (度)
@@ -75,6 +93,8 @@ struct FlightData {
     uint8_t opStatus;        // 运行状态
     float opLat, opLon;      // 操作员/遥控站位置
     float opAlt;             // 操作员高度 (m)
+
+    uint32_t validMask;      // FlightDataField 按位或, 标记哪些字段本周期有效
 };
 
 // --- API ---
@@ -91,5 +111,9 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
 
 // 将数据包序列化为字节数组，返回实际长度
 uint16_t gb46750_serialize(const GB46750Packet& pkt, uint8_t* out, uint16_t maxLen);
+
+// 发送前结构自检: 验证 totalLen/datalen 自洽, dataType/version 合规, dataId 与 contentLen 一致
+// 返回 true 表示数据包结构正确可发送
+bool gb46750_packetVerify(const GB46750Packet& pkt);
 
 #endif // RID_MESSAGES_H

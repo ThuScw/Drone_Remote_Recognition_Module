@@ -25,6 +25,7 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.speed     = 0.0f;
         fd.heading   = 0.0f;
         fd.vspeed    = 0.0f;
+        fd.validMask = FLD_ALL;
     } else if (t < t_cruise) {
         float p = (float)(t - t_takeoff) / (float)SIM_TAKEOFF_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -36,6 +37,7 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.vspeed    = SIM_CRUISE_ALT / ((float)SIM_TAKEOFF_MS / 1000.0f);
         fd.lat       = MOCK_LATITUDE + p * 0.0002f;
         fd.lon       = MOCK_LONGITUDE;
+        fd.validMask = FLD_ALL;
     } else if (t < t_landing) {
         float p = (float)(t - t_cruise) / (float)SIM_CRUISE_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -48,6 +50,7 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         float angle  = p * 2.0f * 3.14159265f;
         fd.lat       = MOCK_LATITUDE + sinf(angle) * 0.0005f;
         fd.lon       = MOCK_LONGITUDE + cosf(angle) * 0.0005f;
+        fd.validMask = FLD_ALL;
     } else {
         float p = (float)(t - t_landing) / (float)SIM_LANDING_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -59,5 +62,6 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.vspeed    = -(SIM_CRUISE_ALT / ((float)SIM_LANDING_MS / 1000.0f));
         fd.lat       = MOCK_LATITUDE + 0.0002f;
         fd.lon       = MOCK_LONGITUDE;
+        fd.validMask = FLD_ALL;
     }
 }

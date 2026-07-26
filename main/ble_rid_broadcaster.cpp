@@ -296,6 +296,11 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
         return false;
     }
 
+    if (!gb46750_packetVerify(pkt)) {
+        ESP_LOGE(TAG, "startBroadcast: packet verify failed — refusing to send");
+        return false;
+    }
+
     uint16_t advDataLen;
     struct os_mbuf *data = buildAdvData(pkt, advDataLen);
     if (!data) return false;
@@ -339,6 +344,12 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
 bool BleRidBroadcaster::updateBroadcastData(const GB46750Packet& pkt) {
     if (!_initialized || !s_synced) return false;
     if (!_advertising) return false;
+
+    if (!gb46750_packetVerify(pkt)) {
+        ESP_LOGE(TAG, "updateBroadcastData: packet verify failed");
+        _updateFailures++;
+        return false;
+    }
 
     uint16_t advDataLen;
     struct os_mbuf *data = buildAdvData(pkt, advDataLen);
