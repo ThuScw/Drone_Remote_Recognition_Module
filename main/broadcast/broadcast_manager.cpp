@@ -162,9 +162,11 @@ void RIDBroadcastManager::triggerSelfHeal() {
 
         if (isAirborne()) {
             _broadcastActive = true;
+            _statusLed.setState(LedState::BROADCASTING);
         } else {
             _broadcastActive = false;
             _broadcaster.stopBroadcast();
+            _statusLed.setState(LedState::STANDBY);
             ESP_LOGI(TAG, "On ground — broadcast stopped, interlock ready");
         }
     } else {

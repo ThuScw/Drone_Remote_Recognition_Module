@@ -148,10 +148,7 @@ bool BleRidBroadcaster::reinitNimble() {
     ESP_LOGI(TAG, "Reinitializing NimBLE stack...");
 
     // 停掉当前 host task
-    int rc = nimble_port_freertos_deinit();
-    if (rc != 0) {
-        ESP_LOGW(TAG, "nimble_port_freertos_deinit rc=%d — continuing", rc);
-    }
+    nimble_port_freertos_deinit();
     vTaskDelay(pdMS_TO_TICKS(200));
 
     // 重建信号量
@@ -306,7 +303,7 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
 
     struct ble_gap_ext_adv_params params = {};
     params.own_addr_type = _ownAddrType;
-    params.legacy_pdu = 0;
+    params.legacy_pdu = 0;  // Extended Advertising PDU — required for 98-byte payload
     params.primary_phy = BLE_HCI_LE_PHY_1M;
     params.secondary_phy = _useAltPhy ? BLE_HCI_LE_PHY_CODED : BLE_HCI_LE_PHY_1M;
     params.itvl_min = (uint16_t)(BLE_ADV_INTERVAL_MS * 1000 / 625);

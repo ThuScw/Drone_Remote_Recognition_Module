@@ -4,13 +4,16 @@ CONFIG_BT_NIMBLE_EXT_ADV=y
 CONFIG_BT_NIMBLE_EXT_ADV_MAX_SIZE=1650
 CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
 
+# Flash 大小 — 实际芯片 8MB
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
 # 自定义分区表 — flight_log 分区用于飞行数据滚动存储 (GB 46750-2025 5.1.8)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Brownout detection — 电池供电无人机必须启用，防止电压骤降损坏 Flash
 CONFIG_ESP_BROWNOUT_DET=y
-CONFIG_ESP_BROWNOUT_DET_LVL_SEL=7
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
 
 # ================= 量产安全配置 =================
 # 以下配置用于满足 GB 42590-2023 (安全要求) 与 GB 46860-2025 (唯一识别码防篡改)。

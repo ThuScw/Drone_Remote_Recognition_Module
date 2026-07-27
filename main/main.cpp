@@ -48,9 +48,12 @@ extern "C" void app_main(void) {
         .idle_core_mask = 0,
         .trigger_panic = true,
     };
-    ret = esp_task_wdt_init(&twdt_cfg);
+    ret = esp_task_wdt_reconfigure(&twdt_cfg);
+    if (ret == ESP_ERR_INVALID_STATE) {
+        ret = esp_task_wdt_init(&twdt_cfg);
+    }
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "TWDT init failed (rc=%d) — watchdog disabled", ret);
+        ESP_LOGW(TAG, "TWDT init/reconfig failed (rc=%d) — watchdog disabled", (int)ret);
     } else {
         esp_task_wdt_add(NULL);
         ESP_LOGI(TAG, "Task watchdog enabled (%ld ms timeout)", (long)WATCHDOG_TIMEOUT_MS);
