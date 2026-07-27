@@ -14,26 +14,52 @@
 
 ```
 main/
-├── config.h                  # 用户配置（UAS ID、精度、定时参数、GPIO引脚）
-├── flight_data.h             # 数据源接口：void getFlightData(FlightData&, uint64_t)
-├── flight_data.cpp           # Mock 实现（65s 起降循环）→ Stage 2 替换为 UART 解析
-├── rid_messages.h/cpp        # GB 46750-2025 协议编码（21 个字段，二进制序列化）
-├── ble_rid_broadcaster.h/cpp # BLE5 广播控制（NimBLE EXT_ADV，原地更新，复位恢复）
-├── indicators.h/cpp          # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
-├── flight_log.h/cpp          # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
-└── main.cpp                  # 主循环：读数据 → 组包 → 广播 → 自检 → 日志
+├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚）
+├── main.cpp                        # 精简编排器（~80行）：init + loop
+│
+├── broadcast/
+│   └── broadcast_manager.h/cpp     # 广播编排器：数据验证、包构建、状态机、BLE自修复、
+│                                   # 飞行日志调度、运行时自检、堆内存监控
+│
+├── protocol/
+│   └── rid_messages.h/cpp          # GB 46750-2025 协议编码（21字段，M字段始终存在，
+│                                   # 缺失编码为0；O字段条件编码）
+│
+├── broadcaster/
+│   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
+│
+├── data/
+│   └── flight_data.h/cpp           # 数据源接口：void getFlightData(FlightData&, uint64_t)
+│                                   # 当前为 Mock 实现 → Stage 2 替换为 UART 解析
+│
+├── indicators/
+│   └── indicators.h/cpp            # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
+│
+└── logging/
+    └── flight_log.h/cpp            # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
 ```
 
 ### 数据流
 
 ```
-getFlightData()  ──→  FlightData  ──→  gb46750_buildPacket()  ──→  GB46750Packet
-                                                                      │
-                                              ┌───────────────────────┘
+getFlightData()  ──→  FlightData  ──→  RIDBroadcastManager::update()
+                                              │
+                                    ┌─────────┼──────────┐
+                                    ▼         ▼          ▼
+                             validateData  buildPacket  handleBroadcast
+                              (范围检查)   (M=0,O=条件)  (永不跳过)
+                                              │
                                               ▼
-                              broadcaster.startBroadcast(pkt)     // 起飞时（一次性）
-                              broadcaster.updateBroadcastData(pkt) // 飞行中（周期性，原地更新）
+                              broadcaster.updateBroadcastData(pkt)
+                              (原地更新AD数据，不停止广播)
 ```
+
+### 关键设计决策
+
+- **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包，Message Counter 每包自增
+- **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
+- **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
+- **地面↔空中状态机**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞
 
 ### 广播策略
 
@@ -96,7 +122,7 @@ idf.py -p <串口> flash monitor
 
 ### Stage 1 → Stage 2：接入真实飞控
 
-只需修改 **一个文件** — `flight_data.cpp`：
+只需修改 **一个文件** — `data/flight_data.cpp`：
 
 1. 确认飞控串口协议（MAVLink / MSP / 自定义）、波特率、数据帧格式
 2. 初始化 UART
@@ -133,11 +159,12 @@ void getFlightData(FlightData& fd, uint64_t nowMs);
 串口监控输出示例：
 
 ```
-[SYS] Packet=77 bytes | Broadcast every 800 ms | Update every 1000 ms
-[SYS] Ready. Monitor with nRF Connect.
+I (1234) SYS: === ESP32-C5 RID Broadcaster — GB 46750-2025 ===
+I (1240) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
+I (1250) SYS: Ready. Monitor with nRF Connect.
 
-[TX] Status=AIR Alt=50.0m Spd=15.0m/s Hdg=180.0°
-[TX] Packet (77 bytes): FF 01 4B FF FF E0 43 50 4E ...
+W (5000) RID_PROTO: Data STALE (> 2000 ms), broadcasting anyway
+I (5800) BCAST: Broadcast START (status=2)
 ```
 
 ### 自检与告警
@@ -146,16 +173,18 @@ void getFlightData(FlightData& fd, uint64_t nowMs);
 
 | 检测项 | 故障表现 | 系统响应 |
 |--------|----------|----------|
-| BLE 同步丢失 | `RUNTIME-CHECK FAIL` | 连续 3 次触发恢复流程 |
-| 广播更新失败 | `update failed #N` | 连续 3 次输出 CRITICAL 告警 |
+| BLE 同步丢失 | `Runtime check FAIL` | 连续 3 次触发 `triggerSelfHeal()` |
+| 广播更新失败 | `update failed #N` | 连续 3 次触发 `triggerSelfHeal()` |
 | 主循环卡死 | 无输出 | 看门狗 5s 后复位 |
-| BLE 控制器复位 | `NimBLE controller reset` | 自动重同步 + 重建广播 |
+| BLE 控制器复位 | `NimBLE controller reset` | `triggerSelfHeal()` 三级递进恢复 |
+| 堆内存不足 | `LOW HEAP WARNING` | 每 60s 监控，< 10KB 输出告警 |
+| 飞行日志栈溢出 | `stack watermark LOW` | < 512 bytes 输出告警 |
 
 ## 产品化 Checklist
 
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
-- [ ] 将 `flight_data.cpp` 替换为真实飞控 UART 解析实现
+- [ ] 将 `data/flight_data.cpp` 替换为真实飞控 UART 解析实现
 - [ ] 确认飞控输出的运行状态（地面/空中/紧急）与 GB 46750-2025 Table 3-015 的映射关系
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
@@ -163,6 +192,14 @@ void getFlightData(FlightData& fd, uint64_t nowMs);
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
 - [ ] 选用 8 MB Flash 模组以确保存储容量满足 GB 46750-2025 5.1.8
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
+
+### 量产安全配置（最终生产阶段）
+
+- [ ] 启用 Flash 加密 (`CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE`)
+- [ ] 禁用 JTAG via eFuse (`DIS_USB_JTAG`)
+- [ ] 启用 Secure Boot V2 并配置签名密钥
+- [ ] 将 GPIO6 (MTMS) 联锁引脚替换为非 JTAG GPIO，避免调试接口冲突
+- [ ] 设计加密 OTA 更新机制
 
 ## 量产安全配置
 

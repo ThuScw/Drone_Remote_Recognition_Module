@@ -77,16 +77,16 @@ bool FlightLog::init() {
     float maxHours = (float)(_partitionSize / kRecordSize)
                      * (float)FLIGHT_LOG_INTERVAL_S / 3600.0f;
 
-    printf("[FLOG] Partition '%s': %lu KB, %lu valid records, next offset=%lu\n",
-           FLIGHT_LOG_PARTITION,
-           (unsigned long)(_partitionSize / 1024),
-           (unsigned long)count,
-           (unsigned long)offset);
-    printf("[FLOG] Capacity: ~%.0f flight hours at %ds interval\n",
-           maxHours, FLIGHT_LOG_INTERVAL_S);
+    ESP_LOGI(TAG, "Partition '%s': %lu KB, %lu valid records, next offset=%lu",
+             FLIGHT_LOG_PARTITION,
+             (unsigned long)(_partitionSize / 1024),
+             (unsigned long)count,
+             (unsigned long)offset);
+    ESP_LOGI(TAG, "Capacity: ~%.0f flight hours at %ds interval",
+             maxHours, FLIGHT_LOG_INTERVAL_S);
 
     if (maxHours < 120.0f) {
-        printf("[FLOG] WARNING: Capacity < 120h — use larger flash chip or partition\n");
+        ESP_LOGW(TAG, "Capacity < 120h — use larger flash chip or partition");
     }
 
     // 创建异步写入队列
@@ -141,6 +141,12 @@ void FlightLog::logTaskLoop() {
     while (1) {
         if (xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE) {
             writeRecord(item.data, item.len, item.timestampMs);
+        }
+
+        // P1: Stack watermark monitoring
+        uint32_t watermark = uxTaskGetStackHighWaterMark(_taskHandle) * sizeof(StackType_t);
+        if (watermark < 512) {
+            ESP_LOGW(TAG, "Log task stack watermark LOW: %lu bytes", (unsigned long)watermark);
         }
     }
 }

@@ -81,7 +81,14 @@ enum FlightDataField : uint32_t {
     FLD_ALL        = FLD_ALL_M | FLD_BARO_ALT | FLD_HEIGHT_AGL | FLD_VSPEED,
 };
 
-// 飞行数据输入结构体
+// 数据新鲜度等级 (GB 46750-2025 实时性要求)
+enum DataFreshness {
+    FRESH_OK       = 0,   // 数据新鲜 (< DATA_FRESH_THRESHOLD_MS)
+    FRESH_STALE    = 1,   // 数据过期 (≥ DATA_FRESH_THRESHOLD_MS)
+    FRESH_INVALID  = 2,   // 数据无效 (范围检查失败)
+};
+
+// 飞行数据输入结构体 — 带时间戳和新鲜度追踪
 struct FlightData {
     float lat, lon;          // 纬度/经度 (度)
     float geoAlt;            // 大地高度 (m)
@@ -95,6 +102,18 @@ struct FlightData {
     float opAlt;             // 操作员高度 (m)
 
     uint32_t validMask;      // FlightDataField 按位或, 标记哪些字段本周期有效
+
+    // 数据新鲜度追踪 (每个字段的时间戳)
+    uint64_t ts_pos;         // lat/lon 更新时间
+    uint64_t ts_geoAlt;      // geoAlt 更新时间
+    uint64_t ts_speed;       // speed 更新时间
+    uint64_t ts_heading;     // heading 更新时间
+    uint64_t ts_opStatus;    // opStatus 更新时间
+    uint64_t ts_opPos;       // opLat/opLon 更新时间
+
+    // 数据质量指标
+    DataFreshness freshness; // 整体新鲜度 (取最差值)
+    uint32_t validationFlags; // 范围验证结果 (每位置位表示无效)
 };
 
 // --- API ---
@@ -115,5 +134,16 @@ uint16_t gb46750_serialize(const GB46750Packet& pkt, uint8_t* out, uint16_t maxL
 // 发送前结构自检: 验证 totalLen/datalen 自洽, dataType/version 合规, dataId 与 contentLen 一致
 // 返回 true 表示数据包结构正确可发送
 bool gb46750_packetVerify(const GB46750Packet& pkt);
+
+// --- 数据验证 API ---
+
+// 验证飞行数据范围 (GPS、高度、速度等物理边界)
+// 返回 true 表示所有 M 字段范围有效
+// validationFlags 输出: 每位置位表示对应字段无效
+bool gb46750_validateFlightData(const FlightData& fd, uint32_t& validationFlags);
+
+// 检查数据新鲜度 (基于时间戳)
+// 返回整体新鲜度等级 (取最差值)
+DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint64_t thresholdMs);
 
 #endif // RID_MESSAGES_H

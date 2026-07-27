@@ -54,6 +54,10 @@
 // 独立于广播间隔，避免广播分片被打断
 #define DATA_UPDATE_INTERVAL_MS 1000
 
+// 数据新鲜度阈值 (毫秒) — 超过此时间未更新的数据标记为"过期"
+// GB 46750-2025 要求实时性，超过 2s 的数据视为不可靠
+#define DATA_FRESH_THRESHOLD_MS 2000
+
 // 自检间隔 (毫秒) — 全飞行周期持续监测
 // GB 42590-2023 A.2.3.5.5: 全飞行周期持续监测模块状态
 #define SELF_TEST_INTERVAL_MS 5000

@@ -1,7 +1,6 @@
 #include "ble_rid_broadcaster.h"
 #include "config.h"
 
-#include <stdio.h>
 #include <string.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
@@ -39,9 +38,9 @@ static void on_sync(void) {
     uint8_t addr[6];
     rc = ble_hs_id_copy_addr(s_ownAddrType, addr, NULL);
     if (rc == 0) {
-        printf("[BLE] Addr type=%d, MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",
-               s_ownAddrType, addr[5], addr[4], addr[3],
-               addr[2], addr[1], addr[0]);
+        ESP_LOGI(TAG, "Addr type=%d, MAC=%02X:%02X:%02X:%02X:%02X:%02X",
+                 s_ownAddrType, addr[5], addr[4], addr[3],
+                 addr[2], addr[1], addr[0]);
     } else {
         ESP_LOGW(TAG, "Cannot read address, rc=%d", rc);
     }
@@ -102,14 +101,14 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
 
 bool BleRidBroadcaster::selfTest() {
     if (!_initialized) {
-        printf("[SELF-TEST] FAIL: Not initialized\n");
+        ESP_LOGE(TAG, "Self-test FAIL: not initialized");
         return false;
     }
     if (!s_synced) {
-        printf("[SELF-TEST] FAIL: NimBLE host not synced\n");
+        ESP_LOGE(TAG, "Self-test FAIL: NimBLE host not synced");
         return false;
     }
-    printf("[SELF-TEST] PASS — NimBLE + EXT_ADV ready\n");
+    ESP_LOGI(TAG, "Self-test PASS — NimBLE + EXT_ADV ready");
     return true;
 }
 
@@ -118,9 +117,9 @@ bool BleRidBroadcaster::runtimeCheck() {
 
     if (!s_synced) {
         _consecutiveFailures++;
-        printf("[RUNTIME-CHECK] FAIL #%d: BLE not synced\n", _consecutiveFailures);
+        ESP_LOGW(TAG, "Runtime check FAIL #%d: BLE not synced", _consecutiveFailures);
         if (_consecutiveFailures >= 3) {
-            printf("[RUNTIME-CHECK] CRITICAL: BLE lost sync — triggering recovery\n");
+            ESP_LOGE(TAG, "Runtime check CRITICAL: BLE lost sync — triggering recovery");
             s_needsRecovery = true;
         }
         return false;
@@ -129,8 +128,8 @@ bool BleRidBroadcaster::runtimeCheck() {
     _consecutiveFailures = 0;
 
     if (_updateFailures > 0) {
-        printf("[RUNTIME-CHECK] WARN: %d broadcast update failures in last interval\n",
-               _updateFailures);
+        ESP_LOGW(TAG, "Runtime check: %d broadcast update failures in last interval",
+                 _updateFailures);
     }
 
     return true;
@@ -192,43 +191,43 @@ bool BleRidBroadcaster::reinitNimble() {
 BleRidBroadcaster::RecoveryResult BleRidBroadcaster::attemptSelfHeal(const GB46750Packet& pkt) {
     if (!_initialized) return RecoveryResult::FAILED;
 
-    printf("[SELF-HEAL] Starting recovery sequence...\n");
+    ESP_LOGI(TAG, "Self-heal: starting recovery sequence...");
 
     // --- Tier 1: 原地重启 (保持当前 PHY, 仅重建广播实例) ---
-    printf("[SELF-HEAL] Tier 1: restart advertising\n");
+    ESP_LOGI(TAG, "Self-heal Tier 1: restart advertising");
     stopBroadcast();
     vTaskDelay(pdMS_TO_TICKS(50));
     if (startBroadcast(pkt)) {
-        printf("[SELF-HEAL] Tier 1 OK — broadcast restarted\n");
+        ESP_LOGI(TAG, "Self-heal Tier 1 OK — broadcast restarted");
         _degraded = false;
         s_needsRecovery = false;
         return RecoveryResult::RECOVERED;
     }
 
     // --- Tier 2: 切换 PHY (对调 1M/Coded 物理层, 规避信道干扰) ---
-    printf("[SELF-HEAL] Tier 2: switching PHY to %s\n",
-           _useAltPhy ? "1M" : "Coded");
+    ESP_LOGI(TAG, "Self-heal Tier 2: switching PHY to %s",
+             _useAltPhy ? "1M" : "Coded");
     _useAltPhy = !_useAltPhy;
     vTaskDelay(pdMS_TO_TICKS(50));
     if (startBroadcast(pkt)) {
-        printf("[SELF-HEAL] Tier 2 OK — alternate PHY (degraded)\n");
+        ESP_LOGI(TAG, "Self-heal Tier 2 OK — alternate PHY (degraded)");
         _degraded = true;
         s_needsRecovery = false;
         return RecoveryResult::DEGRADED;
     }
 
     // --- Tier 3: 完整 NimBLE 协议栈重初始化 ---
-    printf("[SELF-HEAL] Tier 3: full Nimble reinit\n");
+    ESP_LOGI(TAG, "Self-heal Tier 3: full Nimble reinit");
     _useAltPhy = false;  // 恢复默认 PHY
     if (reinitNimble()) {
         if (startBroadcast(pkt)) {
-            printf("[SELF-HEAL] Tier 3 OK — Nimble restarted (degraded)\n");
+            ESP_LOGI(TAG, "Self-heal Tier 3 OK — Nimble restarted (degraded)");
             _degraded = true;
             return RecoveryResult::DEGRADED;
         }
     }
 
-    printf("[SELF-HEAL] ALL TIERS FAILED — module requires manual intervention\n");
+    ESP_LOGE(TAG, "Self-heal ALL TIERS FAILED — module requires manual intervention");
     _advertising = false;
     return RecoveryResult::FAILED;
 }
@@ -365,8 +364,8 @@ bool BleRidBroadcaster::updateBroadcastData(const GB46750Packet& pkt) {
         ESP_LOGE(TAG, "ext_adv_set_data update failed #%d, rc=%d",
                  _updateFailures, rc);
         if (_updateFailures >= 3) {
-            printf("[BLE] CRITICAL: %d consecutive update failures — data may be stale!\n",
-                   _updateFailures);
+            ESP_LOGE(TAG, "CRITICAL: %d consecutive update failures — data may be stale!",
+                     _updateFailures);
         }
         return false;
     }
@@ -380,5 +379,5 @@ void BleRidBroadcaster::stopBroadcast() {
 
     ble_gap_ext_adv_stop(0);
     _advertising = false;
-    printf("[BLE] Broadcast stopped\n");
+    ESP_LOGI(TAG, "Broadcast stopped");
 }

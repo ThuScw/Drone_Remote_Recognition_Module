@@ -9,7 +9,8 @@
       "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/examples/get-started/blink/.gitignore\")",
       "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/.gitignore\")",
       "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf/master/examples/get-started/sample_project/.gitignore\")",
-      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf-template/master/.gitignore\")"
+      "Bash(curl -sL \"https://raw.githubusercontent.com/espressif/esp-idf-template/master/.gitignore\")",
+      "Bash(idf.py build *)"
     ]
   }
 }

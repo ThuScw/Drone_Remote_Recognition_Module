@@ -26,6 +26,14 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.heading   = 0.0f;
         fd.vspeed    = 0.0f;
         fd.validMask = FLD_ALL;
+
+        // 更新时间戳
+        fd.ts_pos      = nowMs;
+        fd.ts_geoAlt   = nowMs;
+        fd.ts_speed    = nowMs;
+        fd.ts_heading  = nowMs;
+        fd.ts_opStatus = nowMs;
+        fd.ts_opPos    = nowMs;
     } else if (t < t_cruise) {
         float p = (float)(t - t_takeoff) / (float)SIM_TAKEOFF_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -38,6 +46,14 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.lat       = MOCK_LATITUDE + p * 0.0002f;
         fd.lon       = MOCK_LONGITUDE;
         fd.validMask = FLD_ALL;
+
+        // 更新时间戳
+        fd.ts_pos      = nowMs;
+        fd.ts_geoAlt   = nowMs;
+        fd.ts_speed    = nowMs;
+        fd.ts_heading  = nowMs;
+        fd.ts_opStatus = nowMs;
+        fd.ts_opPos    = nowMs;
     } else if (t < t_landing) {
         float p = (float)(t - t_cruise) / (float)SIM_CRUISE_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -51,6 +67,14 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.lat       = MOCK_LATITUDE + sinf(angle) * 0.0005f;
         fd.lon       = MOCK_LONGITUDE + cosf(angle) * 0.0005f;
         fd.validMask = FLD_ALL;
+
+        // 更新时间戳
+        fd.ts_pos      = nowMs;
+        fd.ts_geoAlt   = nowMs;
+        fd.ts_speed    = nowMs;
+        fd.ts_heading  = nowMs;
+        fd.ts_opStatus = nowMs;
+        fd.ts_opPos    = nowMs;
     } else {
         float p = (float)(t - t_landing) / (float)SIM_LANDING_MS;
         fd.opStatus  = STATUS_AIRBORNE;
@@ -63,5 +87,17 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.lat       = MOCK_LATITUDE + 0.0002f;
         fd.lon       = MOCK_LONGITUDE;
         fd.validMask = FLD_ALL;
+
+        // 更新时间戳
+        fd.ts_pos      = nowMs;
+        fd.ts_geoAlt   = nowMs;
+        fd.ts_speed    = nowMs;
+        fd.ts_heading  = nowMs;
+        fd.ts_opStatus = nowMs;
+        fd.ts_opPos    = nowMs;
     }
+
+    // 初始化和更新数据质量指标
+    fd.freshness = FRESH_OK;  // Mock 数据始终新鲜
+    fd.validationFlags = 0;   // Mock 数据始终有效
 }
