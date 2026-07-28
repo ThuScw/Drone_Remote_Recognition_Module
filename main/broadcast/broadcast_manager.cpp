@@ -268,6 +268,10 @@ void RIDBroadcastManager::handleBroadcast(uint64_t nowMs) {
         return;
     }
 
+    // 广播内容输出
+    ESP_LOGI(TAG, "TX #%lu (%d bytes):", (unsigned long)_broadcastCount, len);
+    ESP_LOG_BUFFER_HEXDUMP(TAG, serialized, len, ESP_LOG_INFO);
+
     if (!_broadcaster.updateBroadcastData(_currentPacket)) {
         ESP_LOGW(TAG, "Broadcast data update failed (count=%d)",
                  _broadcaster.getUpdateFailures());

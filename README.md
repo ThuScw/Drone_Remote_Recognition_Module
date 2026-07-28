@@ -107,15 +107,73 @@ idf.py -p <串口> flash monitor
 
 核心配置项在 `config.h`：
 
+### 识别信息
+
 ```c
-#define UAS_ID "CPNYMDL00123456789A"   // 唯一产品识别码（替换为 UOM 备案编码）
+#define UAS_ID "CPNYMDL001234567890A"  // 唯一产品识别码（20字符，替换为 UOM 备案编码）
 #define REALNAME_ID "00000000"         // 实名登记号后 8 位
-#define OP_CATEGORY 1                  // 运行类别：1=开放类, 2=特定类, 3=审定类
-#define UA_CLASS 1                     // 无人机分类：1=轻型
-#define BROADCAST_INTERVAL_MS 800      // 广播间隔（≤1s）
-#define DATA_UPDATE_INTERVAL_MS 1000   // 数据更新间隔
-#define SELF_TEST_INTERVAL_MS 5000     // 自检间隔
-#define WATCHDOG_TIMEOUT_MS 5000       // 看门狗超时
+#define OP_CATEGORY 1                  // 运行类别：0=未定义, 1=开放类, 2=特定类, 3=审定类
+#define UA_CLASS 1                     // 无人机分类：0=微型, 1=轻型, 2=小型, 3=中型, 4=大型
+#define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点, 1=遥控站位置
+#define COORD_SYS 0                    // 坐标系：0=WGS-84, 1=CGCS2000
+```
+
+### 精度取值
+
+```c
+#define HORIZ_ACC 10  // 水平精度：<10m
+#define VERT_ACC  5   // 垂直精度：<3m
+#define SPEED_ACC 3   // 速度精度：<1m/s
+#define TS_ACC    5   // 时间戳精度：≤0.1s
+```
+
+### 定时参数
+
+```c
+#define BROADCAST_INTERVAL_MS 800      // 数据包广播间隔（GB 46750 要求 ≤1s）
+#define BLE_ADV_INTERVAL_MS 100        // BLE 底层广播间隔（影响功耗与发现延迟）
+#define DATA_UPDATE_INTERVAL_MS 1000   // 飞行数据刷新间隔
+#define DATA_FRESH_THRESHOLD_MS 2000   // 数据过期阈值（超时未更新标记为 STALE）
+#define SELF_TEST_INTERVAL_MS 5000     // 运行时自检间隔
+#define WATCHDOG_TIMEOUT_MS 5000       // 任务看门狗超时
+```
+
+### GPIO 引脚
+
+```c
+#define INTERLOCK_RID_OK_GPIO   GPIO_NUM_6   // 飞控联锁（自检通过→拉高，异常→拉低）
+#define INTERLOCK_ACTIVE_LEVEL  1            // 联锁有效电平：1=高有效, 0=低有效
+#define STATUS_LED_GPIO         GPIO_NUM_27  // WS2812B RGB LED（RMT 驱动）
+#define STATUS_LED_NUM_LEDS     1
+```
+
+### 飞行日志存储
+
+```c
+#define FLIGHT_LOG_INTERVAL_S    10          // 记录间隔（GB 46750 要求 ≤10s）
+#define FLIGHT_LOG_PARTITION     "flight_log" // Flash 分区名（见 partitions.csv）
+#define FLIGHT_LOG_TASK_STACK    3072        // 异步写入任务栈（bytes）
+#define FLIGHT_LOG_QUEUE_DEPTH   16          // 写入队列深度
+```
+
+### 模拟飞行（Stage 1 Mock）
+
+```c
+#define MOCK_LATITUDE       31.230416f   // 起飞点纬度（上海, WGS-84）
+#define MOCK_LONGITUDE     121.473701f   // 起飞点经度
+#define MOCK_GEO_BASE_ALT  120.5f        // 地面大地高度 (m)
+#define SIM_GROUND_WAIT_MS   5000        // 地面等待
+#define SIM_TAKEOFF_MS      10000        // 起飞爬升
+#define SIM_CRUISE_MS       40000        // 巡航飞行
+#define SIM_LANDING_MS      10000        // 降落
+#define SIM_CRUISE_ALT      50.0f        // 巡航高度 AGL (m)
+#define SIM_CRUISE_SPEED    15.0f        // 巡航地速 (m/s)
+```
+
+### 日志级别
+
+```c
+#define CONFIG_RID_VERBOSE_LOG 0  // 1=详细日志(hex dump等), 0=精简日志（量产固件推荐 0）
 ```
 
 ## 开发指南
@@ -160,11 +218,16 @@ void getFlightData(FlightData& fd, uint64_t nowMs);
 
 ```
 I (1234) SYS: === ESP32-C5 RID Broadcaster — GB 46750-2025 ===
+I (1235) SYS: Light show drone | BLE5 Extended Advertising | Mock data
 I (1240) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
 I (1250) SYS: Ready. Monitor with nRF Connect.
 
-W (5000) RID_PROTO: Data STALE (> 2000 ms), broadcasting anyway
-I (5800) BCAST: Broadcast START (status=2)
+W (7000) BCAST: Data STALE (> 2000 ms), broadcasting anyway
+I (7800) BCAST: Broadcast START (status=2)
+I (7800) BCAST: TX #1 (77 bytes):
+ff 01 47 e7 07 00 31 ...
+I (8600) BCAST: TX #2 (77 bytes):
+ff 01 47 e7 07 00 32 ...
 ```
 
 ### 自检与告警

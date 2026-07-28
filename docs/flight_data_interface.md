@@ -368,5 +368,6 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 1.2 | 2026-07-27 | v2.3 同步：补充 CONFIG_RID_VERBOSE_LOG、BLE_ADV_INTERVAL_MS、DATA_FRESH_THRESHOLD_MS 等新增配置项；确认 struct 与枚举定义与 rid_messages.h 一致 |
 | 1.1 | 2026-07-27 | P0 合规修复：M 字段缺失时编码为 0（未知），不再拒绝广播；架构重构为子目录结构 |
 | 1.0 | 2026-07-27 | 初始版本（Stage 1 Mock 接口） |
