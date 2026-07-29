@@ -1,4 +1,4 @@
-// ======================== ESP32-C5 RID Broadcaster ========================
+// ======================== ESP32-S3 RID Broadcaster ========================
 //
 // GB 46750-2025 compliant remote identification module.
 // Light show drone class (35cm, Class 1), BLE5 extended advertising.
@@ -59,11 +59,11 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "Task watchdog enabled (%ld ms timeout)", (long)WATCHDOG_TIMEOUT_MS);
     }
 
-    ESP_LOGI(TAG, "=== ESP32-C5 RID Broadcaster — GB 46750-2025 ===");
-    ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | Mock data");
+    ESP_LOGI(TAG, "=== ESP32-S3 RID Broadcaster — GB 46750-2025 ===");
+    ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM");
 
     // --- Subsystems ---
-    if (!broadcaster.begin("ESP32C5_RID")) {
+    if (!broadcaster.begin("ESP32S3_RID")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }

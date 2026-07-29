@@ -4,7 +4,7 @@
 #include <math.h>
 #include "esp_log.h"
 
-static const char* TAG = "MAVLINK";
+[[maybe_unused]] static const char* TAG = "MAVLINK";
 
 // ================= MAVLink CRC-16/MCRF4XX =================
 
@@ -57,10 +57,9 @@ static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
 
 static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // GPS_RAW_INT: time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4) + eph(2) + epv(2) + vel(2) + cog(2) + sats(1) = 30 bytes
+    // 注意: 仅更新 GPS 状态字段，不覆写 GLOBAL_POSITION_INT 的位置数据
+    // 原因: 此飞控的 GPS_RAW_INT 位置数据不可靠 (非标准 fix type 值)，应使用 EKF 融合后的 GLOBAL_POSITION_INT
     p.gpsFixType = payload[8];
-    p.lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
-    p.lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
-    p.altMsl = (int32_t)(payload[17] | (payload[18] << 8) | (payload[19] << 16) | (payload[20] << 24)) / 1000.0f;
     p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
     p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
     p.gpsSats = payload[29];
@@ -68,8 +67,10 @@ static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_
     p.lastGpsMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
-    ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f alt=%.1f sats=%d eph=%.1f",
-             p.gpsFixType, p.lat, p.lon, p.altMsl, p.gpsSats, p.gpsEph);
+    float lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
+    float lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
+    ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f sats=%d eph=%.1f (raw only, pos from GLOBAL_POSITION_INT)",
+             p.gpsFixType, lat, lon, p.gpsSats, p.gpsEph);
     #endif
 }
 
@@ -143,8 +144,15 @@ static void decode_home_position(MavlinkParser& p, const uint8_t* payload) {
 // ================= 帧处理 =================
 
 static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
-    uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
-    const uint8_t* payload = p.buffer + MAVLINK_V2_HEADER_LEN;
+    uint16_t msgid;
+    const uint8_t* payload;
+    if (p.isV2) {
+        msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+        payload = p.buffer + MAVLINK_V2_HEADER_LEN;
+    } else {
+        msgid = p.buffer[5];  // v1: single-byte msgid
+        payload = p.buffer + MAVLINK_V1_HEADER_LEN;
+    }
 
     switch (msgid) {
         case MAVLINK_MSG_HEARTBEAT:
@@ -187,55 +195,79 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
             if (byte == MAVLINK_V2_MAGIC) {
                 p.buffer[0] = byte;
                 p.bufferIdx = 1;
+                p.isV2 = true;
+                p.state = PARSE_STATE_HEADER;
+                // 预填充 v2 不同字段的偏移: INCOMPAT=0, COMPAT=0
+                // 后续 header 字节会覆盖实际值
+            } else if (byte == MAVLINK_V1_MAGIC) {
+                p.buffer[0] = byte;
+                p.bufferIdx = 1;
+                p.isV2 = false;
                 p.state = PARSE_STATE_HEADER;
             }
             break;
 
-        case PARSE_STATE_HEADER:
+        case PARSE_STATE_HEADER: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
             p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN) {
-                // 帧头接收完成, 解析 payload 长度
+            if (p.bufferIdx >= headerLen) {
                 p.payloadLen = p.buffer[1];
-                p.expectedLen = MAVLINK_V2_HEADER_LEN + p.payloadLen + MAVLINK_V2_CRC_LEN;
+                if (p.payloadLen > (p.isV2 ? MAVLINK_V2_MAX_PAYLOAD : MAVLINK_V1_MAX_PAYLOAD)) {
+                    // payload 长度非法，丢弃
+                    p.parseErrors++;
+                    p.state = PARSE_STATE_IDLE;
+                    break;
+                }
+                p.expectedLen = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN;
                 p.state = PARSE_STATE_PAYLOAD;
             }
             break;
+        }
 
-        case PARSE_STATE_PAYLOAD:
+        case PARSE_STATE_PAYLOAD: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
             p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN + p.payloadLen) {
+            if (p.bufferIdx >= headerLen + p.payloadLen) {
                 p.state = PARSE_STATE_CRC;
             }
             break;
+        }
 
         case PARSE_STATE_CRC:
             p.buffer[p.bufferIdx++] = byte;
             if (p.bufferIdx >= p.expectedLen) {
-                // 完整帧接收, 验证 CRC
                 uint16_t crcReceived = p.buffer[p.expectedLen - 2] |
                                     (p.buffer[p.expectedLen - 1] << 8);
 
-                // CRC 计算范围: LEN(1) 到 payload 末尾 (不含 STX 和 CRC)
-                uint16_t crcLen = p.expectedLen - 1 - MAVLINK_V2_CRC_LEN;  // 从 LEN 到 payload 结束
-                uint16_t crcCalc = crc_calculate(p.buffer + 1, crcLen);
+                // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX 和 CRC)
+                uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
+                uint16_t crcDataLen = headerLen - 1 + p.payloadLen;  // LEN 到 payload 结束
+                uint16_t crcCalc = crc_calculate(p.buffer + 1, crcDataLen);
 
                 // 加上 CRC extra byte
-                uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+                uint16_t msgid;
+                if (p.isV2) {
+                    msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+                } else {
+                    msgid = p.buffer[5];
+                }
                 uint8_t crcExtra = get_crc_extra(msgid);
                 crcCalc = crc_accumulate(crcExtra, crcCalc);
 
                 if (crcCalc == crcReceived) {
                     p.totalFrames++;
+                    if (p.isV2) p.totalV2Frames++;
+                    else p.totalV1Frames++;
                     handle_frame(p, nowMs);
                     p.state = PARSE_STATE_IDLE;
                     return true;
                 } else {
                     p.crcErrors++;
                     #if CONFIG_RID_VERBOSE_LOG
-                    ESP_LOGW(TAG, "CRC fail: msgid=%d recv=0x%04X calc=0x%04X",
-                             msgid, crcReceived, crcCalc);
+                    ESP_LOGW(TAG, "CRC fail: %s msgid=%d recv=0x%04X calc=0x%04X",
+                             p.isV2 ? "v2" : "v1", msgid, crcReceived, crcCalc);
                     #endif
-                    p.state = PARSE_STATE_IDLE;  // 丢弃, 重新等待
+                    p.state = PARSE_STATE_IDLE;
                 }
             }
             break;
@@ -323,9 +355,11 @@ bool mavlink_isDataStale(const MavlinkParser& p, uint64_t nowMs, uint64_t timeou
 
 void mavlink_getStatus(const MavlinkParser& p, char* buf, uint16_t bufLen) {
     snprintf(buf, bufLen,
-             "frames=%lu crc_err=%lu armed=%d status=%d "
+             "frames=%lu(v1=%lu,v2=%lu) crc_err=%lu armed=%d status=%d "
              "fix=%d sats=%d lat=%.6f lon=%.6f alt=%.1f",
              (unsigned long)p.totalFrames,
+             (unsigned long)p.totalV1Frames,
+             (unsigned long)p.totalV2Frames,
              (unsigned long)p.crcErrors,
              p.armed, p.systemStatus,
              p.gpsFixType, p.gpsSats,

@@ -11,6 +11,11 @@
 #define MAVLINK_V2_CRC_LEN        2
 #define MAVLINK_V2_MAX_PAYLOAD    253
 
+#define MAVLINK_V1_MAGIC          0xFE
+#define MAVLINK_V1_HEADER_LEN     6    // STX+LEN+SEQ+SYSID+COMPID+MSGID(1)
+#define MAVLINK_V1_CRC_LEN        2
+#define MAVLINK_V1_MAX_PAYLOAD    255
+
 // 常用消息ID (ArduPilot common.xml)
 #define MAVLINK_MSG_HEARTBEAT              0
 #define MAVLINK_MSG_GPS_RAW_INT           24
@@ -22,8 +27,8 @@
 // ================= 解析状态 =================
 
 enum MavlinkParseState {
-    PARSE_STATE_IDLE,      // 等待 STX (0xFD)
-    PARSE_STATE_HEADER,    // 接收帧头 (10 bytes)
+    PARSE_STATE_IDLE,      // 等待 STX (0xFD v2 / 0xFE v1)
+    PARSE_STATE_HEADER,    // 接收帧头 (10 bytes v2 / 6 bytes v1)
     PARSE_STATE_PAYLOAD,   // 接收 payload
     PARSE_STATE_CRC,       // 接收 CRC (2 bytes)
 };
@@ -37,8 +42,12 @@ struct MavlinkParser {
     uint16_t expectedLen;  // 预期帧总长度
     uint16_t payloadLen;   // payload 长度
 
+    bool isV2;    // 当前帧是 MAVLink v2 (true) 还是 v1 (false)
+
     // 统计
     uint32_t totalFrames;
+    uint32_t totalV1Frames;
+    uint32_t totalV2Frames;
     uint32_t crcErrors;
     uint32_t parseErrors;
 

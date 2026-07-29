@@ -25,7 +25,7 @@ private:
     bool _armed = false;
 };
 
-// ESP32-C5-DevKitC-1 板载 WS2812B (GPIO27, RMT 驱动)
+// ESP32-S3-DevKitC-1 板载 WS2812B (GPIO48, RMT 驱动)
 class StatusLed {
 public:
     bool init();

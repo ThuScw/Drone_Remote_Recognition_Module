@@ -1,11 +1,12 @@
 #include "flight_data.h"
 #include "mavlink_parser.h"
 #include "config.h"
+#include <inttypes.h>
 #include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
 
-// USB Host 头文件
+// USB Host 头文件 (usb_host_cdc_acm v2.x)
 #include "usb/usb_host.h"
 #include "usb/cdc_acm_host.h"
 
@@ -24,10 +25,10 @@ static volatile bool s_deviceReady = false;
 
 // ================= USB Host 回调函数 =================
 
-// USB CDC-ACM 数据接收回调
+// USB CDC-ACM 数据接收回调 (v2 API: 返回 bool)
 // 当从飞控收到数据时调用，将数据送入 MAVLink 解析器
-static void usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
-    if (data == nullptr || data_len == 0) return;
+static bool usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
+    if (data == nullptr || data_len == 0) return true;
 
     uint64_t nowMs = esp_timer_get_time() / 1000;
 
@@ -41,9 +42,11 @@ static void usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
         ESP_LOGD(TAG, "USB RX: %zu bytes", data_len);
     }
     #endif
+
+    return true;
 }
 
-// USB CDC-ACM 事件回调
+// USB CDC-ACM 事件回调 (v2 API)
 // 处理设备连接/断开/错误等事件
 static void usb_event_callback(const cdc_acm_host_dev_event_data_t* event, void* user_ctx) {
     switch (event->type) {
@@ -53,6 +56,7 @@ static void usb_event_callback(const cdc_acm_host_dev_event_data_t* event, void*
 
         case CDC_ACM_HOST_DEVICE_DISCONNECTED:
             ESP_LOGW(TAG, "USB device disconnected");
+            cdc_acm_host_close(event->data.cdc_hdl);
             s_deviceConnected = false;
             s_deviceReady = false;
             s_cdc_dev = nullptr;
@@ -61,10 +65,6 @@ static void usb_event_callback(const cdc_acm_host_dev_event_data_t* event, void*
         case CDC_ACM_HOST_SERIAL_STATE:
             // 串口状态变化 (DTR, RTS, 等)
             ESP_LOGD(TAG, "Serial state: 0x%04X", event->data.serial_state.val);
-            break;
-
-        case CDC_ACM_HOST_NETWORK_CONNECTION:
-            ESP_LOGD(TAG, "Network connection event");
             break;
 
         default:
@@ -76,12 +76,11 @@ static void usb_event_callback(const cdc_acm_host_dev_event_data_t* event, void*
 // USB Host 事件处理任务
 // 持续处理 USB Host 库事件
 static void usb_host_task(void* arg) {
-    uint32_t event_flags;
-
     ESP_LOGI(TAG, "USB Host task started");
 
     while (true) {
         // 处理 USB Host 事件
+        uint32_t event_flags;
         esp_err_t ret = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "USB Host event handling failed: %s", esp_err_to_name(ret));
@@ -95,39 +94,68 @@ static void usb_host_task(void* arg) {
             usb_host_device_free_all();
         }
 
-        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_INSTALL_FREE) {
-            ESP_LOGD(TAG, "Install freed");
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
+            ESP_LOGD(TAG, "All devices freed");
         }
     }
 }
 
-// 自动扫描 USB 设备并连接到第一个 CDC-ACM 设备 (即插即用)
-// 如果配置了 VID/PID，则只连接匹配的设备
+// 配置串口参数 (波特率、数据位、校验位、停止位)
+static void configure_line_coding(cdc_acm_dev_hdl_t dev) {
+    cdc_acm_line_coding_t line_coding = {};
+    esp_err_t ret = cdc_acm_host_line_coding_get(dev, &line_coding);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to get line coding: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    line_coding.dwDTERate = FC_USB_BAUD_RATE;
+    line_coding.bDataBits = FC_USB_DATA_BITS;
+    line_coding.bParityType = FC_USB_PARITY;   // 0=None, 1=Odd, 2=Even
+    line_coding.bCharFormat = (FC_USB_STOP_BITS == 2) ? 2 : 0;  // 0=1stop, 2=2stop
+
+    ret = cdc_acm_host_line_coding_set(dev, &line_coding);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Line coding: %" PRIu32 " baud, %d%c%d",
+                 line_coding.dwDTERate,
+                 line_coding.bDataBits,
+                 "NOE"[line_coding.bParityType],
+                 line_coding.bCharFormat == 0 ? 1 : 2);
+    } else {
+        ESP_LOGW(TAG, "Failed to set line coding: %s", esp_err_to_name(ret));
+    }
+}
+
+// 打开 USB 设备 (v2 API)
 static esp_err_t try_open_usb_device() {
     if (s_cdc_dev != nullptr) {
         return ESP_OK;  // 已打开
     }
 
+    // v2 设备配置 (不再包含波特率等参数, 通过 line_coding 设置)
+    cdc_acm_host_device_config_t dev_config = {};
+    dev_config.connection_timeout_ms = 1000;
+    dev_config.out_buffer_size = 512;
+    dev_config.in_buffer_size = 512;
+    dev_config.user_arg = nullptr;
+    dev_config.event_cb = usb_event_callback;
+    dev_config.data_cb = usb_data_callback;
+
     #if FC_USB_VID != 0
-    // 模式 1: 指定 VID/PID (传统模式)
+    // 模式 1: 指定 VID/PID
     ESP_LOGI(TAG, "Trying to open USB device (VID=0x%04X, PID=0x%04X)",
              FC_USB_VID, FC_USB_PID);
-
-    cdc_acm_host_dev_config_t dev_config = {};
-    dev_config.baud_rate = FC_USB_BAUD_RATE;
-    dev_config.data_bits = (cdc_acm_data_bits_t)FC_USB_DATA_BITS;
-    dev_config.parity = (cdc_acm_parity_t)FC_USB_PARITY;
-    dev_config.stop_bits = (cdc_acm_stop_bits_t)FC_USB_STOP_BITS;
-    dev_config.flow_control = FLOW_CTRL_DISABLE;
-    dev_config.data_cb = usb_data_callback;
-    dev_config.event_cb = usb_event_callback;
-    dev_config.user_arg = nullptr;
 
     esp_err_t ret = cdc_acm_host_open(FC_USB_VID, FC_USB_PID, 0, &dev_config, &s_cdc_dev);
 
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "✓ USB device opened (VID=0x%04X, PID=0x%04X)",
                  FC_USB_VID, FC_USB_PID);
+        cdc_acm_host_desc_print(s_cdc_dev);
+        configure_line_coding(s_cdc_dev);
+        // 置位 DTR 告知飞控 Host 已就绪，飞控才会开始输出 MAVLink 数据
+        cdc_acm_host_set_control_line_state(s_cdc_dev, true, false);
+        ESP_LOGI(TAG, "DTR asserted — waiting for MAVLink data...");
         s_deviceConnected = true;
         s_deviceReady = true;
         return ESP_OK;
@@ -141,78 +169,9 @@ static esp_err_t try_open_usb_device() {
 
     #else
     // 模式 2: 自动检测任意 CDC-ACM 设备 (即插即用)
-    ESP_LOGI(TAG, "Scanning for any CDC-ACM USB device (plug-and-play)...");
-
-    // 枚举所有已连接的 USB 设备
-    size_t num_devices = 0;
-    usb_device_info_t dev_infos[8];  // 最多检测 8 个设备
-
-    esp_err_t ret = usb_host_get_device_list(&num_devices, dev_infos);
-    if (ret != ESP_OK) {
-        ESP_LOGD(TAG, "No USB devices found");
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    ESP_LOGI(TAG, "Found %zu USB device(s), checking for CDC-ACM...", num_devices);
-
-    // 遍历所有设备，找到第一个 CDC-ACM 设备
-    for (size_t i = 0; i < num_devices; i++) {
-        usb_device_handle_t dev_handle;
-        ret = usb_host_get_device_by_address(dev_infos[i].dev_addr, &dev_handle);
-        if (ret != ESP_OK) {
-            continue;
-        }
-
-        // 获取设备描述符
-        const usb_device_desc_t* dev_desc;
-        ret = usb_host_get_device_descriptor(dev_handle, &dev_desc);
-        if (ret != ESP_OK) {
-            usb_host_free_device(dev_handle);
-            continue;
-        }
-
-        // 检查设备类是否为 CDC-ACM (0x02) 或 vendor-specific (0xFF)
-        // 很多飞控用 0xFF 但实际是 CDC-ACM
-        bool is_cdc = (dev_desc->bDeviceClass == 0x02) ||  // CDC
-                      (dev_desc->bDeviceClass == 0xFF) ||  // Vendor-specific (常见于飞控)
-                      (dev_desc->bDeviceClass == 0xEF);    // Misc (composite devices)
-
-        if (!is_cdc) {
-            ESP_LOGD(TAG, "Device %d: VID=0x%04X PID=0x%04X class=0x%02X (not CDC, skip)",
-                     i, dev_desc->idVendor, dev_desc->idProduct, dev_desc->bDeviceClass);
-            usb_host_free_device(dev_handle);
-            continue;
-        }
-
-        ESP_LOGI(TAG, "Found CDC-ACM device: VID=0x%04X PID=0x%04X",
-                 dev_desc->idVendor, dev_desc->idProduct);
-
-        // 尝试打开这个设备
-        cdc_acm_host_dev_config_t dev_config = {};
-        dev_config.baud_rate = FC_USB_BAUD_RATE;
-        dev_config.data_bits = (cdc_acm_data_bits_t)FC_USB_DATA_BITS;
-        dev_config.parity = (cdc_acm_parity_t)FC_USB_PARITY;
-        dev_config.stop_bits = (cdc_acm_stop_bits_t)FC_USB_STOP_BITS;
-        dev_config.flow_control = FLOW_CTRL_DISABLE;
-        dev_config.data_cb = usb_data_callback;
-        dev_config.event_cb = usb_event_callback;
-        dev_config.user_arg = nullptr;
-
-        ret = cdc_acm_host_open(dev_desc->idVendor, dev_desc->idProduct, 0, &dev_config, &s_cdc_dev);
-
-        usb_host_free_device(dev_handle);
-
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "✓ Auto-detected USB device: VID=0x%04X PID=0x%04X",
-                     dev_desc->idVendor, dev_desc->idProduct);
-            s_deviceConnected = true;
-            s_deviceReady = true;
-            return ESP_OK;
-        }
-    }
-
-    ESP_LOGD(TAG, "No CDC-ACM device found, will retry...");
-    return ESP_ERR_NOT_FOUND;
+    // 注意: 自动检测模式需要 USB Host client API，与指定 VID/PID 模式不同。
+    // 当前请使用指定 VID/PID 模式 (在 config.h 中设置 FC_USB_VID)。
+    #error "Auto-detect mode (FC_USB_VID=0) requires USB Host client API. Specify your FC VID/PID in config.h."
     #endif
 }
 
