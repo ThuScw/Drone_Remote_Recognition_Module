@@ -127,4 +127,37 @@
 #define FLIGHT_LOG_QUEUE_DEPTH      16     // 队列深度 (160s 缓冲 @ 10s 间隔)
 #define FLIGHT_LOG_WRITE_TIMEOUT_MS 100    // 队列满时等待超时 (ms)
 
+// ================= UART 飞控数据接口 (Stage 2) =================
+
+// UART 端口选择
+// UART0: 通常用于 USB 串口调试 (USB-C 口)
+// UART1: 可用 GPIO, 用于连接飞控 TELEM1 端口
+// 注意: UART_NUM_1 等常量来自 driver/uart.h, 在 cpp 文件中使用
+#define FC_UART_PORT_NUM      1   // UART1
+
+// UART1 引脚分配 (ESP32-C5)
+// 注意: GPIO4 是推荐的 UART1_RX 引脚, 无特殊功能冲突
+// 飞控 TELEM1 TX → ESP32-C5 GPIO4 (UART1_RX)
+// 飞控 TELEM1 GND → ESP32-C5 GND
+// 只需接收, 不发送, 所以 TX 引脚不需要配置
+#define FC_UART_RX_GPIO     GPIO_NUM_4
+#define FC_UART_TX_GPIO     -1    // 不使用, 飞控→RID 单向通信 (在代码中转换为 UART_PIN_NO_CHANGE)
+
+// UART 参数
+// ArduPilot 默认 TELEM1 波特率为 57600, 但用户环境使用 115200
+// 根据实际飞控配置调整
+#define FC_UART_BAUD_RATE   115200
+
+// UART 接收缓冲区
+#define FC_UART_RX_BUF_SIZE 1024   // 接收缓冲区 (bytes)
+#define FC_UART_TX_BUF_SIZE 0      // 不发送, 设为 0
+
+// MAVLink 解析配置
+#define MAVLINK_MAX_PAYLOAD_LEN  255   // MAVLink v2 最大 payload
+#define MAVLINK_PARSER_STACK     4096  // MAVLink 解析任务栈
+
+// 数据超时配置
+// 如果超过此时间未收到有效位置数据, 标记为 STALE
+#define FC_DATA_TIMEOUT_MS     2000
+
 #endif // CONFIG_H

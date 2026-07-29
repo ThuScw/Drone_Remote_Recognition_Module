@@ -1,103 +1,135 @@
 #include "flight_data.h"
+#include "mavlink_parser.h"
 #include "config.h"
 #include <math.h>
+#include "driver/uart.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+static const char* TAG = "FLIGHT_DATA";
+
+// ================= MAVLink 解析任务 =================
+
+static MavlinkParser s_parser;
+static bool s_uartInitialized = false;
+static TaskHandle_t s_parseTaskHandle = nullptr;
+
+// UART 接收任务: 持续读取字节并送入 MAVLink 解析器
+static void uart_rx_task(void* arg) {
+    uint8_t rxbuf[256];
+
+    ESP_LOGI(TAG, "UART%d RX task started (baud=%d, rx_gpio=%d)",
+             FC_UART_PORT_NUM, FC_UART_BAUD_RATE, FC_UART_RX_GPIO);
+
+    while (true) {
+        int len = uart_read_bytes((uart_port_t)FC_UART_PORT_NUM, rxbuf, sizeof(rxbuf), pdMS_TO_TICKS(100));
+        if (len > 0) {
+            uint64_t nowMs = esp_timer_get_time() / 1000;
+            for (int i = 0; i < len; i++) {
+                mavlink_parseByte(s_parser, rxbuf[i], nowMs);
+            }
+        }
+    }
+}
+
+// ================= 初始化 =================
+
+static void init_uart() {
+    if (s_uartInitialized) return;
+
+    uart_port_t uart_num = (uart_port_t)FC_UART_PORT_NUM;
+    int tx_gpio = (FC_UART_TX_GPIO >= 0) ? FC_UART_TX_GPIO : UART_PIN_NO_CHANGE;
+
+    uart_config_t uart_config = {
+        .baud_rate = FC_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    // 安装 UART 驱动
+    ESP_ERROR_CHECK(uart_driver_install(uart_num,
+                                         FC_UART_RX_BUF_SIZE,
+                                         FC_UART_TX_BUF_SIZE,
+                                         0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(uart_num, &uart_config));
+
+    // 设置引脚 (TX 不使用, 设为 UART_PIN_NO_CHANGE)
+    ESP_ERROR_CHECK(uart_set_pin(uart_num,
+                                  tx_gpio,              // TX (不连接)
+                                  FC_UART_RX_GPIO,      // RX (接飞控 TELEM1 TX)
+                                  UART_PIN_NO_CHANGE,   // RTS
+                                  UART_PIN_NO_CHANGE)); // CTS
+
+    // 初始化 MAVLink 解析器
+    mavlink_init(s_parser);
+
+    // 创建接收任务
+    xTaskCreate(uart_rx_task, "mav_rx", MAVLINK_PARSER_STACK, NULL, 10, &s_parseTaskHandle);
+
+    s_uartInitialized = true;
+    ESP_LOGI(TAG, "UART%d initialized: baud=%d rx_gpio=%d",
+             FC_UART_PORT_NUM, FC_UART_BAUD_RATE, FC_UART_RX_GPIO);
+}
+
+// ================= 公共接口 =================
 
 void getFlightData(FlightData& fd, uint64_t nowMs) {
-    const uint64_t cycleMs = SIM_GROUND_WAIT_MS + SIM_TAKEOFF_MS
-                           + SIM_CRUISE_MS + SIM_LANDING_MS;
-    uint64_t t = nowMs % cycleMs;
-
-    const uint64_t t_takeoff = SIM_GROUND_WAIT_MS;
-    const uint64_t t_cruise  = t_takeoff + SIM_TAKEOFF_MS;
-    const uint64_t t_landing = t_cruise  + SIM_CRUISE_MS;
-
-    fd.opLat = MOCK_OP_LAT;
-    fd.opLon = MOCK_OP_LON;
-    fd.opAlt = MOCK_OP_ALT;
-
-    if (t < t_takeoff) {
-        fd.opStatus  = STATUS_GROUND;
-        fd.lat       = MOCK_LATITUDE;
-        fd.lon       = MOCK_LONGITUDE;
-        fd.heightAgl = 0.0f;
-        fd.geoAlt    = MOCK_GEO_BASE_ALT;
-        fd.baroAlt   = MOCK_GEO_BASE_ALT - 2.3f;
-        fd.speed     = 0.0f;
-        fd.heading   = 0.0f;
-        fd.vspeed    = 0.0f;
-        fd.validMask = FLD_ALL;
-
-        // 更新时间戳
-        fd.ts_pos      = nowMs;
-        fd.ts_geoAlt   = nowMs;
-        fd.ts_speed    = nowMs;
-        fd.ts_heading  = nowMs;
-        fd.ts_opStatus = nowMs;
-        fd.ts_opPos    = nowMs;
-    } else if (t < t_cruise) {
-        float p = (float)(t - t_takeoff) / (float)SIM_TAKEOFF_MS;
-        fd.opStatus  = STATUS_AIRBORNE;
-        fd.heightAgl = p * SIM_CRUISE_ALT;
-        fd.geoAlt    = MOCK_GEO_BASE_ALT + fd.heightAgl;
-        fd.baroAlt   = fd.geoAlt - 2.3f;
-        fd.speed     = p * SIM_CRUISE_SPEED;
-        fd.heading   = 45.0f;
-        fd.vspeed    = SIM_CRUISE_ALT / ((float)SIM_TAKEOFF_MS / 1000.0f);
-        fd.lat       = MOCK_LATITUDE + p * 0.0002f;
-        fd.lon       = MOCK_LONGITUDE;
-        fd.validMask = FLD_ALL;
-
-        // 更新时间戳
-        fd.ts_pos      = nowMs;
-        fd.ts_geoAlt   = nowMs;
-        fd.ts_speed    = nowMs;
-        fd.ts_heading  = nowMs;
-        fd.ts_opStatus = nowMs;
-        fd.ts_opPos    = nowMs;
-    } else if (t < t_landing) {
-        float p = (float)(t - t_cruise) / (float)SIM_CRUISE_MS;
-        fd.opStatus  = STATUS_AIRBORNE;
-        fd.heightAgl = SIM_CRUISE_ALT;
-        fd.geoAlt    = MOCK_GEO_BASE_ALT + SIM_CRUISE_ALT;
-        fd.baroAlt   = fd.geoAlt - 2.3f;
-        fd.speed     = SIM_CRUISE_SPEED;
-        fd.heading   = fmodf(45.0f + p * 360.0f, 360.0f);
-        fd.vspeed    = 0.0f;
-        float angle  = p * 2.0f * 3.14159265f;
-        fd.lat       = MOCK_LATITUDE + sinf(angle) * 0.0005f;
-        fd.lon       = MOCK_LONGITUDE + cosf(angle) * 0.0005f;
-        fd.validMask = FLD_ALL;
-
-        // 更新时间戳
-        fd.ts_pos      = nowMs;
-        fd.ts_geoAlt   = nowMs;
-        fd.ts_speed    = nowMs;
-        fd.ts_heading  = nowMs;
-        fd.ts_opStatus = nowMs;
-        fd.ts_opPos    = nowMs;
-    } else {
-        float p = (float)(t - t_landing) / (float)SIM_LANDING_MS;
-        fd.opStatus  = STATUS_AIRBORNE;
-        fd.heightAgl = SIM_CRUISE_ALT * (1.0f - p);
-        fd.geoAlt    = MOCK_GEO_BASE_ALT + fd.heightAgl;
-        fd.baroAlt   = fd.geoAlt - 2.3f;
-        fd.speed     = SIM_CRUISE_SPEED * (1.0f - p);
-        fd.heading   = 45.0f;
-        fd.vspeed    = -(SIM_CRUISE_ALT / ((float)SIM_LANDING_MS / 1000.0f));
-        fd.lat       = MOCK_LATITUDE + 0.0002f;
-        fd.lon       = MOCK_LONGITUDE;
-        fd.validMask = FLD_ALL;
-
-        // 更新时间戳
-        fd.ts_pos      = nowMs;
-        fd.ts_geoAlt   = nowMs;
-        fd.ts_speed    = nowMs;
-        fd.ts_heading  = nowMs;
-        fd.ts_opStatus = nowMs;
-        fd.ts_opPos    = nowMs;
+    // 首次调用时初始化 UART 和解析任务
+    if (!s_uartInitialized) {
+        init_uart();
     }
 
-    // 初始化和更新数据质量指标
-    fd.freshness = FRESH_OK;  // Mock 数据始终新鲜
-    fd.validationFlags = 0;   // Mock 数据始终有效
+    // 检查是否有新数据
+    if (mavlink_isDataStale(s_parser, nowMs, FC_DATA_TIMEOUT_MS)) {
+        // 数据超时, 标记为 STALE
+        fd.freshness = FRESH_STALE;
+
+        // 仍然尝试填充数据 (可能没有新数据, 但保持上一次的值)
+        #if CONFIG_RID_VERBOSE_LOG
+        ESP_LOGW(TAG, "Data STALE: lastPos=%llu lastGps=%llu",
+                 (unsigned long long)s_parser.lastPositionMs,
+                 (unsigned long long)s_parser.lastGpsMs);
+        #endif
+    }
+
+    // 尝试从 MAVLink 解析器填充数据
+    bool hasData = mavlink_fillFlightData(s_parser, fd, nowMs);
+
+    if (!hasData) {
+        // 无有效数据 (GPS 未锁定等), 使用默认值
+        fd.lat = 0;
+        fd.lon = 0;
+        fd.geoAlt = 0;
+        fd.baroAlt = 0;
+        fd.heightAgl = 0;
+        fd.speed = 0;
+        fd.heading = 0;
+        fd.vspeed = 0;
+        fd.opStatus = STATUS_GROUND;
+        fd.opLat = MOCK_OP_LAT;
+        fd.opLon = MOCK_OP_LON;
+        fd.opAlt = MOCK_OP_ALT;
+        fd.validMask = 0;  // 所有字段无效
+        fd.freshness = FRESH_INVALID;
+        fd.validationFlags = 0xFFFFFFFF;
+
+        #if CONFIG_RID_VERBOSE_LOG
+        ESP_LOGW(TAG, "No valid data: fix=%d armed=%d",
+                 s_parser.gpsFixType, s_parser.armed);
+        #endif
+    }
+
+    // 定期输出状态 (每 5 秒)
+    static uint64_t lastStatusMs = 0;
+    if (nowMs - lastStatusMs > 5000) {
+        lastStatusMs = nowMs;
+        char statusBuf[200];
+        mavlink_getStatus(s_parser, statusBuf, sizeof(statusBuf));
+        ESP_LOGI(TAG, "%s", statusBuf);
+    }
 }

@@ -1,0 +1,333 @@
+#include "mavlink_parser.h"
+#include "config.h"
+#include <string.h>
+#include <math.h>
+#include "esp_log.h"
+
+static const char* TAG = "MAVLINK";
+
+// ================= MAVLink CRC-16/MCRF4XX =================
+
+static uint16_t crc_accumulate(uint8_t data, uint16_t crcAcc) {
+    uint8_t tmp;
+    tmp = data ^ (uint8_t)(crcAcc & 0xFF);
+    tmp ^= (tmp << 4);
+    return ((uint16_t)(crcAcc >> 8) ^ (uint16_t)(tmp << 8) ^
+            (uint16_t)(tmp << 3) ^ (uint16_t)(tmp >> 4)) & 0xFFFF;
+}
+
+static uint16_t crc_calculate(const uint8_t* pBuffer, uint16_t length) {
+    uint16_t crcTmp = 0xFFFF;
+    for (uint16_t i = 0; i < length; i++) {
+        crcTmp = crc_accumulate(pBuffer[i], crcTmp);
+    }
+    return crcTmp;
+}
+
+// CRC extra byte per message type (MAVLink 1.0/2.0)
+static uint8_t get_crc_extra(uint16_t msgid) {
+    switch (msgid) {
+        case 0:   return 50;   // HEARTBEAT
+        case 1:   return 124;  // SYS_STATUS
+        case 11:  return 89;   // SET_MODE
+        case 24:  return 24;   // GPS_RAW_INT
+        case 30:  return 39;   // ATTITUDE
+        case 33:  return 104;  // GLOBAL_POSITION_INT
+        case 36:  return 220;  // SERVO_OUTPUT_RAW
+        case 74:  return 20;   // VFR_HUD
+        case 105: return 202;  // HOME_POSITION (verified)
+        case 253: return 83;   // STATUSTEXT
+        default:  return 0;    // 未知消息类型, CRC 检查将失败
+    }
+}
+
+// ================= 消息解码 =================
+
+static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
+    // HEARTBEAT: custom_mode(4) + type(1) + autopilot(1) + base_mode(1) + system_status(1) + mavlink_version(1) = 9 bytes
+    // base_mode bit 7: armed flag
+    p.armed = (payload[6] & 0x80) != 0;
+    p.systemStatus = payload[7];
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "HEARTBEAT: type=%d armed=%d status=%d",
+             payload[4], p.armed, p.systemStatus);
+    #endif
+}
+
+static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
+    // GPS_RAW_INT: time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4) + eph(2) + epv(2) + vel(2) + cog(2) + sats(1) = 30 bytes
+    p.gpsFixType = payload[8];
+    p.lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
+    p.lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
+    p.altMsl = (int32_t)(payload[17] | (payload[18] << 8) | (payload[19] << 16) | (payload[20] << 24)) / 1000.0f;
+    p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
+    p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
+    p.gpsSats = payload[29];
+
+    p.lastGpsMs = nowMs;
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f alt=%.1f sats=%d eph=%.1f",
+             p.gpsFixType, p.lat, p.lon, p.altMsl, p.gpsSats, p.gpsEph);
+    #endif
+}
+
+static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
+    // ATTITUDE: time_boot_ms(4) + roll(4) + pitch(4) + yaw(4) + rollspeed(4) + pitchspeed(4) + yawspeed(4) = 28 bytes
+    // 暂不存储, 可用于诊断
+
+    #if CONFIG_RID_VERBOSE_LOG
+    float roll = *(const float*)(payload + 4) * 180.0f / M_PI;
+    float pitch = *(const float*)(payload + 8) * 180.0f / M_PI;
+    float yaw = *(const float*)(payload + 12) * 180.0f / M_PI;
+    ESP_LOGI(TAG, "ATTITUDE: roll=%.1f pitch=%.1f yaw=%.1f deg", roll, pitch, yaw);
+    #endif
+}
+
+static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
+    // GLOBAL_POSITION_INT: time_boot_ms(4) + lat(4) + lon(4) + alt(4) + relative_alt(4) + vx(2) + vy(2) + vz(2) + hdg(2) = 28 bytes
+    p.lat = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
+    p.lon = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
+    p.altMsl = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1000.0f;
+    p.altRel = (int32_t)(payload[16] | (payload[17] << 8) | (payload[18] << 16) | (payload[19] << 24)) / 1000.0f;
+    p.velN = (int16_t)(payload[20] | (payload[21] << 8)) / 100.0f;
+    p.velE = (int16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
+    p.velD = (int16_t)(payload[24] | (payload[25] << 8)) / 100.0f;
+
+    uint16_t hdg_raw = payload[26] | (payload[27] << 8);
+    if (hdg_raw != 65535) {
+        p.heading = hdg_raw / 100.0f;
+    } else {
+        p.heading = NAN;  // 航向未知
+    }
+
+    p.lastPositionMs = nowMs;
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "POS: lat=%.7f lon=%.7f alt=%.1f rel=%.1f v=(%.2f,%.2f,%.2f) hdg=%.1f",
+             p.lat, p.lon, p.altMsl, p.altRel, p.velN, p.velE, p.velD, p.heading);
+    #endif
+}
+
+static void decode_vfr_hud(MavlinkParser& p, const uint8_t* payload) {
+    // VFR_HUD: airspeed(4) + groundspeed(4) + alt(4) + climb(4) + heading(2) + throttle(2) = 20 bytes
+    memcpy(&p.groundspeed, payload + 4, 4);
+    memcpy(&p.climbRate, payload + 12, 4);
+
+    // heading 是 int16, 如果为 -1 表示未知
+    int16_t hdg = (int16_t)(payload[16] | (payload[17] << 8));
+    if (hdg >= 0) {
+        p.heading = (float)hdg;
+    }
+    // 如果 GLOBAL_POSITION_INT 已有航向, 不覆盖
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "VFR: spd=%.2f alt=%.1f climb=%.2f hdg=%d",
+             p.groundspeed, p.altMsl, p.climbRate, hdg);
+    #endif
+}
+
+static void decode_home_position(MavlinkParser& p, const uint8_t* payload) {
+    // HOME_POSITION: lat(4) + lon(4) + alt(4) + ... = 至少 12 bytes
+    p.homeLat = (int32_t)(payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24)) / 1e7f;
+    p.homeLon = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
+    p.homeAlt = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1000.0f;
+    p.homeValid = true;
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "HOME: lat=%.7f lon=%.7f alt=%.1f", p.homeLat, p.homeLon, p.homeAlt);
+    #endif
+}
+
+// ================= 帧处理 =================
+
+static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
+    uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+    const uint8_t* payload = p.buffer + MAVLINK_V2_HEADER_LEN;
+
+    switch (msgid) {
+        case MAVLINK_MSG_HEARTBEAT:
+            if (p.payloadLen >= 9) decode_heartbeat(p, payload);
+            break;
+        case MAVLINK_MSG_GPS_RAW_INT:
+            if (p.payloadLen >= 30) decode_gps_raw_int(p, payload, nowMs);
+            break;
+        case MAVLINK_MSG_ATTITUDE:
+            if (p.payloadLen >= 28) decode_attitude(p, payload);
+            break;
+        case MAVLINK_MSG_GLOBAL_POSITION_INT:
+            if (p.payloadLen >= 28) decode_global_position_int(p, payload, nowMs);
+            break;
+        case MAVLINK_MSG_VFR_HUD:
+            if (p.payloadLen >= 20) decode_vfr_hud(p, payload);
+            break;
+        case MAVLINK_MSG_HOME_POSITION:
+            if (p.payloadLen >= 12) decode_home_position(p, payload);
+            break;
+        default:
+            #if CONFIG_RID_VERBOSE_LOG
+            ESP_LOGD(TAG, "Unknown msgid=%d len=%d", msgid, p.payloadLen);
+            #endif
+            break;
+    }
+}
+
+// ================= API 实现 =================
+
+void mavlink_init(MavlinkParser& p) {
+    memset(&p, 0, sizeof(p));
+    p.state = PARSE_STATE_IDLE;
+    p.heading = NAN;
+}
+
+bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
+    switch (p.state) {
+        case PARSE_STATE_IDLE:
+            if (byte == MAVLINK_V2_MAGIC) {
+                p.buffer[0] = byte;
+                p.bufferIdx = 1;
+                p.state = PARSE_STATE_HEADER;
+            }
+            break;
+
+        case PARSE_STATE_HEADER:
+            p.buffer[p.bufferIdx++] = byte;
+            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN) {
+                // 帧头接收完成, 解析 payload 长度
+                p.payloadLen = p.buffer[1];
+                p.expectedLen = MAVLINK_V2_HEADER_LEN + p.payloadLen + MAVLINK_V2_CRC_LEN;
+                p.state = PARSE_STATE_PAYLOAD;
+            }
+            break;
+
+        case PARSE_STATE_PAYLOAD:
+            p.buffer[p.bufferIdx++] = byte;
+            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN + p.payloadLen) {
+                p.state = PARSE_STATE_CRC;
+            }
+            break;
+
+        case PARSE_STATE_CRC:
+            p.buffer[p.bufferIdx++] = byte;
+            if (p.bufferIdx >= p.expectedLen) {
+                // 完整帧接收, 验证 CRC
+                uint16_t crcReceived = p.buffer[p.expectedLen - 2] |
+                                    (p.buffer[p.expectedLen - 1] << 8);
+
+                // CRC 计算范围: LEN(1) 到 payload 末尾 (不含 STX 和 CRC)
+                uint16_t crcLen = p.expectedLen - 1 - MAVLINK_V2_CRC_LEN;  // 从 LEN 到 payload 结束
+                uint16_t crcCalc = crc_calculate(p.buffer + 1, crcLen);
+
+                // 加上 CRC extra byte
+                uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+                uint8_t crcExtra = get_crc_extra(msgid);
+                crcCalc = crc_accumulate(crcExtra, crcCalc);
+
+                if (crcCalc == crcReceived) {
+                    p.totalFrames++;
+                    handle_frame(p, nowMs);
+                    p.state = PARSE_STATE_IDLE;
+                    return true;
+                } else {
+                    p.crcErrors++;
+                    #if CONFIG_RID_VERBOSE_LOG
+                    ESP_LOGW(TAG, "CRC fail: msgid=%d recv=0x%04X calc=0x%04X",
+                             msgid, crcReceived, crcCalc);
+                    #endif
+                    p.state = PARSE_STATE_IDLE;  // 丢弃, 重新等待
+                }
+            }
+            break;
+    }
+    return false;
+}
+
+bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t nowMs) {
+    // 检查数据有效性
+    if (p.gpsFixType < 2) {
+        // GPS 无定位或 2D, 不输出位置
+        return false;
+    }
+
+    // 填充位置
+    fd.lat = p.lat;
+    fd.lon = p.lon;
+    fd.geoAlt = p.altMsl;
+    fd.heightAgl = p.altRel;  // 相对高度 (AGL)
+    fd.baroAlt = p.altMsl;    // 简化: 用 MSL 代替气压高度
+
+    // 填充速度
+    fd.speed = sqrtf(p.velN * p.velN + p.velE * p.velE);
+    fd.vspeed = -p.velD;  // MAVLink velD 正=向下, 我们定义 正=上升
+
+    // 填充航向
+    if (!isnan(p.heading)) {
+        fd.heading = p.heading;
+    } else {
+        // 从速度计算航向
+        fd.heading = atan2f(p.velE, p.velN) * 180.0f / M_PI;
+        if (fd.heading < 0) fd.heading += 360.0f;
+    }
+
+    // 填充运行状态
+    if (!p.armed) {
+        fd.opStatus = STATUS_GROUND;
+    } else if (p.systemStatus == 6) {  // EMERGENCY
+        fd.opStatus = STATUS_EMERGENCY;
+    } else if (p.systemStatus == 5) {  // CRITICAL
+        fd.opStatus = STATUS_FAIL_SAFE;
+    } else {
+        fd.opStatus = STATUS_AIRBORNE;
+    }
+
+    // 操作员位置: 使用 HOME 位置 (如果有), 否则用当前位置
+    // TODO: 实际应用中, 操作员位置应该来自遥控器的 GPS 或手动设置
+    if (p.homeValid) {
+        fd.opLat = p.homeLat;
+        fd.opLon = p.homeLon;
+        fd.opAlt = p.homeAlt;
+    } else {
+        fd.opLat = p.lat;
+        fd.opLon = p.lon;
+        fd.opAlt = p.altMsl;
+    }
+
+    // 设置有效标志
+    fd.validMask = FLD_ALL;
+
+    // 设置时间戳
+    fd.ts_pos = p.lastPositionMs;
+    fd.ts_geoAlt = nowMs;
+    fd.ts_speed = nowMs;
+    fd.ts_heading = nowMs;
+    fd.ts_opStatus = nowMs;
+    fd.ts_opPos = p.lastPositionMs;
+
+    // 数据质量
+    fd.freshness = FRESH_OK;
+    fd.validationFlags = 0;
+
+    return true;
+}
+
+bool mavlink_isDataStale(const MavlinkParser& p, uint64_t nowMs, uint64_t timeoutMs) {
+    if (nowMs - p.lastPositionMs > timeoutMs) {
+        return true;
+    }
+    if (nowMs - p.lastGpsMs > timeoutMs) {
+        return true;
+    }
+    return false;
+}
+
+void mavlink_getStatus(const MavlinkParser& p, char* buf, uint16_t bufLen) {
+    snprintf(buf, bufLen,
+             "frames=%lu crc_err=%lu armed=%d status=%d "
+             "fix=%d sats=%d lat=%.6f lon=%.6f alt=%.1f",
+             (unsigned long)p.totalFrames,
+             (unsigned long)p.crcErrors,
+             p.armed, p.systemStatus,
+             p.gpsFixType, p.gpsSats,
+             p.lat, p.lon, p.altMsl);
+}

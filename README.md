@@ -14,7 +14,7 @@
 
 ```
 main/
-├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚）
+├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、UART配置）
 ├── main.cpp                        # 精简编排器（~80行）：init + loop
 │
 ├── broadcast/
@@ -29,8 +29,9 @@ main/
 │   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
 │
 ├── data/
-│   └── flight_data.h/cpp           # 数据源接口：void getFlightData(FlightData&, uint64_t)
-│                                   # 当前为 Mock 实现 → Stage 2 替换为 UART 解析
+│   ├── flight_data.h               # 数据源接口：void getFlightData(FlightData&, uint64_t)
+│   ├── flight_data.cpp             # Stage 2: UART MAVLink 解析实现
+│   └── mavlink_parser.h/cpp        # MAVLink v2 解析器（帧解析、消息解码）
 │
 ├── indicators/
 │   └── indicators.h/cpp            # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
@@ -178,32 +179,25 @@ idf.py -p <串口> flash monitor
 
 ## 开发指南
 
-### Stage 1 → Stage 2：接入真实飞控
+### Stage 2: 接入真实飞控 (当前)
 
-只需修改 **一个文件** — `data/flight_data.cpp`：
+数据源从 Mock 切换到真实飞控 MAVLink UART 数据。
 
-1. 确认飞控串口协议（MAVLink / MSP / 自定义）、波特率、数据帧格式
-2. 初始化 UART
-3. 解析 GPS 位置（经纬度）、高度（大地/气压/相对）、速度、航向、运行状态
-4. 填充 `FlightData` struct 返回
+**接线**: 飞控 TELEM1 TX → ESP32-C5 GPIO4, GND → GND (只需 2 根线)
 
-当前 Mock 实现使用 `nowMs % 65000` 取模做 65s 起降循环，包含四个阶段：
+**配置**: 修改 `config.h` 中 UART 参数 (端口、波特率必须与飞控一致)
 
-| 阶段 | 时长 | 模拟行为 |
-|------|------|----------|
-| 地面等待 | 5s | opStatus=GND，无广播 |
-| 起飞爬升 | 10s | 高度 0→50m，向北微移 |
-| 巡航 | 40s | 高度 50m，15m/s 顺时针画圆 |
-| 降落 | 10s | 高度 50→0m，速度递减 |
+**详细操作**: 见 [`doc/hardware_connection_guide.md`](doc/hardware_connection_guide.md) 和 [`doc/stage2_migration_guide.md`](doc/stage2_migration_guide.md)
 
-### 接口约定
+### 数据流
 
-`getFlightData()` 签名不可变，返回值不走 return 而是直接填 struct：
-
-```cpp
-void getFlightData(FlightData& fd, uint64_t nowMs);
-//                              ^^^^^^^^^^^^^^^^
-//                              Mock 用时间，真飞控可忽略
+```
+飞控 TELEM1 ──→ UART1 ──→ mavlink_parseByte() ──→ FlightData ──→ RIDBroadcastManager::update()
+                                                                          │
+                                                                ┌─────────┼──────────┐
+                                                                ▼         ▼          ▼
+                                                         validateData  buildPacket  handleBroadcast
+                                                          (范围检查)   (M=0,O=条件)  (永不跳过)
 ```
 
 ### 验证方法
