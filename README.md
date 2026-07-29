@@ -1,6 +1,10 @@
-# ESP32-C5 RID Broadcaster
+# ESP32-S3 RID Broadcaster
 
-无人机远程识别（Remote ID）广播模块，运行在 ESP32-C5 上，通过 BLE5 Extended Advertising 广播 GB 46750-2025 标准飞行数据。
+无人机远程识别（Remote ID）广播模块，运行在 ESP32-S3 上，通过 BLE5 Extended Advertising 广播 GB 46750-2025 标准飞行数据。
+
+> **注意**: 本项目有两个主要分支：
+> - `main` 分支：ESP32-C5 版本（UART 接口）
+> - `feature/esp32s3-usb-host` 分支：ESP32-S3 版本（USB Host 接口）← **当前分支**
 
 ## 适用标准
 
@@ -14,7 +18,7 @@
 
 ```
 main/
-├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、UART配置）
+├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、USB Host配置）
 ├── main.cpp                        # 精简编排器（~80行）：init + loop
 │
 ├── broadcast/
@@ -30,7 +34,7 @@ main/
 │
 ├── data/
 │   ├── flight_data.h               # 数据源接口：void getFlightData(FlightData&, uint64_t)
-│   ├── flight_data.cpp             # Stage 2: UART MAVLink 解析实现
+│   ├── flight_data.cpp             # USB Host CDC-ACM 飞控数据读取实现
 │   └── mavlink_parser.h/cpp        # MAVLink v2 解析器（帧解析、消息解码）
 │
 ├── indicators/
@@ -43,16 +47,15 @@ main/
 ### 数据流
 
 ```
-getFlightData()  ──→  FlightData  ──→  RIDBroadcastManager::update()
-                                              │
-                                    ┌─────────┼──────────┐
-                                    ▼         ▼          ▼
-                             validateData  buildPacket  handleBroadcast
-                              (范围检查)   (M=0,O=条件)  (永不跳过)
-                                              │
-                                              ▼
-                              broadcaster.updateBroadcastData(pkt)
-                              (原地更新AD数据，不停止广播)
+飞控 USB ──→ USB Host (CDC-ACM) ──→ mavlink_parseByte() ──→ FlightData
+                                                                    │
+                                                                    ▼
+                                                          RIDBroadcastManager::update()
+                                                                    │
+                                                          ┌─────────┼──────────┐
+                                                          ▼         ▼          ▼
+                                                   validateData  buildPacket  handleBroadcast
+                                                    (范围检查)   (M=0,O=条件)  (永不跳过)
 ```
 
 ### 关键设计决策
@@ -61,6 +64,7 @@ getFlightData()  ──→  FlightData  ──→  RIDBroadcastManager::update()
 - **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
 - **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
 - **地面↔空中状态机**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞
+- **USB Host 即插即用**：自动检测飞控 USB 设备，支持热插拔，无需手动配置 VID/PID
 
 ### 广播策略
 
@@ -71,10 +75,19 @@ getFlightData()  ──→  FlightData  ──→  RIDBroadcastManager::update()
 
 ### 硬件接口
 
+#### ESP32-S3-DevKitC-1
+
 | 引脚 | 功能 | 方向 | 说明 |
 |------|------|------|------|
-| GPIO6 (MTMS) | 飞控联锁 RID_OK | 输出 | 自检通过→拉高（飞控允许起飞），异常→拉低（飞控禁止起飞），符合 GB 46750-2025 5.1.7；电平极性可通过 `INTERLOCK_ACTIVE_LEVEL` 配置 |
-| GPIO27 | WS2812B RGB LED | 输出 | RMT 外设驱动，绿色慢闪(0.5Hz)=地面待机，蓝色快闪(2.5Hz)=空中/紧急广播中，红色常亮=模块故障，符合 GB 46750-2025 5.1.5 |
+| GPIO19/20 | USB OTG (D-/D+) | 双向 | 连接飞控 USB 口，读取 MAVLink 数据 |
+| GPIO6 | 飞控联锁 RID_OK | 输出 | 自检通过→拉高（飞控允许起飞），异常→拉低（飞控禁止起飞），符合 GB 46750-2025 5.1.7 |
+| GPIO48 | WS2812B RGB LED | 输出 | RMT 外设驱动，绿色慢闪(0.5Hz)=地面待机，蓝色快闪(2.5Hz)=空中/紧急广播中，红色常亮=模块故障 |
+| COM 口 | UART0 | - | 连接电脑，用于调试和烧录 |
+
+**USB 接口说明**：
+- **"USB" 口**（GPIO19/20）：连接飞控，USB Host 模式读取数据
+- **"COM" 口**（UART0）：连接电脑，调试和烧录
+- 两个口可同时使用，互不冲突
 
 ### Flash 要求
 
@@ -85,24 +98,33 @@ getFlightData()  ──→  FlightData  ──→  RIDBroadcastManager::update()
 | 4 MB | ~2 MB | ~60 h | ✗ |
 | 8 MB | ~6 MB | ~170 h | ✓ |
 
-**量产推荐：ESP32-C5-WROOM-1 (8 MB Flash)**
+**量产推荐：ESP32-S3-WROOM-1 (8 MB Flash)**
 
 ## 构建
 
 ### 依赖
 
-- ESP-IDF v5.1+（ESP32-C5 支持）
+- ESP-IDF v5.5+（ESP32-S3 支持）
 - NimBLE BLE5 Extended Advertising 栈
+- USB Host CDC-ACM 驱动
 
 ### 编译 & 烧录
 
 ```bash
-idf.py set-target esp32c5
+# 1. 清理旧的构建缓存（重要！）
+rm -rf build
+
+# 2. 设置目标芯片
+idf.py set-target esp32s3
+
+# 3. 编译
 idf.py build
-idf.py -p <串口> flash monitor
+
+# 4. 烧录（使用 "COM" 口，不是 "USB" 口）
+idf.py -p <COM口> flash monitor
 ```
 
-首次使用需配置 NimBLE 和自定义分区表（已在 `sdkconfig.defaults` 和 `partitions.csv` 中预设）。
+首次使用需配置 NimBLE、USB Host 和自定义分区表（已在 `sdkconfig.defaults` 和 `partitions.csv` 中预设）。
 
 ## 配置文件
 
@@ -117,6 +139,25 @@ idf.py -p <串口> flash monitor
 #define UA_CLASS 1                     // 无人机分类：0=微型, 1=轻型, 2=小型, 3=中型, 4=大型
 #define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点, 1=遥控站位置
 #define COORD_SYS 0                    // 坐标系：0=WGS-84, 1=CGCS2000
+```
+
+### USB Host 飞控数据接口
+
+```c
+// 即插即用模式（推荐）
+#define FC_USB_VID          0       // 0 = 自动检测任意 USB 串口设备
+#define FC_USB_PID          0       // 0 = 自动检测
+
+// 指定设备模式（量产用）
+// 用户飞控 VID/PID: 0x1B8C / 0x0036
+#define FC_USB_VID          0x1B8C  // 飞控 VID
+#define FC_USB_PID          0x0036  // 飞控 PID
+
+// USB CDC-ACM 参数
+#define FC_USB_BAUD_RATE    115200  // 波特率（需与飞控一致）
+#define FC_USB_DATA_BITS    8
+#define FC_USB_PARITY       0       // 0=None, 1=Odd, 2=Even
+#define FC_USB_STOP_BITS    1
 ```
 
 ### 精度取值
@@ -144,7 +185,7 @@ idf.py -p <串口> flash monitor
 ```c
 #define INTERLOCK_RID_OK_GPIO   GPIO_NUM_6   // 飞控联锁（自检通过→拉高，异常→拉低）
 #define INTERLOCK_ACTIVE_LEVEL  1            // 联锁有效电平：1=高有效, 0=低有效
-#define STATUS_LED_GPIO         GPIO_NUM_27  // WS2812B RGB LED（RMT 驱动）
+#define STATUS_LED_GPIO         GPIO_NUM_48  // WS2812B RGB LED（RMT 驱动）
 #define STATUS_LED_NUM_LEDS     1
 ```
 
@@ -157,20 +198,6 @@ idf.py -p <串口> flash monitor
 #define FLIGHT_LOG_QUEUE_DEPTH   16          // 写入队列深度
 ```
 
-### 模拟飞行（Stage 1 Mock）
-
-```c
-#define MOCK_LATITUDE       31.230416f   // 起飞点纬度（上海, WGS-84）
-#define MOCK_LONGITUDE     121.473701f   // 起飞点经度
-#define MOCK_GEO_BASE_ALT  120.5f        // 地面大地高度 (m)
-#define SIM_GROUND_WAIT_MS   5000        // 地面等待
-#define SIM_TAKEOFF_MS      10000        // 起飞爬升
-#define SIM_CRUISE_MS       40000        // 巡航飞行
-#define SIM_LANDING_MS      10000        // 降落
-#define SIM_CRUISE_ALT      50.0f        // 巡航高度 AGL (m)
-#define SIM_CRUISE_SPEED    15.0f        // 巡航地速 (m/s)
-```
-
 ### 日志级别
 
 ```c
@@ -179,44 +206,49 @@ idf.py -p <串口> flash monitor
 
 ## 开发指南
 
-### Stage 2: 接入真实飞控 (当前)
+### 接入飞控（USB Host 模式）
 
-数据源从 Mock 切换到真实飞控 MAVLink UART 数据。
+数据源通过 USB Host CDC-ACM 读取飞控 MAVLink 数据。
 
-**接线**: 飞控 TELEM1 TX → ESP32-C5 GPIO4, GND → GND (只需 2 根线)
+**接线**: 飞控 USB 口 → ESP32-S3 "USB" 口（GPIO19/20）
 
-**配置**: 修改 `config.h` 中 UART 参数 (端口、波特率必须与飞控一致)
+**配置**: 
+- 即插即用模式：`FC_USB_VID = 0, FC_USB_PID = 0`（自动检测）
+- 指定设备模式：填入飞控的 VID/PID
 
-**详细操作**: 见 [`doc/hardware_connection_guide.md`](doc/hardware_connection_guide.md) 和 [`doc/stage2_migration_guide.md`](doc/stage2_migration_guide.md)
+**详细操作**: 见 [`doc/esp32s3_migration.md`](doc/esp32s3_migration.md) 和 [`doc/usb_plug_and_play.md`](doc/usb_plug_and_play.md)
 
 ### 数据流
 
 ```
-飞控 TELEM1 ──→ UART1 ──→ mavlink_parseByte() ──→ FlightData ──→ RIDBroadcastManager::update()
-                                                                          │
-                                                                ┌─────────┼──────────┐
-                                                                ▼         ▼          ▼
-                                                         validateData  buildPacket  handleBroadcast
-                                                          (范围检查)   (M=0,O=条件)  (永不跳过)
+飞控 USB ──→ USB Host (CDC-ACM) ──→ mavlink_parseByte() ──→ FlightData
+                                                                    │
+                                                                    ▼
+                                                          RIDBroadcastManager::update()
+                                                                    │
+                                                          ┌─────────┼──────────┐
+                                                          ▼         ▼          ▼
+                                                   validateData  buildPacket  handleBroadcast
+                                                    (范围检查)   (M=0,O=条件)  (永不跳过)
 ```
 
 ### 验证方法
 
 用手机安装 **nRF Connect**（Nordic Semiconductor），扫描 BLE 设备：
 
-- 设备名：`ESP32C5_RID`
+- 设备名：`ESP32S3_RID`
 - Service UUID：`0x0D50`（ASTM F3411 RID Service）
 - Service Data 中为 GB 46750-2025 编码的 77 字节数据包
 
 串口监控输出示例：
 
 ```
-I (1234) SYS: === ESP32-C5 RID Broadcaster — GB 46750-2025 ===
-I (1235) SYS: Light show drone | BLE5 Extended Advertising | Mock data
-I (1240) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
-I (1250) SYS: Ready. Monitor with nRF Connect.
+I (1234) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
+I (1235) SYS: USB Host CDC-ACM | BLE5 Extended Advertising
+I (2345) FLIGHT_DATA: USB Host initialized. Waiting for flight controller...
+I (3456) FLIGHT_DATA: ✓ USB device opened (VID=0x1B8C, PID=0x0036)
+I (4567) MAVLINK: frames=1 crc_err=0 armed=0 status=3 fix=3 sats=12
 
-W (7000) BCAST: Data STALE (> 2000 ms), broadcasting anyway
 I (7800) BCAST: Broadcast START (status=2)
 I (7800) BCAST: TX #1 (77 bytes):
 ff 01 47 e7 07 00 31 ...
@@ -234,20 +266,21 @@ ff 01 47 e7 07 00 32 ...
 | 广播更新失败 | `update failed #N` | 连续 3 次触发 `triggerSelfHeal()` |
 | 主循环卡死 | 无输出 | 看门狗 5s 后复位 |
 | BLE 控制器复位 | `NimBLE controller reset` | `triggerSelfHeal()` 三级递进恢复 |
+| USB 设备断开 | `USB device disconnected` | 自动重连（每 2 秒重试） |
 | 堆内存不足 | `LOW HEAP WARNING` | 每 60s 监控，< 10KB 输出告警 |
 | 飞行日志栈溢出 | `stack watermark LOW` | < 512 bytes 输出告警 |
 
 ## 产品化 Checklist
 
+- [x] 接入真实飞控 USB Host 数据源
+- [x] 确认飞控 VID/PID（0x1B8C / 0x0036）
+- [x] 确认飞控输出的运行状态映射关系
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
-- [ ] 将 `data/flight_data.cpp` 替换为真实飞控 UART 解析实现
-- [ ] 确认飞控输出的运行状态（地面/空中/紧急）与 GB 46750-2025 Table 3-015 的映射关系
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
-- [ ] 连接 GPIO27 (WS2812B) 到 RGB LED，验证闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
+- [ ] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
-- [ ] 选用 8 MB Flash 模组以确保存储容量满足 GB 46750-2025 5.1.8
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
 
 ### 量产安全配置（最终生产阶段）
@@ -255,7 +288,7 @@ ff 01 47 e7 07 00 32 ...
 - [ ] 启用 Flash 加密 (`CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE`)
 - [ ] 禁用 JTAG via eFuse (`DIS_USB_JTAG`)
 - [ ] 启用 Secure Boot V2 并配置签名密钥
-- [ ] 将 GPIO6 (MTMS) 联锁引脚替换为非 JTAG GPIO，避免调试接口冲突
+- [ ] 将 GPIO6 联锁引脚替换为非 JTAG GPIO，避免调试接口冲突
 - [ ] 设计加密 OTA 更新机制
 
 ## 量产安全配置
@@ -270,6 +303,7 @@ espsecure.py generate_signing_key secure_boot_signing_key.pem
 
 # 2. 在 sdkconfig.defaults 中取消注释:
 #    CONFIG_SECURE_BOOT=y
+#    CONFIG_SECURE_SIGNED_ON_BOOT=y
 #    CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
 
 # 3. 重新配置并构建
@@ -294,3 +328,32 @@ idf.py build
 ### 日志控制
 
 量产固件应在 `config.h` 中设置 `CONFIG_RID_VERBOSE_LOG 0`, 关闭 hex dump 和 TX 详细日志以减少 UART 功耗。
+
+## 分支说明
+
+### main 分支（ESP32-C5）
+- 使用 UART 接口读取飞控数据
+- 适用于 ESP32-C5-DevKitC-1
+- 需要连接飞控 TELEM1 TX → GPIO4
+
+### feature/esp32s3-usb-host 分支（当前）
+- 使用 USB Host CDC-ACM 接口读取飞控数据
+- 适用于 ESP32-S3-DevKitC-1
+- 直接连接飞控 USB 口，即插即用
+- 优势：无需查找 TX 引脚，接线简单
+
+**切换分支**：
+```bash
+# 切换到 ESP32-C5 版本
+git checkout main
+
+# 切换到 ESP32-S3 版本
+git checkout feature/esp32s3-usb-host
+```
+
+## 相关文档
+
+- [ESP32-S3 迁移指南](doc/esp32s3_migration.md) - 从 ESP32-C5 迁移到 ESP32-S3
+- [USB 即插即用指南](doc/usb_plug_and_play.md) - USB Host 配置与使用
+- [硬件连接指南](doc/hardware_connection_guide.md) - 硬件接线详解
+- [供电指南](doc/power_supply_guide.md) - ESP32 供电方案
