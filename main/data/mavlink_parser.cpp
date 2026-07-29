@@ -4,7 +4,9 @@
 #include <math.h>
 #include "esp_log.h"
 
-[[maybe_unused]] static const char* TAG = "MAVLINK";
+#if CONFIG_RID_VERBOSE_LOG
+static const char* TAG = "MAVLINK";
+#endif
 
 // ================= MAVLink CRC-16/MCRF4XX =================
 
@@ -187,6 +189,8 @@ void mavlink_init(MavlinkParser& p) {
     memset(&p, 0, sizeof(p));
     p.state = PARSE_STATE_IDLE;
     p.heading = NAN;
+    p.consecutiveCrcErrors = 0;
+    p.lastValidFrameMs = 0;
 }
 
 bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
@@ -258,11 +262,14 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     p.totalFrames++;
                     if (p.isV2) p.totalV2Frames++;
                     else p.totalV1Frames++;
+                    p.consecutiveCrcErrors = 0;
+                    p.lastValidFrameMs = nowMs;
                     handle_frame(p, nowMs);
                     p.state = PARSE_STATE_IDLE;
                     return true;
                 } else {
                     p.crcErrors++;
+                    p.consecutiveCrcErrors++;
                     #if CONFIG_RID_VERBOSE_LOG
                     ESP_LOGW(TAG, "CRC fail: %s msgid=%d recv=0x%04X calc=0x%04X",
                              p.isV2 ? "v2" : "v1", msgid, crcReceived, crcCalc);
@@ -364,4 +371,11 @@ void mavlink_getStatus(const MavlinkParser& p, char* buf, uint16_t bufLen) {
              p.armed, p.systemStatus,
              p.gpsFixType, p.gpsSats,
              p.lat, p.lon, p.altMsl);
+}
+
+bool mavlink_needsRecovery(const MavlinkParser& p, uint64_t nowMs, uint32_t errorLimit) {
+    // 从未收到过有效帧 → 设备可能尚未连接，不触发恢复
+    if (p.lastValidFrameMs == 0) return false;
+    // 连续 CRC 失败超过阈值 → 数据流已损坏，需要恢复
+    return p.consecutiveCrcErrors >= errorLimit;
 }

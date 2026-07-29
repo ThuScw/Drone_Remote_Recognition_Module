@@ -2,10 +2,6 @@
 
 无人机远程识别（Remote ID）广播模块，运行在 ESP32-S3 上，通过 BLE5 Extended Advertising 广播 GB 46750-2025 标准飞行数据。
 
-> **注意**: 本项目有两个主要分支：
-> - `main` 分支：ESP32-C5 版本（UART 接口）
-> - `feature/esp32s3-usb-host` 分支：ESP32-S3 版本（USB Host 接口）← **当前分支**
-
 ## 适用标准
 
 | 标准 | 内容 |
@@ -18,8 +14,8 @@
 
 ```
 main/
-├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、USB Host配置）
-├── main.cpp                        # 精简编排器（~80行）：init + loop
+├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、USB Host）
+├── main.cpp                        # 精简编排器（~100行）：init + loop
 │
 ├── broadcast/
 │   └── broadcast_manager.h/cpp     # 广播编排器：数据验证、包构建、状态机、BLE自修复、
@@ -34,8 +30,8 @@ main/
 │
 ├── data/
 │   ├── flight_data.h               # 数据源接口：void getFlightData(FlightData&, uint64_t)
-│   ├── flight_data.cpp             # USB Host CDC-ACM 飞控数据读取实现
-│   └── mavlink_parser.h/cpp        # MAVLink v2 解析器（帧解析、消息解码）
+│   ├── flight_data.cpp             # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
+│   └── mavlink_parser.h/cpp        # MAVLink v1/v2 解析器（帧解析、消息解码、CRC校验）
 │
 ├── indicators/
 │   └── indicators.h/cpp            # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
@@ -60,11 +56,12 @@ main/
 
 ### 关键设计决策
 
-- **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包，Message Counter 每包自增
+- **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包
 - **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
 - **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
 - **地面↔空中状态机**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞
-- **USB Host 即插即用**：自动检测飞控 USB 设备，支持热插拔，无需手动配置 VID/PID
+- **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
+- **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYS_STATUS 七种消息，满足 GB 46750 全部 21 字段需求
 
 ### 广播策略
 
@@ -111,7 +108,7 @@ main/
 ### 编译 & 烧录
 
 ```bash
-# 1. 清理旧的构建缓存（重要！）
+# 1. 清理旧的构建缓存
 rm -rf build
 
 # 2. 设置目标芯片
@@ -144,12 +141,7 @@ idf.py -p <COM口> flash monitor
 ### USB Host 飞控数据接口
 
 ```c
-// 即插即用模式（推荐）
-#define FC_USB_VID          0       // 0 = 自动检测任意 USB 串口设备
-#define FC_USB_PID          0       // 0 = 自动检测
-
-// 指定设备模式（量产用）
-// 用户飞控 VID/PID: 0x1B8C / 0x0036
+// 指定设备模式
 #define FC_USB_VID          0x1B8C  // 飞控 VID
 #define FC_USB_PID          0x0036  // 飞控 PID
 
@@ -204,6 +196,13 @@ idf.py -p <COM口> flash monitor
 #define CONFIG_RID_VERBOSE_LOG 0  // 1=详细日志(hex dump等), 0=精简日志（量产固件推荐 0）
 ```
 
+### CRC 风暴恢复
+
+```c
+#define MAVLINK_CONSECUTIVE_CRC_LIMIT 200   // 连续 CRC 失败阈值（≈1s无有效帧，触发 USB 恢复）
+#define USB_RECOVERY_COOLDOWN_MS 5000       // USB 恢复冷却时间（防止反复重连）
+```
+
 ## 开发指南
 
 ### 接入飞控（USB Host 模式）
@@ -212,25 +211,7 @@ idf.py -p <COM口> flash monitor
 
 **接线**: 飞控 USB 口 → ESP32-S3 "USB" 口（GPIO19/20）
 
-**配置**: 
-- 即插即用模式：`FC_USB_VID = 0, FC_USB_PID = 0`（自动检测）
-- 指定设备模式：填入飞控的 VID/PID
-
 **详细操作**: 见 [`doc/esp32s3_migration.md`](doc/esp32s3_migration.md) 和 [`doc/usb_plug_and_play.md`](doc/usb_plug_and_play.md)
-
-### 数据流
-
-```
-飞控 USB ──→ USB Host (CDC-ACM) ──→ mavlink_parseByte() ──→ FlightData
-                                                                    │
-                                                                    ▼
-                                                          RIDBroadcastManager::update()
-                                                                    │
-                                                          ┌─────────┼──────────┐
-                                                          ▼         ▼          ▼
-                                                   validateData  buildPacket  handleBroadcast
-                                                    (范围检查)   (M=0,O=条件)  (永不跳过)
-```
 
 ### 验证方法
 
@@ -238,7 +219,7 @@ idf.py -p <COM口> flash monitor
 
 - 设备名：`ESP32S3_RID`
 - Service UUID：`0x0D50`（ASTM F3411 RID Service）
-- Service Data 中为 GB 46750-2025 编码的 77 字节数据包
+- Service Data 中为 GB 46750-2025 编码的数据包
 
 串口监控输出示例：
 
@@ -247,13 +228,8 @@ I (1234) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
 I (1235) SYS: USB Host CDC-ACM | BLE5 Extended Advertising
 I (2345) FLIGHT_DATA: USB Host initialized. Waiting for flight controller...
 I (3456) FLIGHT_DATA: ✓ USB device opened (VID=0x1B8C, PID=0x0036)
-I (4567) MAVLINK: frames=1 crc_err=0 armed=0 status=3 fix=3 sats=12
-
-I (7800) BCAST: Broadcast START (status=2)
-I (7800) BCAST: TX #1 (77 bytes):
-ff 01 47 e7 07 00 31 ...
-I (8600) BCAST: TX #2 (77 bytes):
-ff 01 47 e7 07 00 32 ...
+I (4567) FLIGHT_DATA: frames=10049(v1=10049,v2=0) crc_err=11317 armed=0 fix=152 sats=14 ...
+I (5678) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
 ```
 
 ### 自检与告警
@@ -267,6 +243,7 @@ ff 01 47 e7 07 00 32 ...
 | 主循环卡死 | 无输出 | 看门狗 5s 后复位 |
 | BLE 控制器复位 | `NimBLE controller reset` | `triggerSelfHeal()` 三级递进恢复 |
 | USB 设备断开 | `USB device disconnected` | 自动重连（每 2 秒重试） |
+| CRC 风暴 | `CRC storm detected` | 关闭 USB 设备 → 重置解析器 → 重连（5s 冷却） |
 | 堆内存不足 | `LOW HEAP WARNING` | 每 60s 监控，< 10KB 输出告警 |
 | 飞行日志栈溢出 | `stack watermark LOW` | < 512 bytes 输出告警 |
 
@@ -274,7 +251,8 @@ ff 01 47 e7 07 00 32 ...
 
 - [x] 接入真实飞控 USB Host 数据源
 - [x] 确认飞控 VID/PID（0x1B8C / 0x0036）
-- [x] 确认飞控输出的运行状态映射关系
+- [x] MAVLink v1/v2 双协议解析（CRC 校验 + 消息解码）
+- [x] CRC 风暴检测与 USB 自恢复
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
@@ -288,10 +266,9 @@ ff 01 47 e7 07 00 32 ...
 - [ ] 启用 Flash 加密 (`CONFIG_SECURE_FLASH_ENCRYPTION_MODE_RELEASE`)
 - [ ] 禁用 JTAG via eFuse (`DIS_USB_JTAG`)
 - [ ] 启用 Secure Boot V2 并配置签名密钥
-- [ ] 将 GPIO6 联锁引脚替换为非 JTAG GPIO，避免调试接口冲突
 - [ ] 设计加密 OTA 更新机制
 
-## 量产安全配置
+## 安全配置
 
 ### Secure Boot V2
 
@@ -329,31 +306,7 @@ idf.py build
 
 量产固件应在 `config.h` 中设置 `CONFIG_RID_VERBOSE_LOG 0`, 关闭 hex dump 和 TX 详细日志以减少 UART 功耗。
 
-## 分支说明
-
-### main 分支（ESP32-C5）
-- 使用 UART 接口读取飞控数据
-- 适用于 ESP32-C5-DevKitC-1
-- 需要连接飞控 TELEM1 TX → GPIO4
-
-### feature/esp32s3-usb-host 分支（当前）
-- 使用 USB Host CDC-ACM 接口读取飞控数据
-- 适用于 ESP32-S3-DevKitC-1
-- 直接连接飞控 USB 口，即插即用
-- 优势：无需查找 TX 引脚，接线简单
-
-**切换分支**：
-```bash
-# 切换到 ESP32-C5 版本
-git checkout main
-
-# 切换到 ESP32-S3 版本
-git checkout feature/esp32s3-usb-host
-```
-
 ## 相关文档
 
-- [ESP32-S3 迁移指南](doc/esp32s3_migration.md) - 从 ESP32-C5 迁移到 ESP32-S3
-- [USB 即插即用指南](doc/usb_plug_and_play.md) - USB Host 配置与使用
-- [硬件连接指南](doc/hardware_connection_guide.md) - 硬件接线详解
-- [供电指南](doc/power_supply_guide.md) - ESP32 供电方案
+- [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
+- [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用

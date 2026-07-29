@@ -2,7 +2,6 @@
 #include "mavlink_parser.h"
 #include "config.h"
 #include <inttypes.h>
-#include <math.h>
 #include "esp_timer.h"
 #include "esp_log.h"
 
@@ -22,6 +21,10 @@ static cdc_acm_dev_hdl_t s_cdc_dev = nullptr;
 // USB 设备连接状态
 static volatile bool s_deviceConnected = false;
 static volatile bool s_deviceReady = false;
+
+// USB 恢复状态
+static uint32_t s_recoveryCount = 0;
+static uint64_t s_lastRecoveryMs = 0;
 
 // ================= USB Host 回调函数 =================
 
@@ -56,10 +59,11 @@ static void usb_event_callback(const cdc_acm_host_dev_event_data_t* event, void*
 
         case CDC_ACM_HOST_DEVICE_DISCONNECTED:
             ESP_LOGW(TAG, "USB device disconnected");
+            s_cdc_dev = nullptr;
             cdc_acm_host_close(event->data.cdc_hdl);
+            mavlink_init(s_parser);
             s_deviceConnected = false;
             s_deviceReady = false;
-            s_cdc_dev = nullptr;
             break;
 
         case CDC_ACM_HOST_SERIAL_STATE:
@@ -142,7 +146,7 @@ static esp_err_t try_open_usb_device() {
     dev_config.data_cb = usb_data_callback;
 
     #if FC_USB_VID != 0
-    // 模式 1: 指定 VID/PID
+    // 指定 VID/PID 模式
     ESP_LOGI(TAG, "Trying to open USB device (VID=0x%04X, PID=0x%04X)",
              FC_USB_VID, FC_USB_PID);
 
@@ -156,6 +160,7 @@ static esp_err_t try_open_usb_device() {
         // 置位 DTR 告知飞控 Host 已就绪，飞控才会开始输出 MAVLink 数据
         cdc_acm_host_set_control_line_state(s_cdc_dev, true, false);
         ESP_LOGI(TAG, "DTR asserted — waiting for MAVLink data...");
+        s_parser.consecutiveCrcErrors = 0;  // 新连接，重置错误计数
         s_deviceConnected = true;
         s_deviceReady = true;
         return ESP_OK;
@@ -166,12 +171,6 @@ static esp_err_t try_open_usb_device() {
         ESP_LOGE(TAG, "Failed to open USB device: %s", esp_err_to_name(ret));
         return ret;
     }
-
-    #else
-    // 模式 2: 自动检测任意 CDC-ACM 设备 (即插即用)
-    // 注意: 自动检测模式需要 USB Host client API，与指定 VID/PID 模式不同。
-    // 当前请使用指定 VID/PID 模式 (在 config.h 中设置 FC_USB_VID)。
-    #error "Auto-detect mode (FC_USB_VID=0) requires USB Host client API. Specify your FC VID/PID in config.h."
     #endif
 }
 
@@ -225,6 +224,46 @@ static void init_usb_host() {
     ESP_LOGI(TAG, "USB Host initialized. Waiting for flight controller connection...");
 }
 
+// ================= USB 恢复 =================
+
+// 当解析器检测到连续 CRC 失败超阈值时调用
+// 关闭 USB 设备并重置解析器，触发重连流程
+static bool try_usb_recovery(uint64_t nowMs) {
+    // 冷却检查 — 防止反复重连
+    if (nowMs - s_lastRecoveryMs < USB_RECOVERY_COOLDOWN_MS) {
+        return false;
+    }
+    s_lastRecoveryMs = nowMs;
+    s_recoveryCount++;
+
+    ESP_LOGW(TAG, "USB recovery #%lu triggered — %lu consecutive CRC errors",
+             (unsigned long)s_recoveryCount,
+             (unsigned long)s_parser.consecutiveCrcErrors);
+
+    // 1. 关闭 CDC-ACM 设备 — 先置空句柄再关闭，防止与断开回调产生双重关闭
+    cdc_acm_dev_hdl_t dev_to_close = s_cdc_dev;
+    s_cdc_dev = nullptr;
+    if (dev_to_close != nullptr) {
+        esp_err_t ret = cdc_acm_host_close(dev_to_close);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "✓ CDC-ACM device closed for recovery");
+        } else {
+            ESP_LOGW(TAG, "CDC-ACM close returned: %s", esp_err_to_name(ret));
+        }
+    }
+
+    // 2. 重置 MAVLink 解析器
+    mavlink_init(s_parser);
+    ESP_LOGI(TAG, "✓ MAVLink parser reset");
+
+    // 3. 标记设备未就绪，触发重连
+    s_deviceConnected = false;
+    s_deviceReady = false;
+
+    ESP_LOGI(TAG, "Recovery complete — will attempt reconnect on next cycle");
+    return true;
+}
+
 // ================= 公共接口 =================
 
 void getFlightData(FlightData& fd, uint64_t nowMs) {
@@ -241,6 +280,12 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
             lastRetryMs = nowMs;
             try_open_usb_device();
         }
+    }
+
+    // 检查是否需要 USB 恢复 (连续 CRC 失败)
+    if (s_deviceReady && mavlink_needsRecovery(s_parser, nowMs, MAVLINK_CONSECUTIVE_CRC_LIMIT)) {
+        ESP_LOGW(TAG, "CRC storm detected — triggering USB recovery");
+        try_usb_recovery(nowMs);
     }
 
     // 检查是否有新数据
@@ -299,6 +344,9 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
         // 输出 MAVLink 解析状态
         char statusBuf[200];
         mavlink_getStatus(s_parser, statusBuf, sizeof(statusBuf));
-        ESP_LOGI(TAG, "%s", statusBuf);
+        ESP_LOGI(TAG, "%s crc_storm=%lu recovery=%lu",
+                 statusBuf,
+                 (unsigned long)s_parser.consecutiveCrcErrors,
+                 (unsigned long)s_recoveryCount);
     }
 }

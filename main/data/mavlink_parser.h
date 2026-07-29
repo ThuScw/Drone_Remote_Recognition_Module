@@ -50,6 +50,8 @@ struct MavlinkParser {
     uint32_t totalV2Frames;
     uint32_t crcErrors;
     uint32_t parseErrors;
+    uint32_t consecutiveCrcErrors;  // 连续 CRC 失败计数，成功帧归零
+    uint64_t lastValidFrameMs;      // 最后一次成功解析帧的时间戳
 
     // 最新消息时间戳 (ms)
     uint64_t lastHeartbeatMs;
@@ -104,5 +106,9 @@ void mavlink_getStatus(const MavlinkParser& parser, char* buf, uint16_t bufLen);
 
 // 检查数据是否超时
 bool mavlink_isDataStale(const MavlinkParser& parser, uint64_t nowMs, uint64_t timeoutMs);
+
+// 检查是否需要触发 USB 恢复 (连续 CRC 失败超阈值)
+// 返回 true 表示数据流可能已损坏，应关闭并重新打开 USB 设备
+bool mavlink_needsRecovery(const MavlinkParser& parser, uint64_t nowMs, uint32_t errorLimit);
 
 #endif // MAVLINK_PARSER_H

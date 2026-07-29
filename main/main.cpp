@@ -8,7 +8,7 @@
 //   broadcast/         — all safety/broadcast logic (RIDBroadcastManager)
 //   protocol/          — GB 46750-2025 packet encoding
 //   broadcaster/       — BLE transport (NimBLE)
-//   data/              — flight data source (mock or flight controller)
+//   data/              — flight data source (USB Host CDC-ACM → MAVLink)
 //   indicators/        — LED + flight controller interlock
 //   logging/           — persistent flight data recorder
 

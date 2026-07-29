@@ -119,7 +119,7 @@ struct FlightData {
 // --- API ---
 
 // 构建 GB 46750-2025 完整数据包
-// timestampMs: Unix 毫秒时间戳 (Stage 1 使用 esp_timer_get_time()/1000, Stage 2 GPS RMC)
+// timestampMs: Unix 毫秒时间戳
 void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
                           const char* uasId, const char* realNameId,
                           uint8_t opCategory, uint8_t uaClass,
