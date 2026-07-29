@@ -17,6 +17,10 @@ dependencies.lock
 \#*\#
 .dir-locals.el
 
+# ===== Project Config & Logs =====
+.claude/
+log/
+
 # ===== OS Files =====
 .DS_Store
 Thumbs.db
