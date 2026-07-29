@@ -95,19 +95,19 @@
 // 量产固件应设为 0
 #define CONFIG_RID_VERBOSE_LOG 0
 
-// ================= GPIO 引脚分配 =================
+// ================= GPIO 引脚分配 (ESP32-S3) =================
 
 // 飞控联锁引脚 (GB 46750-2025, 5.1.7a)
 // 自检通过 → 拉高（飞控允许起飞），异常 → 拉低（飞控禁止起飞/执行处置）
 // 飞控端需将此引脚配置为输入，低电平时拒绝解锁
-// GPIO6 = MTMS (JTAG)，量产固件中 JTAG 已禁用，可安全使用
+// ESP32-S3: GPIO6 可用，无特殊功能冲突
 #define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6
 #define INTERLOCK_ACTIVE_LEVEL 1  // 1=高电平有效, 0=低电平有效
 
 // 状态指示灯 (GB 46750-2025, 5.1.5)
-// ESP32-C5-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO27，通过 RMT 外设驱动
+// ESP32-S3-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO48，通过 RMT 外设驱动
 // 绿色慢闪=待机, 蓝色快闪=广播中, 红色常亮=故障
-#define STATUS_LED_GPIO        GPIO_NUM_27
+#define STATUS_LED_GPIO        GPIO_NUM_48
 #define STATUS_LED_NUM_LEDS    1
 
 // ================= 飞行数据存储配置 (GB 46750-2025, 5.1.8) =================
@@ -127,30 +127,44 @@
 #define FLIGHT_LOG_QUEUE_DEPTH      16     // 队列深度 (160s 缓冲 @ 10s 间隔)
 #define FLIGHT_LOG_WRITE_TIMEOUT_MS 100    // 队列满时等待超时 (ms)
 
-// ================= UART 飞控数据接口 (Stage 2) =================
+// ================= USB Host 飞控数据接口 (ESP32-S3) =================
 
-// UART 端口选择
-// UART0: 通常用于 USB 串口调试 (USB-C 口)
-// UART1: 可用 GPIO, 用于连接飞控 TELEM1 端口
-// 注意: UART_NUM_1 等常量来自 driver/uart.h, 在 cpp 文件中使用
-#define FC_UART_PORT_NUM      1   // UART1
+// USB Host CDC-ACM 配置
+// 通过 USB OTG 口 (GPIO19/20) 读取飞控 MAVLink 数据
+// 注意: ESP32-S3 的 USB OTG 引脚是固定的 GPIO19 (D-) 和 GPIO20 (D+)
 
-// UART1 引脚分配 (ESP32-C5)
-// 注意: GPIO4 是推荐的 UART1_RX 引脚, 无特殊功能冲突
-// 飞控 TELEM1 TX → ESP32-C5 GPIO4 (UART1_RX)
-// 飞控 TELEM1 GND → ESP32-C5 GND
-// 只需接收, 不发送, 所以 TX 引脚不需要配置
-#define FC_UART_RX_GPIO     GPIO_NUM_4
-#define FC_UART_TX_GPIO     -1    // 不使用, 飞控→RID 单向通信 (在代码中转换为 UART_PIN_NO_CHANGE)
+// ============ 即插即用模式 (推荐) ============
+// 设置为 0 表示自动检测任意 USB 串口设备，无需知道 VID/PID
+// 插上飞控即可工作，适用于大多数场景
+//
+// ============ 指定设备模式 ============
+// 如果需要连接特定设备，设置 VID 和 PID (十六进制)
+// 例如 Pixhawk: VID=0x1209, PID=0x5740
+// 例如 DJI 飞控: 需要通过 USB 抓包工具确认
+//
+// 常见飞控 VID/PID 参考:
+//   - Pixhawk/Cube (ArduPilot): 0x1209 / 0x5740
+//   - PX4: 0x26AC / 0x0011
+//   - Betaflight: 0x0483 / 0x5740
+//   - 通用 CDC-ACM: 0x303A / 0x4001
+//   - CH340 芯片: 0x1A86 / 0x7523
+//   - CP2102 芯片: 0x10C4 / 0xEA60
 
-// UART 参数
-// ArduPilot 默认 TELEM1 波特率为 57600, 但用户环境使用 115200
-// 根据实际飞控配置调整
-#define FC_UART_BAUD_RATE   115200
+// 用户无人机飞控的 VID/PID (已确认所有同型号无人机一致)
+// VID = 0x1B8C, PID = 0x0036
+// 通过设备管理器硬件 ID 确认: USB\VID_1B8C&PID_0036&REV_0101
+#define FC_USB_VID          0x1B8C
+#define FC_USB_PID          0x0036
 
-// UART 接收缓冲区
-#define FC_UART_RX_BUF_SIZE 1024   // 接收缓冲区 (bytes)
-#define FC_UART_TX_BUF_SIZE 0      // 不发送, 设为 0
+// USB CDC-ACM 参数 (需与飞控 USB 配置一致)
+#define FC_USB_BAUD_RATE    115200
+#define FC_USB_DATA_BITS    8
+#define FC_USB_PARITY       0   // 0=None, 1=Odd, 2=Even
+#define FC_USB_STOP_BITS    1
+
+// USB Host 任务配置
+#define USB_HOST_TASK_STACK     4096
+#define USB_HOST_TASK_PRIO      10  // 较高优先级, 确保及时处理 USB 事件
 
 // MAVLink 解析配置
 #define MAVLINK_MAX_PAYLOAD_LEN  255   // MAVLink v2 最大 payload
