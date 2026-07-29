@@ -74,6 +74,8 @@ extern "C" void app_main(void) {
     if (!interlock.init()) {
         ESP_LOGW(TAG, "Interlock init failed — continuing without FC interlock");
     }
+    interlock.setSendCallback(flightData_sendArmDisarm);
+
     if (!flightLog.init()) {
         ESP_LOGW(TAG, "Flight log init failed — continuing without persistent storage");
     }

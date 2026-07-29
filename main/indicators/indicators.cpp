@@ -1,39 +1,33 @@
 #include "indicators.h"
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <driver/gpio.h>
 
 static const char* TAG = "IND";
 
 // ======================== RIDInterlock ========================
 
-bool RIDInterlock::init() {
-    gpio_config_t cfg = {};
-    cfg.pin_bit_mask = 1ULL << INTERLOCK_RID_OK_GPIO;
-    cfg.mode         = GPIO_MODE_OUTPUT;
-    cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
-    cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
-    cfg.intr_type    = GPIO_INTR_DISABLE;
-    esp_err_t rc = gpio_config(&cfg);
-    if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "Interlock GPIO config failed: %d", rc);
-        return false;
-    }
-    disarm();
-    ESP_LOGI(TAG, "Interlock GPIO%d init OK (default: DISARMED)", INTERLOCK_RID_OK_GPIO);
-    return true;
-}
-
 void RIDInterlock::arm() {
     _armed = true;
-    gpio_set_level(INTERLOCK_RID_OK_GPIO, INTERLOCK_ACTIVE_LEVEL ? 1 : 0);
-    ESP_LOGI(TAG, "Interlock: ARMED — flight controller may take off");
+
+    if (_sendCb) {
+        if (_sendCb(true)) {
+            ESP_LOGI(TAG, "Interlock: ARMED — MAVLink ARM sent to FC");
+        } else {
+            ESP_LOGW(TAG, "Interlock: MAVLink ARM send failed (USB not ready?)");
+        }
+    }
 }
 
 void RIDInterlock::disarm() {
     _armed = false;
-    gpio_set_level(INTERLOCK_RID_OK_GPIO, INTERLOCK_ACTIVE_LEVEL ? 0 : 1);
-    ESP_LOGW(TAG, "Interlock: DISARMED — flight controller should prevent takeoff");
+
+    if (_sendCb) {
+        if (_sendCb(false)) {
+            ESP_LOGI(TAG, "Interlock: DISARMED — MAVLink DISARM sent to FC");
+        } else {
+            ESP_LOGW(TAG, "Interlock: MAVLink DISARM send failed (USB not ready?)");
+        }
+    }
 }
 
 // ======================== StatusLed (WS2812B via RMT) ========================

@@ -7,6 +7,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <esp_log.h>
+#include <esp_bt.h>
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs_id.h"
@@ -94,6 +95,17 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
     }
 
     _ownAddrType = s_ownAddrType;
+
+    // Set BLE TX power to maximum for GB 46750-2025 compliance
+    // 6.1.3: 轻型无人机 EIRP ≥ 4 dBm (360°) or ≥ 6 dBm (avg)
+    // ESP32-S3 max TX power +9 dBm + antenna gain ≈ 11 dBm EIRP → compliant
+    esp_err_t txRet = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, BLE_TX_POWER_LEVEL);
+    if (txRet == ESP_OK) {
+        ESP_LOGI(TAG, "BLE advertising TX power set OK");
+    } else {
+        ESP_LOGW(TAG, "BLE TX power set failed (rc=%d) — continuing with default", txRet);
+    }
+
     _initialized = true;
     ESP_LOGI(TAG, "Initialized — BLE5 Extended Advertising ready");
     return true;
@@ -108,7 +120,26 @@ bool BleRidBroadcaster::selfTest() {
         ESP_LOGE(TAG, "Self-test FAIL: NimBLE host not synced");
         return false;
     }
-    ESP_LOGI(TAG, "Self-test PASS — NimBLE + EXT_ADV ready");
+
+    // Build a minimal valid test packet — all fields encoded as unknown (0)
+    FlightData testFd;
+    memset(&testFd, 0, sizeof(testFd));
+    testFd.validMask = FLD_ALL;
+    testFd.freshness = FRESH_OK;
+
+    GB46750Packet testPkt;
+    gb46750_buildPacket(testPkt, testFd, UAS_ID, REALNAME_ID,
+                        OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
+                        HORIZ_ACC, VERT_ACC, SPEED_ACC, TS_ACC, 0);
+
+    // Functional test: actually start BLE extended advertising
+    if (!startBroadcast(testPkt)) {
+        ESP_LOGE(TAG, "Self-test FAIL: BLE advertising start failed");
+        return false;
+    }
+
+    stopBroadcast();
+    ESP_LOGI(TAG, "Self-test PASS — BLE extended advertising functional");
     return true;
 }
 

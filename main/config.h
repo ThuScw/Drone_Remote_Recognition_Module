@@ -50,6 +50,13 @@
 // 根据 GB 46750 5.1.3, 每秒至少发送 1 次, 间隔 ≤ 1000ms
 #define BLE_ADV_INTERVAL_MS 100
 
+// BLE 发射功率 (ESP32-S3)
+// GB 46750-2025 6.1.3: 轻型无人机 EIRP ≥ 4 dBm (360°) 或 ≥ 6 dBm (平均)
+// ESP32-S3 最大 +9 dBm (ESP_PWR_LVL_P9), 加 PCB 天线 ~2 dBi → EIRP ≈ 11 dBm
+// 可选用: ESP_PWR_LVL_P3(+3), ESP_PWR_LVL_P6(+6), ESP_PWR_LVL_P9(+9)
+#include <esp_bt.h>
+#define BLE_TX_POWER_LEVEL ESP_PWR_LVL_P9
+
 // 数据更新间隔 (毫秒) — 飞行数据刷新频率
 // 独立于广播间隔，避免广播分片被打断
 #define DATA_UPDATE_INTERVAL_MS 1000
@@ -78,13 +85,6 @@
 #define CONFIG_RID_VERBOSE_LOG 0
 
 // ================= GPIO 引脚分配 (ESP32-S3) =================
-
-// 飞控联锁引脚 (GB 46750-2025, 5.1.7a)
-// 自检通过 → 拉高（飞控允许起飞），异常 → 拉低（飞控禁止起飞/执行处置）
-// 飞控端需将此引脚配置为输入，低电平时拒绝解锁
-// ESP32-S3: GPIO6 可用，无特殊功能冲突
-#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6
-#define INTERLOCK_ACTIVE_LEVEL 1  // 1=高电平有效, 0=低电平有效
 
 // 状态指示灯 (GB 46750-2025, 5.1.5)
 // ESP32-S3-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO48，通过 RMT 外设驱动

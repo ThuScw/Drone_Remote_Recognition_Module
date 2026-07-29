@@ -1,5 +1,6 @@
 #include "flight_data.h"
 #include "mavlink_parser.h"
+#include "mavlink_tx.h"
 #include "config.h"
 #include <inttypes.h>
 #include "esp_timer.h"
@@ -349,4 +350,33 @@ void getFlightData(FlightData& fd, uint64_t nowMs) {
                  (unsigned long)s_parser.consecutiveCrcErrors,
                  (unsigned long)s_recoveryCount);
     }
+}
+
+// ================= 向飞控发送数据 =================
+
+bool flightData_sendToFC(const uint8_t* data, size_t len) {
+    if (!data || len == 0) return false;
+    if (!s_cdc_dev || !s_deviceReady) {
+        ESP_LOGE(TAG, "TX: CDC device not ready");
+        return false;
+    }
+
+    esp_err_t ret = cdc_acm_host_data_tx_blocking(s_cdc_dev, data, len, 100);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "TX to FC failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    ESP_LOGI(TAG, "TX: %u bytes sent to FC", (unsigned)len);
+    return true;
+}
+
+bool flightData_sendArmDisarm(bool arm) {
+    uint8_t frame[64];
+    uint16_t frameLen = mavlink_build_arm_disarm(frame, sizeof(frame), 255, 190, arm, false);
+    if (frameLen == 0) {
+        ESP_LOGE(TAG, "Failed to build arm/disarm frame");
+        return false;
+    }
+    ESP_LOGI(TAG, "Sending MAVLink %s command to FC", arm ? "ARM" : "DISARM");
+    return flightData_sendToFC(frame, frameLen);
 }
