@@ -1,6 +1,7 @@
 #ifndef FLIGHT_DATA_H
 #define FLIGHT_DATA_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "rid_messages.h"
