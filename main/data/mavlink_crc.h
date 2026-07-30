@@ -19,4 +19,7 @@ inline uint16_t mavlink_crc_calculate(const uint8_t* buf, uint16_t len) {
     return crc;
 }
 
+// CRC extra byte per MAVLink message type (MAVLink 1.0/2.0 spec)
+uint8_t mavlink_crc_extra(uint16_t msgid);
+
 #endif

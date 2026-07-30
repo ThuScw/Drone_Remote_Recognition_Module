@@ -9,30 +9,14 @@
 static const char* TAG = "MAVLINK";
 #endif
 
-// CRC extra byte per message type (MAVLink 1.0/2.0)
-static uint8_t get_crc_extra(uint16_t msgid) {
-    switch (msgid) {
-        case 0:   return 50;   // HEARTBEAT
-        case 1:   return 124;  // SYS_STATUS
-        case 11:  return 89;   // SET_MODE
-        case 24:  return 24;   // GPS_RAW_INT
-        case 30:  return 39;   // ATTITUDE
-        case 33:  return 104;  // GLOBAL_POSITION_INT
-        case 36:  return 220;  // SERVO_OUTPUT_RAW
-        case 74:  return 20;   // VFR_HUD
-        case 105: return 202;  // HOME_POSITION (verified)
-        case 253: return 83;   // STATUSTEXT
-        default:  return 0;    // 未知消息类型, CRC 检查将失败
-    }
-}
-
 // ================= 消息解码 =================
 
-static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
+static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // HEARTBEAT: custom_mode(4) + type(1) + autopilot(1) + base_mode(1) + system_status(1) + mavlink_version(1) = 9 bytes
     // base_mode bit 7: armed flag
     p.armed = (payload[6] & 0x80) != 0;
     p.systemStatus = payload[7];
+    p.lastHeartbeatMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
     ESP_LOGI(TAG, "HEARTBEAT: type=%d armed=%d status=%d",
@@ -41,19 +25,20 @@ static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
 }
 
 static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
-    // GPS_RAW_INT: time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4) + eph(2) + epv(2) + vel(2) + cog(2) + sats(1) = 30 bytes
+    // This FC's GPS_RAW_INT uses a non-standard dialect: fix_type is at offset 28 (after cog),
+    // not at offset 8 (before lat) as in common.xml. All other fields shift left by 1.
+    // Layout: time_usec(8)+lat(4)+lon(4)+alt(4)+eph(2)+epv(2)+vel(2)+cog(2)+fix_type(1)+sats(1)
     // 注意: 仅更新 GPS 状态字段，不覆写 GLOBAL_POSITION_INT 的位置数据
-    // 原因: 此飞控的 GPS_RAW_INT 位置数据不可靠 (非标准 fix type 值)，应使用 EKF 融合后的 GLOBAL_POSITION_INT
-    p.gpsFixType = payload[8];
-    p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
-    p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
+    p.gpsFixType = payload[28];
+    p.gpsEph = (uint16_t)(payload[20] | (payload[21] << 8)) / 100.0f;
+    p.gpsEpv = (uint16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
     p.gpsSats = payload[29];
 
     p.lastGpsMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
-    float lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
-    float lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
+    float lat = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
+    float lon = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1e7f;
     ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f sats=%d eph=%.1f (raw only, pos from GLOBAL_POSITION_INT)",
              p.gpsFixType, lat, lon, p.gpsSats, p.gpsEph);
     #endif
@@ -64,15 +49,17 @@ static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
     // 暂不存储, 可用于诊断
 
     #if CONFIG_RID_VERBOSE_LOG
-    float roll = *(const float*)(payload + 4) * 180.0f / M_PI;
-    float pitch = *(const float*)(payload + 8) * 180.0f / M_PI;
-    float yaw = *(const float*)(payload + 12) * 180.0f / M_PI;
+    float roll, pitch, yaw;
+    memcpy(&roll,  payload + 4,  4); roll  *= 180.0f / M_PI;
+    memcpy(&pitch, payload + 8,  4); pitch *= 180.0f / M_PI;
+    memcpy(&yaw,   payload + 12, 4); yaw   *= 180.0f / M_PI;
     ESP_LOGI(TAG, "ATTITUDE: roll=%.1f pitch=%.1f yaw=%.1f deg", roll, pitch, yaw);
     #endif
 }
 
 static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // GLOBAL_POSITION_INT: time_boot_ms(4) + lat(4) + lon(4) + alt(4) + relative_alt(4) + vx(2) + vy(2) + vz(2) + hdg(2) = 28 bytes
+    // Some FC frames are 26-27 bytes (truncated hdg), handled by payloadLen check below
     p.lat = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
     p.lon = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
     p.altMsl = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1000.0f;
@@ -81,11 +68,17 @@ static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload,
     p.velE = (int16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
     p.velD = (int16_t)(payload[24] | (payload[25] << 8)) / 100.0f;
 
-    uint16_t hdg_raw = payload[26] | (payload[27] << 8);
-    if (hdg_raw != 65535) {
-        p.heading = hdg_raw / 100.0f;
+    if (p.payloadLen >= 28) {
+        uint16_t hdg_raw = payload[26] | (payload[27] << 8);
+        if (hdg_raw != 65535) {
+            p.heading = hdg_raw / 100.0f;
+        } else {
+            p.heading = NAN;
+        }
+    } else if (p.payloadLen == 27) {
+        p.heading = payload[26] / 100.0f;  // single-byte hdg (hi byte=0)
     } else {
-        p.heading = NAN;  // 航向未知
+        p.heading = NAN;  // no hdg data
     }
 
     p.lastPositionMs = nowMs;
@@ -141,7 +134,7 @@ static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
 
     switch (msgid) {
         case MAVLINK_MSG_HEARTBEAT:
-            if (p.payloadLen >= 9) decode_heartbeat(p, payload);
+            if (p.payloadLen >= 9) decode_heartbeat(p, payload, nowMs);
             break;
         case MAVLINK_MSG_GPS_RAW_INT:
             if (p.payloadLen >= 30) decode_gps_raw_int(p, payload, nowMs);
@@ -150,7 +143,7 @@ static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
             if (p.payloadLen >= 28) decode_attitude(p, payload);
             break;
         case MAVLINK_MSG_GLOBAL_POSITION_INT:
-            if (p.payloadLen >= 28) decode_global_position_int(p, payload, nowMs);
+            if (p.payloadLen >= 26) decode_global_position_int(p, payload, nowMs);
             break;
         case MAVLINK_MSG_VFR_HUD:
             if (p.payloadLen >= 20) decode_vfr_hud(p, payload);
@@ -238,7 +231,7 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                 } else {
                     msgid = p.buffer[5];
                 }
-                uint8_t crcExtra = get_crc_extra(msgid);
+                uint8_t crcExtra = mavlink_crc_extra(msgid);
                 crcCalc = mavlink_crc_accumulate(crcExtra, crcCalc);
 
                 if (crcCalc == crcReceived) {
@@ -319,12 +312,12 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     fd.validMask = FLD_ALL;
 
     // 设置时间戳
-    fd.ts_pos = p.lastPositionMs;
-    fd.ts_geoAlt = nowMs;
-    fd.ts_speed = nowMs;
-    fd.ts_heading = nowMs;
-    fd.ts_opStatus = nowMs;
-    fd.ts_opPos = p.lastPositionMs;
+    fd.ts_pos      = p.lastPositionMs;
+    fd.ts_geoAlt   = p.lastPositionMs;
+    fd.ts_speed    = p.lastPositionMs;
+    fd.ts_heading  = p.lastPositionMs;
+    fd.ts_opStatus = p.lastHeartbeatMs;
+    fd.ts_opPos    = p.lastPositionMs;
 
     // 数据质量
     fd.freshness = FRESH_OK;
