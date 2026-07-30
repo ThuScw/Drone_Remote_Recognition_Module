@@ -307,7 +307,7 @@ void test_rid_messages() {
         FlightData fd = makeFd(31.0f, 121.0f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
         uint32_t flags = 0;
         CHECK(gb46750_validateFlightData(fd, flags));
-        CHECK_EQ(flags, 0);
+        CHECK_EQ(flags, 0u);
 
         // Lat out of range (>90)
         fd.lat = 91.0f;

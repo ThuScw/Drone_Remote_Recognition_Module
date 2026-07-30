@@ -13,13 +13,6 @@ static bool feed_frame(MavlinkParser& p, const uint8_t* frame, uint16_t len, uin
     return gotFrame;
 }
 
-static void put_i32(uint8_t* b, int32_t v) {
-    b[0] = v & 0xFF;
-    b[1] = (v >> 8) & 0xFF;
-    b[2] = (v >> 16) & 0xFF;
-    b[3] = (v >> 24) & 0xFF;
-}
-
 void test_mavlink_parser() {
     printf("--- MAVLink Parser (real flight data) ---\n");
 

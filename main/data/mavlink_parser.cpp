@@ -47,6 +47,8 @@ static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_
 static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
     // ATTITUDE: time_boot_ms(4) + roll(4) + pitch(4) + yaw(4) + rollspeed(4) + pitchspeed(4) + yawspeed(4) = 28 bytes
     // 暂不存储, 可用于诊断
+    (void)p;
+    (void)payload;
 
     #if CONFIG_RID_VERBOSE_LOG
     float roll, pitch, yaw;
@@ -259,6 +261,7 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
 }
 
 bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t nowMs) {
+    (void)nowMs;
     // 检查数据有效性
     if (p.gpsFixType < 2) {
         // GPS 无定位或 2D, 不输出位置
@@ -350,6 +353,7 @@ void mavlink_getStatus(const MavlinkParser& p, char* buf, uint16_t bufLen) {
 }
 
 bool mavlink_needsRecovery(const MavlinkParser& p, uint64_t nowMs, uint32_t errorLimit) {
+    (void)nowMs;
     // 从未收到过有效帧 → 设备可能尚未连接，不触发恢复
     if (p.lastValidFrameMs == 0) return false;
     // 连续 CRC 失败超过阈值 → 数据流已损坏，需要恢复
