@@ -1,26 +1,10 @@
 #include "mavlink_tx.h"
+#include "mavlink_crc.h"
 #include <string.h>
 
 #define MAVLINK_STX_V2          0xFD
 #define MAVLINK_MSG_COMMAND_LONG 76
 #define CRC_EXTRA_COMMAND_LONG   152
-
-// --- CRC-16/MCRF4XX (identical to mavlink_parser.cpp) ---
-
-static uint16_t crc_accumulate(uint8_t data, uint16_t crcAcc) {
-    uint8_t tmp = data ^ (uint8_t)(crcAcc & 0xFF);
-    tmp ^= (tmp << 4);
-    return ((uint16_t)(crcAcc >> 8) ^ (uint16_t)(tmp << 8) ^
-            (uint16_t)(tmp << 3) ^ (uint16_t)(tmp >> 4)) & 0xFFFF;
-}
-
-static uint16_t crc_calculate(const uint8_t* buf, uint16_t len) {
-    uint16_t crc = 0xFFFF;
-    for (uint16_t i = 0; i < len; i++) {
-        crc = crc_accumulate(buf[i], crc);
-    }
-    return crc;
-}
 
 uint16_t mavlink_build_arm_disarm(uint8_t* buf, uint16_t bufLen,
                                    uint8_t sysId, uint8_t compId,
@@ -82,8 +66,8 @@ uint16_t mavlink_build_arm_disarm(uint8_t* buf, uint16_t bufLen,
 
     // --- CRC ---
     // CRC covers bytes 1 through (frameLen - crcLen - 1) = bytes 1..42 (42 bytes)
-    uint16_t crc = crc_calculate(buf + 1, frameLen - crcLen - 1);
-    crc = crc_accumulate(CRC_EXTRA_COMMAND_LONG, crc);
+    uint16_t crc = mavlink_crc_calculate(buf + 1, frameLen - crcLen - 1);
+    crc = mavlink_crc_accumulate(CRC_EXTRA_COMMAND_LONG, crc);
     buf[43] = crc & 0xFF;
     buf[44] = (crc >> 8) & 0xFF;
 

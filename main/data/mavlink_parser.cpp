@@ -1,4 +1,5 @@
 #include "mavlink_parser.h"
+#include "mavlink_crc.h"
 #include "config.h"
 #include <string.h>
 #include <math.h>
@@ -7,24 +8,6 @@
 #if CONFIG_RID_VERBOSE_LOG
 static const char* TAG = "MAVLINK";
 #endif
-
-// ================= MAVLink CRC-16/MCRF4XX =================
-
-static uint16_t crc_accumulate(uint8_t data, uint16_t crcAcc) {
-    uint8_t tmp;
-    tmp = data ^ (uint8_t)(crcAcc & 0xFF);
-    tmp ^= (tmp << 4);
-    return ((uint16_t)(crcAcc >> 8) ^ (uint16_t)(tmp << 8) ^
-            (uint16_t)(tmp << 3) ^ (uint16_t)(tmp >> 4)) & 0xFFFF;
-}
-
-static uint16_t crc_calculate(const uint8_t* pBuffer, uint16_t length) {
-    uint16_t crcTmp = 0xFFFF;
-    for (uint16_t i = 0; i < length; i++) {
-        crcTmp = crc_accumulate(pBuffer[i], crcTmp);
-    }
-    return crcTmp;
-}
 
 // CRC extra byte per message type (MAVLink 1.0/2.0)
 static uint8_t get_crc_extra(uint16_t msgid) {
@@ -246,7 +229,7 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                 // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX 和 CRC)
                 uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
                 uint16_t crcDataLen = headerLen - 1 + p.payloadLen;  // LEN 到 payload 结束
-                uint16_t crcCalc = crc_calculate(p.buffer + 1, crcDataLen);
+                uint16_t crcCalc = mavlink_crc_calculate(p.buffer + 1, crcDataLen);
 
                 // 加上 CRC extra byte
                 uint16_t msgid;
@@ -256,7 +239,7 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     msgid = p.buffer[5];
                 }
                 uint8_t crcExtra = get_crc_extra(msgid);
-                crcCalc = crc_accumulate(crcExtra, crcCalc);
+                crcCalc = mavlink_crc_accumulate(crcExtra, crcCalc);
 
                 if (crcCalc == crcReceived) {
                     p.totalFrames++;
