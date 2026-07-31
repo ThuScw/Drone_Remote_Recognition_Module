@@ -86,6 +86,11 @@
 
 // ================= GPIO 引脚分配 (ESP32-S3) =================
 
+// 飞控联锁 GPIO (GB 46750-2025, 5.1.7)
+// 模块自检通过 → GPIO6 拉高（允许飞控起飞），异常 → 拉低（禁止起飞）
+// 功能由 RIDInterlock 类管理，需要硬件连线到飞控的 RID 联锁输入引脚
+#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6
+
 // 状态指示灯 (GB 46750-2025, 5.1.5)
 // ESP32-S3-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO48，通过 RMT 外设驱动
 // 绿色慢闪=待机, 蓝色快闪=广播中, 红色常亮=故障
@@ -115,14 +120,9 @@
 // 通过 USB OTG 口 (GPIO19/20) 读取飞控 MAVLink 数据
 // 注意: ESP32-S3 的 USB OTG 引脚是固定的 GPIO19 (D-) 和 GPIO20 (D+)
 
-// ============ 即插即用模式 (推荐) ============
-// 设置为 0 表示自动检测任意 USB 串口设备，无需知道 VID/PID
-// 插上飞控即可工作，适用于大多数场景
-//
-// ============ 指定设备模式 ============
-// 如果需要连接特定设备，设置 VID 和 PID (十六进制)
-// 例如 Pixhawk: VID=0x1209, PID=0x5740
-// 例如 DJI 飞控: 需要通过 USB 抓包工具确认
+// USB Host 设备指定
+// 必须设置正确的 VID 和 PID（十六进制），不支持 VID=0 自动检测
+// 如需自动检测（即插即用），需要另行实现 USB 设备枚举逻辑
 //
 // 常见飞控 VID/PID 参考:
 //   - Pixhawk/Cube (ArduPilot): 0x1209 / 0x5740
@@ -155,6 +155,13 @@
 // 数据超时配置
 // 如果超过此时间未收到有效位置数据, 标记为 STALE
 #define FC_DATA_TIMEOUT_MS     2000
+
+// MAVLink TX (USB 发送) — 通过 USB 向飞控发送 MAVLink 命令
+// 当前仅用于发送 ARM/DISARM 联锁命令 (MAV_CMD_COMPONENT_ARM_DISARM)
+// 警告: 如果飞控 USB 口也是烧录口，MAVLink TX 可能干扰飞控正常工作
+// 设为 0 禁用 MAVLink TX，仅使用 GPIO6 硬件联锁（推荐先禁用测试）
+// 设为 1 启用 MAVLink TX（需要确认飞控兼容后再开启）
+#define MAVLINK_TX_ENABLED 0
 
 // MAVLink 连续 CRC 失败阈值 — 超过此值触发 USB 恢复
 // 正常运行时约 47% 的帧通过 CRC，但有效帧间最多几十个未知帧

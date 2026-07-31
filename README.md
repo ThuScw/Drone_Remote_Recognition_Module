@@ -58,16 +58,23 @@ main/
 
 - **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包
 - **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
+- **GPS fix 解耦**：`mavlink_fillFlightData()` 不再以 `gpsFixType >= 2` 硬拦截数据输出；GPS_RAW_INT 和 GLOBAL_POSITION_INT 是独立 MAVLink 消息，到达顺序不确定，仅以 `lastPositionMs > 0` 判断是否有位置数据，GPS fix 不足降级为 STALE 质量标记
+- **状态机消抖**：地面↔空中切换需连续确认（空中→地面 500ms，地面→空中 300ms），防止 HEARTBEAT 短暂波动误触发；紧急/失效状态绕过消抖立即生效
+- **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
+- **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
+- **USB 只读模式**：`MAVLINK_TX_ENABLED=0` 时 `out_buffer_size=0`，USB CDC 以只读模式打开，从物理层面杜绝任何数据反向注入飞控
 - **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
-- **地面↔空中状态机**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞
+- **空中不拉闸、地面拉闸**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞 (GB 46750-2025 5.1.7)
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
-- **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYS_STATUS 七种消息，满足 GB 46750 全部 21 字段需求
+- **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION 六种消息，满足 GB 46750 全部 21 字段需求
 
 ### 广播策略
 
-- **地面状态**：停止广播
-- **空中/紧急状态**：`startBroadcast()` 配置并启动 → `updateBroadcastData()` 原地更新数据（不停止广播，满足 GB 42590 "持续广播" 要求）
-- **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 自动重建广播链路
+- **地面状态**：停止广播，LED 绿色慢闪(0.5Hz)
+- **空中/紧急状态**：`startBroadcast()` 启动 → `updateBroadcastData()` 原地更新（不停止广播），LED 蓝色快闪(2.5Hz)
+- **状态切换**：消抖确认后执行（地面→空中 300ms / 空中→地面 500ms），紧急状态绕过立即切换
+- **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
+- **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
 - **看门狗**：主循环 5s 无响应 → 系统自动复位
 
 ### 硬件接口
@@ -150,7 +157,11 @@ idf.py -p <COM口> flash monitor
 #define FC_USB_DATA_BITS    8
 #define FC_USB_PARITY       0       // 0=None, 1=Odd, 2=Even
 #define FC_USB_STOP_BITS    1
+
+// MAVLink TX 安全开关（通过 USB 向飞控发送命令）
+#define MAVLINK_TX_ENABLED  0       // 0=禁用(只读模式，推荐) 1=启用(GPIO6+MAVLink双联锁)
 ```
+**⚠️ 安全警告**：`MAVLINK_TX_ENABLED=0` 时 USB CDC 以只读模式打开（`out_buffer_size=0`），且打开后显式清除 DTR/RTS，防止飞控被 USB 控制线信号复位。**首次接入飞控务必设为 0**，确认飞行稳定后再评估是否需要启用 MAVLink TX 联锁。
 
 ### 精度取值
 
@@ -175,11 +186,19 @@ idf.py -p <COM口> flash monitor
 ### GPIO 引脚
 
 ```c
-#define INTERLOCK_RID_OK_GPIO   GPIO_NUM_6   // 飞控联锁（自检通过→拉高，异常→拉低）
-#define INTERLOCK_ACTIVE_LEVEL  1            // 联锁有效电平：1=高有效, 0=低有效
-#define STATUS_LED_GPIO         GPIO_NUM_48  // WS2812B RGB LED（RMT 驱动）
-#define STATUS_LED_NUM_LEDS     1
+#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6   // 飞控联锁（自检通过→拉高允许起飞，异常→拉低禁止起飞）
+#define STATUS_LED_GPIO        GPIO_NUM_48  // WS2812B RGB LED（RMT 驱动）
+#define STATUS_LED_NUM_LEDS    1
 ```
+
+LED 状态指示 (GB 46750-2025, 5.1.5)：
+
+| 状态 | LED 行为 | 含义 |
+|------|----------|------|
+| `OFF` | 熄灭 | 未初始化 |
+| `STANDBY` | 绿色慢闪 (0.5Hz) | 地面待机，模块自检通过 |
+| `BROADCASTING` | 蓝色快闪 (2.5Hz) | 空中/紧急状态，正在广播 |
+| `FAULT` | 红色常亮 | 模块故障，三级自修复全部失败 |
 
 ### 飞行日志存储
 
@@ -228,8 +247,8 @@ I (1234) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
 I (1235) SYS: USB Host CDC-ACM | BLE5 Extended Advertising
 I (2345) FLIGHT_DATA: USB Host initialized. Waiting for flight controller...
 I (3456) FLIGHT_DATA: ✓ USB device opened (VID=0x1B8C, PID=0x0036)
-I (4567) FLIGHT_DATA: frames=10049(v1=10049,v2=0) crc_err=11317 armed=0 fix=152 sats=14 ...
-I (5678) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
+I (4567) FLIGHT_DATA: frames=10049(v1=10049,v2=0) crc_err=11317 armed=0 fix=3 sats=14 ...
+I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 ```
 
 ### 自检与告警
@@ -259,6 +278,7 @@ I (5678) BCAST: Init OK — Packet=77 bytes, broadcast=800ms, update=1000ms
 - [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
 - [ ] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
+- [ ] FlightLog 读取接口：实现 `readRecord()` 和导出功能 (GB 46750-2025 5.1.8 附录要求提供访问方式)
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
 
 ### 量产安全配置（最终生产阶段）

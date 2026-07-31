@@ -74,7 +74,12 @@ extern "C" void app_main(void) {
     if (!interlock.init()) {
         ESP_LOGW(TAG, "Interlock init failed — continuing without FC interlock");
     }
+#if MAVLINK_TX_ENABLED
     interlock.setSendCallback(flightData_sendArmDisarm);
+    ESP_LOGI(TAG, "MAVLink TX enabled — arm/disarm commands will be sent over USB");
+#else
+    ESP_LOGI(TAG, "MAVLink TX disabled — using GPIO%d hardware interlock only", INTERLOCK_RID_OK_GPIO);
+#endif
 
     if (!flightLog.init()) {
         ESP_LOGW(TAG, "Flight log init failed — continuing without persistent storage");
@@ -90,7 +95,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");
 
     // --- Main Loop ---
-    FlightData fd;
+    FlightData fd = {};  // 零初始化: opStatus=STATUS_GROUND, freshness=FRESH_INVALID
     while (1) {
         esp_task_wdt_reset();
 

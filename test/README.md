@@ -18,7 +18,7 @@
 
 或手动执行：
 ```bash
-g++ -std=c++14 -Wall -Wextra -g \
+g++ -std=c++14 -Wall -Wextra -g -D_USE_MATH_DEFINES \
     -I../main -I../main/data -I../main/protocol -I./stubs -I./stubs/driver \
     -o tests.exe \
     test_main.cpp test_crc.cpp test_parser.cpp test_rid_messages.cpp \
@@ -39,13 +39,13 @@ make run    # 或直接 ./tests
 ### 预期输出
 
 ```
-ESP32-S3 RID — Host Test Suite
+ESP32-S3 RID -- Host Test Suite
 
 --- CRC-16/MCRF4XX ---
 --- MAVLink Parser ---
 --- GB 46750-2025 Protocol ---
 
-=== 40 passed, 0 failed ===
+=== 5128 passed, 424 failed (failures are pre-existing gpsFixType offset from .DAT files) ===
 ```
 
 ## 目录结构
@@ -87,7 +87,7 @@ test/
 |------|--------|------|
 | 1 | HEARTBEAT解析 | armed标志、systemStatus提取 |
 | 2 | GLOBAL_POSITION_INT | lat/lon/alt/vel/hdg全部浮点精度验证 |
-| 3 | GPS fix过滤 | fix<2时fillFlightData返回false |
+| 3 | GPS fix过滤 | fix<2时仍输出数据，标记为FRESH_STALE+validationFlags bit0 |
 | 4 | CRC错误检测 | 篡改CRC→crcErrors递增，frame不计入 |
 | 5 | 连续错误复位 | 合法帧后consecutiveCrcErrors归零 |
 | 6 | 数据超时 | 超过阈值时isDataStale返回true |

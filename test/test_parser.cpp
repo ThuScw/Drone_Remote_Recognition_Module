@@ -214,7 +214,7 @@ void test_mavlink_parser() {
         CHECK(strlen(buf) > 0);
     }
 
-    // ==== 12. fillFlightData: GPS fix < 2 returns false ----
+    // ==== 12. fillFlightData: GPS fix < 2 outputs data with STALE flag ----
     {
         MavlinkParser p;
         mavlink_init(p);
@@ -237,7 +237,10 @@ void test_mavlink_parser() {
         p.gpsFixType = 1;  // simulate no-fix GPS
         FlightData fd;
         memset(&fd, 0, sizeof(fd));
-        CHECK(!mavlink_fillFlightData(p, fd, 5000));
+        // 新行为: 有位置数据时就输出，GPS fix 不足仅标记为 STALE
+        CHECK(mavlink_fillFlightData(p, fd, 5000));
+        CHECK_EQ((int)fd.freshness, (int)FRESH_STALE);
+        CHECK(fd.validationFlags & (1 << 0));  // bit 0: GPS fix 不足
     }
 
     // ==== 13. VFR_HUD decoding from real flight data ----

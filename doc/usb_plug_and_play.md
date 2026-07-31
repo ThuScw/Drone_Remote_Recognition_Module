@@ -2,12 +2,16 @@
 
 ## 两种模式
 
-### 模式 1：即插即用模式（推荐）✅
+### 模式 1：即插即用模式（计划中，未实现）🚧
+
+> **注意**: 此模式尚未实现。当前固件仅支持"指定设备模式"（模式 2），必须设置 VID/PID。
+> 设置 `FC_USB_VID=0` 会导致编译时返回 `ESP_ERR_NOT_SUPPORTED`。
+> 如需此功能请参考下方工作原理图自行实现 USB 设备枚举逻辑。
 
 **配置**:
 ```c
-#define FC_USB_VID          0   // 0 = 自动检测
-#define FC_USB_PID          0   // 0 = 自动检测
+#define FC_USB_VID          0   // 0 = 自动检测（暂未实现）
+#define FC_USB_PID          0   // 0 = 自动检测（暂未实现）
 ```
 
 **工作原理**:
@@ -37,7 +41,7 @@
 
 ---
 
-### 模式 2：指定设备模式
+### 模式 2：指定设备模式（当前唯一可用模式）✅
 
 **配置**:
 ```c
@@ -122,6 +126,15 @@ I (1234) FLIGHT_DATA: Found CDC-ACM device: VID=0x1209 PID=0x5740
 ---
 
 ## 常见问题
+
+### ⚠️ Q0: 飞控连接后无人机失控怎么办？
+
+**重要安全警告**：ESP32-S3 作为 USB Host 打开飞控 USB 口时，**DTR/RTS 控制线可能触发飞控复位或进入 bootloader 模式**。如果你的飞控 USB 口的 DTR 连到了 MCU 的 BOOT0/NRST 引脚，连接时会导致飞行中失控。
+
+**本固件的防护措施**：
+1. **显式清除 DTR/RTS**：`cdc_acm_host_set_control_line_state(dev, false, false)` 在打开设备后立即执行
+2. **只读模式**：`MAVLINK_TX_ENABLED=0` 时 `out_buffer_size=0`，USB CDC 以只读模式打开，不向飞控发送任何数据
+3. **首次接入飞控务必先不装桨叶测试**，确认飞控灯正常、QGC 能正常控制后再飞行
 
 ### Q1: 即插即用模式会连接错误的设备吗？
 
@@ -229,13 +242,9 @@ for (size_t i = 0; i < num_devices; i++) {
 
 ## 推荐配置
 
-### 开发测试阶段
-```c
-#define FC_USB_VID          0   // 即插即用
-#define FC_USB_PID          0   // 即插即用
-```
+> **当前状态**: 仅支持指定设备模式。即插即用（VID=0）尚未实现。
 
-### 量产阶段
+### 开发测试阶段 & 量产阶段
 ```c
 #define FC_USB_VID          0x1209  // 指定飞控型号
 #define FC_USB_PID          0x5740

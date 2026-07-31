@@ -24,6 +24,8 @@ RIDBroadcastManager::RIDBroadcastManager(
     , _interlock(interlock)
     , _broadcastActive(false)
     , _prevStatus(0xFF)
+    , _debounceTarget(0xFF)
+    , _debounceCount(0)
     , _lastBroadcastMs(0)
     , _lastDataUpdateMs(0)
     , _lastSelfTestMs(0)
@@ -126,6 +128,12 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
 //   - 这确保 Message Counter 每包自增，接收方始终看到最新状态
 
 void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t nowMs) {
+    // 数据无效时保留上次有效数据，防止飞行中因数据短暂丢失而误判为地面状态
+    if (fd.freshness == FRESH_INVALID) {
+        ESP_LOGW(TAG, "Data INVALID — keeping last known state, not updating packet");
+        return;
+    }
+
     // 保存最新数据供广播使用
     _lastValidData = fd;
 
@@ -213,9 +221,51 @@ bool RIDBroadcastManager::isAirborne() const {
 
 void RIDBroadcastManager::handleStatusTransition() {
     uint8_t newStatus = _lastValidData.opStatus;
-    if (newStatus == _prevStatus) return;
+    if (newStatus == _prevStatus) {
+        // 状态一致 — 重置消抖
+        _debounceTarget = 0xFF;
+        _debounceCount = 0;
+        return;
+    }
 
-    bool shouldBroadcast = isAirborne();
+    // 紧急/失效状态绕过消抖，立即切换
+    if (newStatus == STATUS_EMERGENCY || newStatus == STATUS_FAIL_SAFE ||
+        newStatus == STATUS_FAIL_EMERG) {
+        ESP_LOGW(TAG, "Status EMERGENCY/FAIL-SAFE — immediate transition (status=%d)", newStatus);
+        _debounceTarget = 0xFF;
+        _debounceCount = 0;
+        _prevStatus = newStatus;
+        applyStatusChange(newStatus);
+        return;
+    }
+
+    // 消抖: 同一个新状态连续确认 N 次才切换
+    if (newStatus != _debounceTarget) {
+        _debounceTarget = newStatus;
+        _debounceCount = 1;
+        return;
+    }
+
+    _debounceCount++;
+    uint8_t threshold = (_debounceTarget == STATUS_GROUND)
+        ? DEBOUNCE_THRESH_AIR_GND   // 空中→地面: 更严格，防止飞行中误停广播
+        : DEBOUNCE_THRESH_GND_AIR;  // 地面→空中: 标准阈值
+
+    if (_debounceCount >= threshold) {
+        ESP_LOGI(TAG, "Status transition %d→%d (debounced, count=%d)",
+                 _prevStatus, newStatus, _debounceCount);
+        _prevStatus = newStatus;
+        _debounceTarget = 0xFF;
+        _debounceCount = 0;
+        applyStatusChange(newStatus);
+    }
+}
+
+// ======================== 状态切换执行 ========================
+
+void RIDBroadcastManager::applyStatusChange(uint8_t newStatus) {
+    bool shouldBroadcast = (newStatus == STATUS_AIRBORNE || newStatus == STATUS_EMERGENCY ||
+                            newStatus == STATUS_FAIL_SAFE || newStatus == STATUS_FAIL_EMERG);
 
     if (shouldBroadcast && !_broadcastActive) {
         ESP_LOGI(TAG, "Broadcast START (status=%d)", newStatus);
@@ -231,8 +281,6 @@ void RIDBroadcastManager::handleStatusTransition() {
         _broadcastActive = false;
         _statusLed.setState(LedState::STANDBY);
     }
-
-    _prevStatus = newStatus;
 }
 
 // ======================== 广播发送 ========================

@@ -12,7 +12,7 @@ void test_mavlink_crc() {
     CHECK_EQ(mavlink_crc_extra(30),  39);   // ATTITUDE
     CHECK_EQ(mavlink_crc_extra(33),  104);  // GLOBAL_POSITION_INT
     CHECK_EQ(mavlink_crc_extra(74),  20);   // VFR_HUD
-    CHECK_EQ(mavlink_crc_extra(105), 202);  // HOME_POSITION
+    CHECK_EQ(mavlink_crc_extra(105), 251);  // HOME_POSITION
 
     // 2. Empty data → 0xFFFF
     CHECK_EQ(mavlink_crc_calculate(nullptr, 0), 0xFFFF);

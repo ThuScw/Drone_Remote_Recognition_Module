@@ -11,7 +11,7 @@ uint8_t mavlink_crc_extra(uint16_t msgid) {
         case 36:  return 220;  // SERVO_OUTPUT_RAW
         case 74:  return 20;   // VFR_HUD
         case 76:  return 152;  // COMMAND_LONG
-        case 105: return 202;  // HOME_POSITION
+        case 105: return 251;  // HOME_POSITION
         case 253: return 83;   // STATUSTEXT
         default:  return 0;
     }

@@ -182,7 +182,11 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
 
     cdc_acm_host_device_config_t dev_config = {};
     dev_config.connection_timeout_ms = 1000;
+#if MAVLINK_TX_ENABLED
     dev_config.out_buffer_size = 512;
+#else
+    dev_config.out_buffer_size = 0;    // 只读模式 — 不从 USB 向飞控发送任何数据
+#endif
     dev_config.in_buffer_size = 512;
     dev_config.user_arg = this;
     dev_config.event_cb = usbEventCb;
@@ -199,8 +203,12 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
                  FC_USB_VID, FC_USB_PID);
         cdc_acm_host_desc_print(_cdcDev);
         configureLineCoding(_cdcDev);
-        cdc_acm_host_set_control_line_state(_cdcDev, true, false);
-        ESP_LOGI(TAG, "DTR asserted — waiting for MAVLink data...");
+        // 显式清除 DTR/RTS 控制线状态
+        // 飞控的 USB 口通常是烧录/配置口, DTR 可能连接到 MCU 的 BOOT0/NRST 引脚
+        // 断言 DTR 可能触发飞控复位或进入 bootloader 模式，导致飞行中失控
+        // 即使 driver 隐式设置了 DTR, 此处显式清除确保安全
+        cdc_acm_host_set_control_line_state(_cdcDev, false, false);
+        ESP_LOGI(TAG, "USB device configured (DTR/RTS cleared for FC safety) — waiting for MAVLink data...");
         _parser.consecutiveCrcErrors = 0;
         _deviceConnected = true;
         _deviceReady = true;
@@ -212,6 +220,9 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
         ESP_LOGE(TAG, "Failed to open USB device: %s", esp_err_to_name(ret));
         return ret;
     }
+#else
+    ESP_LOGE(TAG, "FC_USB_VID is 0 — auto-detect mode not yet implemented; set VID/PID in config.h");
+    return ESP_ERR_NOT_SUPPORTED;
 #endif
 }
 
@@ -338,7 +349,9 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
         fd.speed = 0;
         fd.heading = 0;
         fd.vspeed = 0;
-        fd.opStatus = STATUS_GROUND;
+        // 不覆盖 opStatus — 保留上次已知状态
+        // fd 在 main.cpp 中零初始化 (opStatus=STATUS_GROUND)
+        // 飞行中数据短暂丢失时，保留上次 fillFlightData 设置的空中状态
         fd.opLat = MOCK_OP_LAT;
         fd.opLon = MOCK_OP_LON;
         fd.opAlt = MOCK_OP_ALT;

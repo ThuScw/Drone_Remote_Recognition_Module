@@ -25,13 +25,13 @@ static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload, uint64_t 
 }
 
 static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
-    // This FC's GPS_RAW_INT uses a non-standard dialect: fix_type is at offset 28 (after cog),
-    // not at offset 8 (before lat) as in common.xml. All other fields shift left by 1.
-    // Layout: time_usec(8)+lat(4)+lon(4)+alt(4)+eph(2)+epv(2)+vel(2)+cog(2)+fix_type(1)+sats(1)
+    // Standard MAVLink GPS_RAW_INT layout (common.xml):
+    //   time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4)
+    //   + eph(2) + epv(2) + vel(2) + cog(2) + satellites_visible(1) = 30 bytes
     // 注意: 仅更新 GPS 状态字段，不覆写 GLOBAL_POSITION_INT 的位置数据
-    p.gpsFixType = payload[28];
-    p.gpsEph = (uint16_t)(payload[20] | (payload[21] << 8)) / 100.0f;
-    p.gpsEpv = (uint16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
+    p.gpsFixType = payload[8];
+    p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
+    p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
     p.gpsSats = payload[29];
 
     p.lastGpsMs = nowMs;
@@ -262,28 +262,28 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
 
 bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t nowMs) {
     (void)nowMs;
-    // 检查数据有效性
-    if (p.gpsFixType < 2) {
-        // GPS 无定位或 2D, 不输出位置
-        return false;
+
+    // 检查是否有任何位置数据: GLOBAL_POSITION_INT 和 GPS_RAW_INT 是独立的 MAVLink 消息,
+    // 到达顺序不确定。只要收到过位置帧就输出，GPS fix type 仅作为质量指示。
+    if (p.lastPositionMs == 0) {
+        return false;  // 从未收到 GLOBAL_POSITION_INT
     }
 
     // 填充位置
     fd.lat = p.lat;
     fd.lon = p.lon;
     fd.geoAlt = p.altMsl;
-    fd.heightAgl = p.altRel;  // 相对高度 (AGL)
-    fd.baroAlt = p.altMsl;    // 简化: 用 MSL 代替气压高度
+    fd.heightAgl = p.altRel;
+    fd.baroAlt = p.altMsl;
 
     // 填充速度
     fd.speed = sqrtf(p.velN * p.velN + p.velE * p.velE);
-    fd.vspeed = -p.velD;  // MAVLink velD 正=向下, 我们定义 正=上升
+    fd.vspeed = -p.velD;
 
     // 填充航向
     if (!isnan(p.heading)) {
         fd.heading = p.heading;
     } else {
-        // 从速度计算航向
         fd.heading = atan2f(p.velE, p.velN) * 180.0f / M_PI;
         if (fd.heading < 0) fd.heading += 360.0f;
     }
@@ -291,16 +291,15 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     // 填充运行状态
     if (!p.armed) {
         fd.opStatus = STATUS_GROUND;
-    } else if (p.systemStatus == 6) {  // EMERGENCY
+    } else if (p.systemStatus == 6) {
         fd.opStatus = STATUS_EMERGENCY;
-    } else if (p.systemStatus == 5) {  // CRITICAL
+    } else if (p.systemStatus == 5) {
         fd.opStatus = STATUS_FAIL_SAFE;
     } else {
         fd.opStatus = STATUS_AIRBORNE;
     }
 
-    // 操作员位置: 使用 HOME 位置 (如果有), 否则用当前位置
-    // TODO: 实际应用中, 操作员位置应该来自遥控器的 GPS 或手动设置
+    // 操作员位置
     if (p.homeValid) {
         fd.opLat = p.homeLat;
         fd.opLon = p.homeLon;
@@ -311,10 +310,8 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
         fd.opAlt = p.altMsl;
     }
 
-    // 设置有效标志
     fd.validMask = FLD_ALL;
 
-    // 设置时间戳
     fd.ts_pos      = p.lastPositionMs;
     fd.ts_geoAlt   = p.lastPositionMs;
     fd.ts_speed    = p.lastPositionMs;
@@ -322,9 +319,13 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     fd.ts_opStatus = p.lastHeartbeatMs;
     fd.ts_opPos    = p.lastPositionMs;
 
-    // 数据质量
+    // 数据质量: gpsFixType < 2 表示 GPS 定位精度不足，标记为 STALE 但不阻止输出
     fd.freshness = FRESH_OK;
     fd.validationFlags = 0;
+    if (p.gpsFixType < 2) {
+        fd.freshness = FRESH_STALE;
+        fd.validationFlags |= (1 << 0);  // bit 0: GPS fix 不足
+    }
 
     return true;
 }

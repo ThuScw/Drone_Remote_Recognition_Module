@@ -51,6 +51,7 @@ private:
 
     bool isAirborne() const;
     void triggerSelfHeal();
+    void applyStatusChange(uint8_t newStatus);  // 执行广播启停 + LED 状态切换
 
     // --- 引用的外部模块 ---
     BleRidBroadcaster& _broadcaster;
@@ -63,6 +64,13 @@ private:
     FlightData    _lastValidData;
     bool          _broadcastActive;
     uint8_t       _prevStatus;
+
+    // 状态消抖: 要求连续 N 次确认同一新状态才切换
+    // 紧急状态绕过消抖立即生效
+    uint8_t _debounceTarget;   // 候选目标状态
+    uint8_t _debounceCount;    // 连续确认次数
+    static const uint8_t DEBOUNCE_THRESH_GND_AIR = 30;  // 地面→空中: ~300ms
+    static const uint8_t DEBOUNCE_THRESH_AIR_GND = 50;  // 空中→地面: ~500ms
 
     // --- 定时器 ---
     uint64_t _lastBroadcastMs;

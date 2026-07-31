@@ -26,6 +26,8 @@
 **新增**:
 - USB Host CDC-ACM 配置 (`FC_USB_VID`, `FC_USB_PID`, `FC_USB_BAUD_RATE` 等)
 - USB Host 任务配置 (`USB_HOST_TASK_STACK`, `USB_HOST_TASK_PRIO`)
+- MAVLink TX 安全开关 (`MAVLINK_TX_ENABLED`, 默认 0=只读模式)
+- GPIO6 联锁定义 (`INTERLOCK_RID_OK_GPIO`)
 - 更新 GPIO 引脚定义 (LED 从 GPIO27 → GPIO48)
 
 #### 2.2 `flight_data.cpp` 重写
@@ -49,15 +51,15 @@ static void uart_rx_task(void* arg) {
 #include "usb/usb_host.h"
 #include "usb/cdc_acm_host.h"
 
+// 打开设备后显式清除 DTR/RTS，防止飞控被复位
+cdc_acm_host_set_control_line_state(_cdcDev, false, false);
+
+// MAVLINK_TX_ENABLED=0 时 out_buffer_size=0，只读模式
+dev_config.out_buffer_size = MAVLINK_TX_ENABLED ? 512 : 0;
+
 static void usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
     for (size_t i = 0; i < data_len; i++) {
         mavlink_parseByte(s_parser, data[i], nowMs);
-    }
-}
-
-static void usb_host_task(void* arg) {
-    while (true) {
-        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
     }
 }
 ```
@@ -189,7 +191,16 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
 3. USB 线问题 → 换一根数据线（不是充电线）
 4. 插错口 → 确保飞控连的是 "USB" 口，不是 "COM" 口
 
-### Q3: USB 设备连接了但收不到 MAVLink 数据
+### Q3: 连接飞控后无人机失控或飞控异常
+
+**原因**：飞控 USB 口的 DTR 线可能连接到 MCU 的 BOOT0 或 NRST 引脚。USB Host 打开设备时断言 DTR 会触发飞控复位。
+
+**防护措施**：
+1. 本固件已在 `tryOpenUsbDevice()` 中显式清除 DTR/RTS
+2. `MAVLINK_TX_ENABLED=0` 时 USB CDC 以只读模式打开（`out_buffer_size=0`）
+3. **首次接入必须不装桨叶测试**：监听串口确认 `DTR/RTS cleared for FC safety` 日志
+
+### Q4: USB 设备连接了但收不到 MAVLink 数据
 
 **检查**:
 1. 飞控是否输出 MAVLink（而不是其他协议）
@@ -197,7 +208,7 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
 3. 查看串口日志是否有 "USB RX" 输出
 4. 开启详细日志 `CONFIG_RID_VERBOSE_LOG 1` 查看调试信息
 
-### Q4: 可以同时连电脑和飞控吗？
+### Q5: 可以同时连电脑和飞控吗？
 
 **可以！**
 - "COM" 口连电脑 → 调试、烧录
