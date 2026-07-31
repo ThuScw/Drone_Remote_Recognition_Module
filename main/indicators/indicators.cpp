@@ -70,6 +70,8 @@ void StatusLed::setState(LedState state) {
     }
 }
 
+// setState() and update() are called only from the main loop task.
+// If this ever changes to multi-task or ISR usage, add a spinlock guard.
 void StatusLed::update() {
     if (!_handle) return;
 

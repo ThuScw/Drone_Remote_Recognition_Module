@@ -7,6 +7,13 @@
 static const char* TAG = "CONSOLE";
 
 void ConsoleCmd::init(FlightLog& flightLog) {
+    static bool initialized = false;
+    if (initialized) {
+        ESP_LOGW(TAG, "ConsoleCmd already initialized — ignoring duplicate call");
+        return;
+    }
+    initialized = true;
+
     auto* self = new ConsoleCmd();
     self->_flightLog = &flightLog;
 
@@ -14,6 +21,7 @@ void ConsoleCmd::init(FlightLog& flightLog) {
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create console task");
         delete self;
+        initialized = false;
         return;
     }
     ESP_LOGI(TAG, "Console command listener ready (type DUMP to export flight log)");
@@ -32,6 +40,9 @@ void ConsoleCmd::taskFunc(void* param) {
             if (len > 0) {
                 self->handleCommand(line);
             }
+        } else {
+            // stdin closed or error — avoid busy-wait
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
 }

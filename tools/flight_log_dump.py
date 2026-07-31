@@ -66,21 +66,20 @@ def crc16_ccitt(data: bytes) -> int:
 
 def verify_record(buf: bytes) -> bool:
     """Check magic and CRC of a 96-byte record."""
-    magic = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24)
+    magic = struct.unpack_from('<I', buf, 0)[0]
     if magic != 0x5249444C:  # "RIDL"
         return False
-    stored_crc = buf[4] | (buf[5] << 8)
+    stored_crc = struct.unpack_from('<H', buf, 4)[0]
     calc_crc = crc16_ccitt(buf[6:96])
     return stored_crc == calc_crc
 
 
 def parse_record(buf: bytes):
     """Parse a 96-byte record into (timestamp_ms, data_len, payload_bytes)."""
-    ts = 0
-    for i in range(8):
-        ts |= buf[6 + i] << (i * 8)
+    ts = struct.unpack_from('<Q', buf, 6)[0]
     data_len = buf[14] | (buf[15] << 8)
     if data_len > MAX_PAYLOAD:
+        print(f"  Warning: data_len={data_len} exceeds max, clamping to {MAX_PAYLOAD}")
         data_len = MAX_PAYLOAD
     payload = buf[PAYLOAD_OFFSET:PAYLOAD_OFFSET + data_len]
     return ts, data_len, payload
@@ -113,7 +112,9 @@ def decode_payload(payload: bytes):
     if len(payload) < 6:
         return {}
 
-    data_id_1 = payload[4]  # dataId[1] — O-field presence bits
+    data_length = payload[2]          # declared content length
+    end_pos = 6 + data_length         # where content actually ends
+    data_id_1 = payload[4]            # dataId[1] — O-field presence bits
     d = {}
     pos = 6  # skip header
 
@@ -194,9 +195,8 @@ def decode_payload(payload: bytes):
     d['速度精度'] = SPEED_ACC.get(payload[pos], str(payload[pos])); pos += 1
 
     # 020 时间戳 (uint48 LE, ms)
-    ts = 0
-    for i in range(6):
-        ts |= payload[pos + i] << (i * 8)
+    ts_bytes = payload[pos:pos + 6] + b'\x00\x00'
+    ts = struct.unpack_from('<Q', ts_bytes, 0)[0]
     pos += 6
     d['数据时间戳'] = ts
 
@@ -222,75 +222,81 @@ def list_ports():
     return available
 
 
+def _read_exact(ser, n: int, timeout: float = 5.0) -> bytes:
+    """Read exactly n bytes from serial, or fewer on timeout."""
+    import time
+    buf = bytearray()
+    deadline = time.monotonic() + timeout
+    while len(buf) < n and time.monotonic() < deadline:
+        chunk = ser.read(n - len(buf))
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def dump_flight_log(port: str, baudrate: int = 115200, timeout: float = 5.0):
     """Connect to ESP32-S3, send DUMP, receive all records."""
-    ser = serial.Serial(port, baudrate, timeout=timeout)
+    with serial.Serial(port, baudrate, timeout=timeout) as ser:
+        ser.reset_input_buffer()
 
-    # Flush any stale input
-    ser.reset_input_buffer()
+        ser.write(b"DUMP\r\n")
+        ser.flush()
 
-    # Send DUMP command
-    ser.write(b"DUMP\r\n")
-    ser.flush()
+        response = ""
+        for attempt in range(10):
+            if attempt == 3:
+                print("  Still waiting for ESP32 response...")
+            line = ser.readline().decode('ascii', errors='replace').strip()
+            if line.startswith("+OK ") or line.startswith("+EMPTY"):
+                response = line
+                break
+            if line:
+                print(f"  (skipped log line: {line[:80]})")
 
-    # Read response, skipping any residual log lines
-    response = ""
-    for _ in range(10):
-        line = ser.readline().decode('ascii', errors='replace').strip()
-        if line.startswith("+OK ") or line.startswith("+EMPTY"):
-            response = line
-            break
-        if line:
-            print(f"  (skipped log line: {line[:80]})")
+        if not response:
+            print("No valid response from ESP32. Is the console command module loaded?")
+            return None, None
 
-    if not response:
-        ser.close()
-        print("No valid response from ESP32. Is the console command module loaded?")
-        return None, None
+        print(f"ESP32: {response}")
 
-    print(f"ESP32: {response}")
+        if response.startswith("+EMPTY"):
+            print("No flight records stored on device.")
+            return None, None
 
-    if response.startswith("+EMPTY"):
-        ser.close()
-        print("No flight records stored on device.")
-        return None, None
+        try:
+            num_records = int(response.split()[1])
+        except (IndexError, ValueError):
+            print(f"Failed to parse record count from: {response}")
+            return None, None
 
-    try:
-        num_records = int(response.split()[1])
-    except (IndexError, ValueError):
-        ser.close()
-        print(f"Failed to parse record count from: {response}")
-        return None, None
+        print(f"Receiving {num_records} records ({num_records * RECORD_SIZE} bytes)...")
 
-    print(f"Receiving {num_records} records ({num_records * RECORD_SIZE} bytes)...")
+        all_records = []
+        bad_crc = 0
+        for i in range(num_records):
+            buf = _read_exact(ser, RECORD_SIZE, timeout=timeout)
+            if len(buf) < RECORD_SIZE:
+                print(f"  Timeout at record {i}: got {len(buf)} of {RECORD_SIZE} bytes")
+                break
+            if not verify_record(buf):
+                bad_crc += 1
+            all_records.append(buf)
+            if (i + 1) % 500 == 0:
+                print(f"  {i + 1}/{num_records}...")
 
-    # Read binary records
-    all_records = []
-    bad_crc = 0
-    for i in range(num_records):
-        buf = ser.read(RECORD_SIZE)
-        if len(buf) < RECORD_SIZE:
-            print(f"  Short read at record {i}: got {len(buf)} of {RECORD_SIZE} bytes")
-            break
-        if not verify_record(buf):
-            bad_crc += 1
-        all_records.append(buf)
-        if (i + 1) % 500 == 0:
-            print(f"  {i + 1}/{num_records}...")
+        print(f"  Done: {len(all_records)} records received, {bad_crc} CRC mismatches")
 
-    print(f"  Done: {len(all_records)} records received, {bad_crc} CRC mismatches")
+        # Read done marker (skip log noise)
+        for _ in range(5):
+            done = ser.readline().decode('ascii', errors='replace').strip()
+            if done.startswith("+DONE"):
+                print(f"ESP32: {done}")
+                break
+            elif done:
+                print(f"  (skipped: {done[:80]})")
 
-    # Read done marker (skip log noise)
-    for _ in range(5):
-        done = ser.readline().decode('ascii', errors='replace').strip()
-        if done.startswith("+DONE"):
-            print(f"ESP32: {done}")
-            break
-        elif done:
-            print(f"  (skipped: {done[:80]})")
-
-    ser.close()
-    return all_records, bad_crc
+        return all_records, bad_crc
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +318,7 @@ CSV_HEADER = [
 
 
 def records_to_csv(records, output_path):
+    written = 0
     with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)
@@ -323,7 +330,7 @@ def records_to_csv(records, output_path):
             try:
                 fields = decode_payload(payload)
             except Exception as e:
-                print(f"  Warning: decode error at record {i}: {e}")
+                print(f"  Warning: decode error at record {i}: {type(e).__name__}: {e}")
                 continue
 
             ts_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
@@ -357,8 +364,10 @@ def records_to_csv(records, output_path):
                 fields.get('时间戳精度', ''),
                 'Y' if crc_ok else 'N',
             ])
+            written += 1
 
-    print(f"Wrote {len(records)} records to {output_path}")
+    print(f"Wrote {written} records to {output_path}")
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +383,9 @@ def main():
     while i < len(args):
         if args[i] in ('-o', '--output'):
             i += 1
+            if i >= len(args):
+                print("Error: -o/--output requires a filename argument")
+                return
             output_path = args[i]
         elif args[i] in ('-h', '--help'):
             print(__doc__)
@@ -398,7 +410,14 @@ def main():
             return
 
     print(f"Connecting to {port}...")
-    records, bad_crc = dump_flight_log(port)
+    try:
+        records, bad_crc = dump_flight_log(port)
+    except serial.SerialException as e:
+        print(f"Serial error: {e}")
+        return
+    except KeyboardInterrupt:
+        print("\nCancelled by user.")
+        return
 
     if records is None:
         return
@@ -411,11 +430,10 @@ def main():
     if output_path is None:
         output_path = f"flight_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    records_to_csv(records, output_path)
+    written = records_to_csv(records, output_path)
 
     total = len(records)
-    ok = total - bad_crc
-    print(f"\nSummary: {total} records, {ok} valid, {bad_crc} CRC errors")
+    print(f"\nSummary: {total} records received, {written} written, {bad_crc} CRC errors")
 
 
 if __name__ == '__main__':

@@ -38,6 +38,7 @@ private:
 
     // --- State (formerly file-static globals) ---
     MavlinkParser      _parser;
+    portMUX_TYPE       _parserMux = portMUX_INITIALIZER_UNLOCKED;
     bool               _usbHostInitialized = false;
     TaskHandle_t       _usbHostTaskHandle = nullptr;
     cdc_acm_dev_hdl_t  _cdcDev = nullptr;
@@ -87,9 +88,11 @@ void FlightDataSource::usbHostTask(void* arg) {
 // ======================== USB event handlers ========================
 
 void FlightDataSource::onUsbData(const uint8_t* data, size_t data_len, uint64_t nowMs) {
+    portENTER_CRITICAL_SAFE(&_parserMux);
     for (size_t i = 0; i < data_len; i++) {
         mavlink_parseByte(_parser, data[i], nowMs);
     }
+    portEXIT_CRITICAL_SAFE(&_parserMux);
 
 #if CONFIG_RID_VERBOSE_LOG
     if (data_len > 0) {
@@ -108,7 +111,9 @@ void FlightDataSource::onUsbEvent(const cdc_acm_host_dev_event_data_t* event) {
             ESP_LOGW(TAG, "USB device disconnected");
             _cdcDev = nullptr;
             cdc_acm_host_close(event->data.cdc_hdl);
+            portENTER_CRITICAL_SAFE(&_parserMux);
             mavlink_init(_parser);
+            portEXIT_CRITICAL_SAFE(&_parserMux);
             _deviceConnected = false;
             _deviceReady = false;
             break;
@@ -296,7 +301,9 @@ bool FlightDataSource::tryUsbRecovery(uint64_t nowMs) {
         }
     }
 
+    portENTER_CRITICAL_SAFE(&_parserMux);
     mavlink_init(_parser);
+    portEXIT_CRITICAL_SAFE(&_parserMux);
     ESP_LOGI(TAG, "MAVLink parser reset");
 
     _deviceConnected = false;
@@ -321,24 +328,32 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
         }
     }
 
-    if (_deviceReady && mavlink_needsRecovery(_parser, nowMs, MAVLINK_CONSECUTIVE_CRC_LIMIT)) {
+    // --- Critical section: read _parser state atomically ---
+    portENTER_CRITICAL_SAFE(&_parserMux);
+    bool needsRecovery = _deviceReady && mavlink_needsRecovery(_parser, nowMs, MAVLINK_CONSECUTIVE_CRC_LIMIT);
+    bool isStale = mavlink_isDataStale(_parser, nowMs, FC_DATA_TIMEOUT_MS);
+    bool hasData = mavlink_fillFlightData(_parser, fd, nowMs);
+    portEXIT_CRITICAL_SAFE(&_parserMux);
+
+    if (needsRecovery) {
         ESP_LOGW(TAG, "CRC storm detected — triggering USB recovery");
         tryUsbRecovery(nowMs);
     }
 
-    if (mavlink_isDataStale(_parser, nowMs, FC_DATA_TIMEOUT_MS)) {
+    if (isStale) {
         fd.freshness = FRESH_STALE;
 
 #if CONFIG_RID_VERBOSE_LOG
         if (_deviceReady) {
+            portENTER_CRITICAL_SAFE(&_parserMux);
+            uint64_t lastPos = _parser.lastPositionMs;
+            uint64_t lastGps = _parser.lastGpsMs;
+            portEXIT_CRITICAL_SAFE(&_parserMux);
             ESP_LOGW(TAG, "Data STALE: lastPos=%llu lastGps=%llu",
-                     (unsigned long long)_parser.lastPositionMs,
-                     (unsigned long long)_parser.lastGpsMs);
+                     (unsigned long long)lastPos, (unsigned long long)lastGps);
         }
 #endif
     }
-
-    bool hasData = mavlink_fillFlightData(_parser, fd, nowMs);
 
     if (!hasData) {
         fd.lat = 0;
@@ -376,10 +391,12 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
         }
 
         char statusBuf[200];
+        portENTER_CRITICAL_SAFE(&_parserMux);
         mavlink_getStatus(_parser, statusBuf, sizeof(statusBuf));
+        uint32_t crcErrs = _parser.consecutiveCrcErrors;
+        portEXIT_CRITICAL_SAFE(&_parserMux);
         ESP_LOGI(TAG, "%s crc_storm=%lu recovery=%lu",
-                 statusBuf,
-                 (unsigned long)_parser.consecutiveCrcErrors,
+                 statusBuf, (unsigned long)crcErrs,
                  (unsigned long)_recoveryCount);
     }
 }

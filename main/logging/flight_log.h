@@ -65,6 +65,8 @@ private:
     uint32_t      _recordCount   = 0;
     uint64_t      _lastWriteMs   = 0;
 
+    portMUX_TYPE  _spinlock      = portMUX_INITIALIZER_UNLOCKED;
+
     TaskHandle_t  _taskHandle    = nullptr;
     QueueHandle_t _queue         = nullptr;
 };

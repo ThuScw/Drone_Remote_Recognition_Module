@@ -83,6 +83,7 @@ bool RIDBroadcastManager::init() {
     uint64_t nowMs = (uint64_t)(esp_timer_get_time() / 1000);
     _lastDataUpdateMs = nowMs;
     _lastBroadcastMs  = nowMs;
+    _lastFlightLogMs  = nowMs;
     _lastSelfTestMs   = nowMs;
     _lastHeapCheckMs  = nowMs;
 

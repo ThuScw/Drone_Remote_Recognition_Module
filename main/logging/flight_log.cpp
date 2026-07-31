@@ -23,6 +23,10 @@ FlightLog::~FlightLog() {
         vQueueDelete(_queue);
         _queue = nullptr;
     }
+    if (_wlHandle != WL_INVALID_HANDLE) {
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
+    }
 }
 
 bool FlightLog::init() {
@@ -93,6 +97,8 @@ bool FlightLog::init() {
     _queue = xQueueCreate(FLIGHT_LOG_QUEUE_DEPTH, sizeof(LogItem));
     if (!_queue) {
         ESP_LOGE(TAG, "Failed to create log queue");
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
         return false;
     }
 
@@ -103,6 +109,8 @@ bool FlightLog::init() {
         ESP_LOGE(TAG, "Failed to create log task");
         vQueueDelete(_queue);
         _queue = nullptr;
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
         return false;
     }
 
@@ -111,7 +119,7 @@ bool FlightLog::init() {
 }
 
 bool FlightLog::enqueueRecord(const uint8_t* data, uint16_t len, uint64_t timestampMs) {
-    if (!_queue || len > kMaxDataLen) return false;
+    if (!_queue || !data || len > kMaxDataLen) return false;
 
     LogItem item;
     item.len = len;
@@ -190,8 +198,10 @@ uint16_t FlightLog::writeRecord(const uint8_t* data, uint16_t len, uint64_t time
         return 0;
     }
 
+    portENTER_CRITICAL_SAFE(&_spinlock);
     _writeOffset += kRecordSize;
     _recordCount++;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
     _lastWriteMs = timestampMs;
 
     return kRecordSize;
@@ -213,11 +223,16 @@ float FlightLog::estimateRemainingHours() const {
 uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
     if (_wlHandle == WL_INVALID_HANDLE || !outData || !outLen || !outTimestampMs) return 0;
 
+    portENTER_CRITICAL_SAFE(&_spinlock);
     uint32_t capacity = _partitionSize / kRecordSize;
-    uint32_t available = (_recordCount < capacity) ? _recordCount : capacity;
+    uint32_t total = _recordCount;
+    uint32_t writeOff = _writeOffset;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
+
+    uint32_t available = (total < capacity) ? total : capacity;
     if (available == 0 || index >= available) return 0;
 
-    uint32_t oldestOffset = (_recordCount <= capacity) ? 0 : _writeOffset;
+    uint32_t oldestOffset = (total <= capacity) ? 0 : writeOff;
     uint32_t physicalOffset = (oldestOffset + index * kRecordSize) % _partitionSize;
 
     uint8_t buf[kRecordSize];
@@ -242,8 +257,11 @@ uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLe
 }
 
 uint16_t FlightLog::readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    portENTER_CRITICAL_SAFE(&_spinlock);
     uint32_t capacity = _partitionSize / kRecordSize;
-    uint32_t available = (_recordCount < capacity) ? _recordCount : capacity;
+    uint32_t total = _recordCount;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
+    uint32_t available = (total < capacity) ? total : capacity;
     if (available == 0) return 0;
     return readRecord(available - 1, outData, outLen, outTimestampMs);
 }

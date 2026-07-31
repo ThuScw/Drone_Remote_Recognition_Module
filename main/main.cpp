@@ -98,7 +98,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");
 
     // --- Main Loop ---
-    FlightData fd = {};  // 零初始化: opStatus=STATUS_GROUND, freshness=FRESH_INVALID
+    FlightData fd = {};  // 零初始化: opStatus=STATUS_UNREPORTED(0), freshness=FRESH_INVALID
     while (1) {
         esp_task_wdt_reset();
 

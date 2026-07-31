@@ -37,8 +37,8 @@ static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_
     p.lastGpsMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
-    float lat = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
-    float lon = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1e7f;
+    float lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
+    float lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
     ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f sats=%d eph=%.1f (raw only, pos from GLOBAL_POSITION_INT)",
              p.gpsFixType, lat, lon, p.gpsSats, p.gpsEph);
     #endif

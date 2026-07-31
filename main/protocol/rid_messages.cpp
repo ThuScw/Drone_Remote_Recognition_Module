@@ -75,8 +75,9 @@ static uint16_t encodeSpeed(float mps) {
 static uint8_t encodeVSpeed(float mps) {
     uint8_t dir = (mps < 0.0f) ? 0x80 : 0x00;
     float absVal = (mps < 0.0f) ? -mps : mps;
-    uint8_t val = (uint8_t)(absVal * 2.0f + 0.5f);
-    if (val > 127) val = 127;
+    float encoded = absVal * 2.0f;
+    if (encoded > 127.0f) encoded = 127.0f;
+    uint8_t val = (uint8_t)(encoded + 0.5f);
     return dir | val;
 }
 
@@ -95,6 +96,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
                           uint8_t horizAcc, uint8_t vertAcc,
                           uint8_t speedAcc, uint8_t tsAcc,
                           uint64_t timestampMs) {
+    if (!uasId || !realNameId) return;
     memset(&pkt, 0, sizeof(pkt));
 
     pkt.dataType = GB46750_DATA_TYPE;
@@ -108,8 +110,8 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     pkt.dataId[0] = DID_UPIC | DID_REALNAME | DID_UA_CLASS
                    | DID_OP_LOC_TYPE | DID_OP_LOC | DID_OP_ALT
                    | DID_EXT_FLAG;
-    // 003 运行类别 (O) — 仅在有效时发送
-    if (1) { pkt.dataId[0] |= DID_OP_CATEGORY; }  // 始终有值 (config)
+    // 003 运行类别 (O) — 始终有值 (config)
+    pkt.dataId[0] |= DID_OP_CATEGORY;
 
     // Byte 1: 飞行数据字段
     pkt.dataId[1] = DID_UA_POS | DID_TRACK_ANGLE | DID_GROUND_SPEED
@@ -254,6 +256,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
 // ======================== 序列化 ========================
 
 uint16_t gb46750_serialize(const GB46750Packet& pkt, uint8_t* out, uint16_t maxLen) {
+    if (!out) return 0;
     uint16_t len = pkt.totalLen;
     if (len > maxLen) return 0;
 
