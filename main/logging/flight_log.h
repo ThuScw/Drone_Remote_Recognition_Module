@@ -28,8 +28,16 @@ public:
     bool enqueueRecord(const uint8_t* data, uint16_t len, uint64_t timestampMs);
 
     uint32_t getRecordCount() const { return _recordCount; }
+    uint32_t getMaxRecords() const { return _partitionSize / kRecordSize; }
     uint32_t getWriteOffset() const { return _writeOffset; }
     float estimateRemainingHours() const;
+
+    // 读取单条记录（index: 0=最旧, N-1=最新）
+    // 返回读取字节数（96 成功, 0 失败/越界）
+    uint16_t readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
+
+    // 读取最新一条记录
+    uint16_t readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 
 private:
     static constexpr uint32_t kMagic       = 0x5249444C;  // "RIDL"

@@ -25,6 +25,7 @@
 #include "flight_data.h"
 #include "indicators.h"
 #include "flight_log.h"
+#include "console_cmd.h"
 
 static const char* TAG = "SYS";
 
@@ -84,6 +85,8 @@ extern "C" void app_main(void) {
     if (!flightLog.init()) {
         ESP_LOGW(TAG, "Flight log init failed — continuing without persistent storage");
     }
+
+    ConsoleCmd::init(flightLog);
 
     // --- Broadcast Manager (all safety + orchestration logic) ---
     manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, interlock);

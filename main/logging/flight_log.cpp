@@ -205,6 +205,49 @@ float FlightLog::estimateRemainingHours() const {
     return (float)remainingRecords * (float)FLIGHT_LOG_INTERVAL_S / 3600.0f;
 }
 
+// --- 环形缓冲区逻辑地址 → 物理地址映射 ---
+// _recordCount 是累计写入数，_partitionSize/kRecordSize 是总容量
+// 未绕回: 记录从 offset 0 线性排列，最旧=0，最新=offset-kRecordSize
+// 已绕回: 最旧在 _writeOffset（即将被覆盖的位置）→ 绕回分区末尾 → 最新在 (_writeOffset - kRecordSize)
+
+uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    if (_wlHandle == WL_INVALID_HANDLE || !outData || !outLen || !outTimestampMs) return 0;
+
+    uint32_t capacity = _partitionSize / kRecordSize;
+    uint32_t available = (_recordCount < capacity) ? _recordCount : capacity;
+    if (available == 0 || index >= available) return 0;
+
+    uint32_t oldestOffset = (_recordCount <= capacity) ? 0 : _writeOffset;
+    uint32_t physicalOffset = (oldestOffset + index * kRecordSize) % _partitionSize;
+
+    uint8_t buf[kRecordSize];
+    esp_err_t rc = wl_read(_wlHandle, physicalOffset, buf, kRecordSize);
+    if (rc != ESP_OK) return 0;
+
+    uint32_t magic = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    if (magic != kMagic) return 0;
+
+    uint16_t storedCrc = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+    uint16_t calcCrc  = crc16(buf + 6, kRecordSize - 6);
+    if (storedCrc != calcCrc) return 0;
+
+    *outTimestampMs = 0;
+    for (int i = 0; i < 8; i++) *outTimestampMs |= ((uint64_t)buf[6 + i] << (i * 8));
+
+    *outLen = (uint16_t)buf[14] | ((uint16_t)buf[15] << 8);
+    if (*outLen > kMaxDataLen) *outLen = kMaxDataLen;
+
+    memcpy(outData, buf + 16, *outLen);
+    return kRecordSize;
+}
+
+uint16_t FlightLog::readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    uint32_t capacity = _partitionSize / kRecordSize;
+    uint32_t available = (_recordCount < capacity) ? _recordCount : capacity;
+    if (available == 0) return 0;
+    return readRecord(available - 1, outData, outLen, outTimestampMs);
+}
+
 uint16_t FlightLog::crc16(const uint8_t* data, size_t len) {
     uint16_t crc = 0xFFFF;
     for (size_t i = 0; i < len; i++) {
