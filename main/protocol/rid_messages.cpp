@@ -361,3 +361,34 @@ DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint6
 
     return worst;
 }
+
+// GB 46750-2025 精度枚举映射 (Table 3-017/018)
+// GPS eph/epv 单位为米 (标准差); ≤0 返回 0 (unknown)
+
+uint8_t gb46750_mapHorizAcc(float ephM) {
+    if (ephM <= 0.0f)   return 0;
+    if (ephM < 1.0f)    return 12;  // <1m
+    if (ephM < 3.0f)    return 11;  // <3m
+    if (ephM < 10.0f)   return 10;  // <10m
+    if (ephM < 30.0f)   return 9;   // <30m
+    if (ephM < 92.6f)   return 8;   // <92.6m
+    if (ephM < 185.0f)  return 7;   // <185m
+    if (ephM < 556.0f)  return 6;   // <556m
+    if (ephM < 926.0f)  return 5;   // <926m
+    if (ephM < 1852.0f) return 4;   // <1852m
+    if (ephM < 3700.0f) return 3;   // <3.70km
+    if (ephM < 7410.0f) return 2;   // <7.41km
+    if (ephM <= 18520.0f) return 1;  // <=18.52km
+    return 0;
+}
+
+uint8_t gb46750_mapVertAcc(float epvM) {
+    if (epvM <= 0.0f)  return 0;
+    if (epvM < 1.0f)   return 6;  // <1m
+    if (epvM < 3.0f)   return 5;  // <3m
+    if (epvM < 10.0f)  return 4;  // <10m
+    if (epvM < 25.0f)  return 3;  // <25m
+    if (epvM < 45.0f)  return 2;  // <45m
+    if (epvM <= 150.0f) return 1;  // <=150m
+    return 0;
+}

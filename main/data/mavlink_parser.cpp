@@ -14,9 +14,19 @@ static const char* TAG = "MAVLINK";
 static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // HEARTBEAT: custom_mode(4) + type(1) + autopilot(1) + base_mode(1) + system_status(1) + mavlink_version(1) = 9 bytes
     // base_mode bit 7: armed flag
+    bool wasArmed = p.armed;
     p.armed = (payload[6] & 0x80) != 0;
     p.systemStatus = payload[7];
     p.lastHeartbeatMs = nowMs;
+
+    // Record takeoff point on first armed heartbeat (if we have position data)
+    // This is used as operator position fallback when HOME_POSITION is unavailable
+    if (!wasArmed && p.armed && !p.takeoffValid && p.lastPositionMs > 0) {
+        p.takeoffLat = p.lat;
+        p.takeoffLon = p.lon;
+        p.takeoffAlt = p.altMsl;
+        p.takeoffValid = true;
+    }
 
     #if CONFIG_RID_VERBOSE_LOG
     ESP_LOGI(TAG, "HEARTBEAT: type=%d armed=%d status=%d",
@@ -25,20 +35,20 @@ static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload, uint64_t 
 }
 
 static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
-    // Standard MAVLink GPS_RAW_INT layout (common.xml):
-    //   time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4)
-    //   + eph(2) + epv(2) + vel(2) + cog(2) + satellites_visible(1) = 30 bytes
-    // 注意: 仅更新 GPS 状态字段，不覆写 GLOBAL_POSITION_INT 的位置数据
-    p.gpsFixType = payload[8];
-    p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
-    p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
+    // ArduPilot GPS_RAW_INT layout (ardupilotmega.xml):
+    //   time_usec(8) + lat(4) + lon(4) + alt(4)
+    //   + eph(2) + epv(2) + vel(2) + cog(2) + fix_type(1) + satellites_visible(1) = 30 bytes
+    // 与标准 MAVLink common.xml 不同: fix_type 在偏移 28 而非 8
+    p.gpsFixType = payload[28];
+    p.gpsEph = (uint16_t)(payload[20] | (payload[21] << 8)) / 100.0f;
+    p.gpsEpv = (uint16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
     p.gpsSats = payload[29];
 
     p.lastGpsMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
-    float lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
-    float lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
+    float lat = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
+    float lon = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1e7f;
     ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f sats=%d eph=%.1f (raw only, pos from GLOBAL_POSITION_INT)",
              p.gpsFixType, lat, lon, p.gpsSats, p.gpsEph);
     #endif
@@ -62,6 +72,7 @@ static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
 static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // GLOBAL_POSITION_INT: time_boot_ms(4) + lat(4) + lon(4) + alt(4) + relative_alt(4) + vx(2) + vy(2) + vz(2) + hdg(2) = 28 bytes
     // Some FC frames are 26-27 bytes (truncated hdg), handled by payloadLen check below
+    p.lastPositionBootMs = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
     p.lat = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
     p.lon = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
     p.altMsl = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1000.0f;
@@ -121,6 +132,23 @@ static void decode_home_position(MavlinkParser& p, const uint8_t* payload) {
     #endif
 }
 
+static void decode_system_time(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
+    uint64_t unixUsec;
+    memcpy(&unixUsec, payload, 8);
+    uint32_t bootMs;
+    memcpy(&bootMs, payload + 8, 4);
+
+    p.unixBootOffsetMs = (int64_t)(unixUsec / 1000ULL) - (int64_t)bootMs;
+    p.unixTimeValid = true;
+    p.lastSystemTimeMs = nowMs;
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "SYSTEM_TIME: unix=%llu ms, boot=%lu ms, offset=%lld ms",
+             (unsigned long long)(unixUsec / 1000ULL), (unsigned long)bootMs,
+             (long long)p.unixBootOffsetMs);
+    #endif
+}
+
 // ================= 帧处理 =================
 
 static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
@@ -153,6 +181,9 @@ static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
         case MAVLINK_MSG_HOME_POSITION:
             if (p.payloadLen >= 12) decode_home_position(p, payload);
             break;
+        case MAVLINK_MSG_SYSTEM_TIME:
+            if (p.payloadLen >= 12) decode_system_time(p, payload, nowMs);
+            break;
         default:
             #if CONFIG_RID_VERBOSE_LOG
             ESP_LOGD(TAG, "Unknown msgid=%d len=%d", msgid, p.payloadLen);
@@ -169,6 +200,11 @@ void mavlink_init(MavlinkParser& p) {
     p.heading = NAN;
     p.consecutiveCrcErrors = 0;
     p.lastValidFrameMs = 0;
+    p.unixBootOffsetMs = 0;
+    p.unixTimeValid = false;
+    p.lastSystemTimeMs = 0;
+    p.lastPositionBootMs = 0;
+    p.takeoffValid = false;  // takeoff point not recorded yet
 }
 
 bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
@@ -261,22 +297,26 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
 }
 
 bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t nowMs) {
-    (void)nowMs;
-
-    // 检查是否有任何位置数据: GLOBAL_POSITION_INT 和 GPS_RAW_INT 是独立的 MAVLink 消息,
-    // 到达顺序不确定。只要收到过位置帧就输出，GPS fix type 仅作为质量指示。
     if (p.lastPositionMs == 0) {
         return false;  // 从未收到 GLOBAL_POSITION_INT
     }
 
-    // 填充位置
     fd.lat = p.lat;
     fd.lon = p.lon;
     fd.geoAlt = p.altMsl;
     fd.heightAgl = p.altRel;
     fd.baroAlt = p.altMsl;
 
-    // 填充速度
+    fd.horizAccM = p.gpsEph;
+    fd.vertAccM  = p.gpsEpv;
+
+    // Unix 时间戳: FC boot 时的 Unix 时间 + FC 的位置采样 boot_ms
+    // 使用 FC 的 time_boot_ms (而非 ESP32 的 nowMs) 避免独立复位时时间域错位
+    if (p.unixTimeValid && (nowMs - p.lastSystemTimeMs < 30000)) {
+        fd.unixTimestampMs = (uint64_t)p.unixBootOffsetMs + p.lastPositionBootMs;
+    } else {
+        fd.unixTimestampMs = 0;
+    }
     fd.speed = sqrtf(p.velN * p.velN + p.velE * p.velE);
     fd.vspeed = -p.velD;
 
@@ -300,14 +340,21 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     }
 
     // 操作员位置
+    // Priority: HOME_POSITION > takeoff point > unknown (0)
+    // OP_LOCATION_TYPE=0 means "takeoff point", so using takeoff point is semantically correct
     if (p.homeValid) {
         fd.opLat = p.homeLat;
         fd.opLon = p.homeLon;
         fd.opAlt = p.homeAlt;
+    } else if (p.takeoffValid) {
+        fd.opLat = p.takeoffLat;
+        fd.opLon = p.takeoffLon;
+        fd.opAlt = p.takeoffAlt;
     } else {
-        fd.opLat = p.lat;
-        fd.opLon = p.lon;
-        fd.opAlt = p.altMsl;
+        // No home, no takeoff point → encode as unknown (0) per GB 46750 Table 3 item 006
+        fd.opLat = 0.0f;
+        fd.opLon = 0.0f;
+        fd.opAlt = 0.0f;
     }
 
     fd.validMask = FLD_ALL;

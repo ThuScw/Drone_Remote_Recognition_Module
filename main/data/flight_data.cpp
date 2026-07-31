@@ -367,9 +367,9 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
         // 不覆盖 opStatus — 保留上次已知状态
         // fd 在 main.cpp 中零初始化 (opStatus=STATUS_GROUND)
         // 飞行中数据短暂丢失时，保留上次 fillFlightData 设置的空中状态
-        fd.opLat = MOCK_OP_LAT;
-        fd.opLon = MOCK_OP_LON;
-        fd.opAlt = MOCK_OP_ALT;
+        fd.opLat = 0.0f;
+        fd.opLon = 0.0f;
+        fd.opAlt = 0.0f;
         fd.validMask = 0;
         fd.freshness = FRESH_INVALID;
         fd.validationFlags = 0xFFFFFFFF;

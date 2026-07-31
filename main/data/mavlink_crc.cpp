@@ -2,6 +2,7 @@
 
 uint8_t mavlink_crc_extra(uint16_t msgid) {
     switch (msgid) {
+        case 2:   return 137;  // SYSTEM_TIME
         case 0:   return 50;   // HEARTBEAT
         case 1:   return 124;  // SYS_STATUS
         case 11:  return 89;   // SET_MODE

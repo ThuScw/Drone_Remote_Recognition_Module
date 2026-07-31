@@ -42,7 +42,7 @@ public:
 private:
     // --- 内部方法 ---
     void handleBleRecovery();
-    void validateAndBuildPacket(const FlightData& fd, uint64_t nowMs);
+    void validateAndBuildPacket(const FlightData& fd);
     void handleStatusTransition();
     void handleBroadcast(uint64_t nowMs);
     void handleFlightLog(uint64_t nowMs);

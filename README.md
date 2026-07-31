@@ -31,6 +31,8 @@ main/
 ├── data/
 │   ├── flight_data.h/cpp           # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
 │   ├── mavlink_parser.h/cpp        # MAVLink v1/v2 解析器（帧解析、消息解码、CRC校验）
+│   │                               # 支持 7 种消息：HEARTBEAT / GPS_RAW_INT / ATTITUDE /
+│   │                               # GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME
 │   ├── mavlink_crc.h/cpp           # CRC-16/MCRF4XX 校验
 │   └── mavlink_tx.h/cpp            # MAVLink TX 联锁命令（ARM/DISARM）
 │
@@ -69,6 +71,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包
 - **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
 - **GPS fix 解耦**：`mavlink_fillFlightData()` 不再以 `gpsFixType >= 2` 硬拦截数据输出；GPS_RAW_INT 和 GLOBAL_POSITION_INT 是独立 MAVLink 消息，到达顺序不确定，仅以 `lastPositionMs > 0` 判断是否有位置数据，GPS fix 不足降级为 STALE 质量标记
+- **操作员位置三级回退**：优先使用 `HOME_POSITION`（飞控 Home 点），其次使用首次解锁时记录的"起飞点"（符合 `OP_LOCATION_TYPE=0` 起飞点位置语义），最后编码为 0（未知，符合 GB 46750 Table 3 第 006 项要求）
 - **状态机消抖**：地面↔空中切换需连续确认（空中→地面 500ms，地面→空中 300ms），防止 HEARTBEAT 短暂波动误触发；紧急/失效状态绕过消抖立即生效
 - **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
@@ -76,7 +79,8 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
 - **空中不拉闸、地面拉闸**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞 (GB 46750-2025 5.1.7)
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
-- **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION 六种消息，满足 GB 46750 全部 21 字段需求
+- **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
+- **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
 - **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * 96) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
 - **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×96 bytes + `+DONE\r\n` 导出全部飞行记录
 
@@ -87,6 +91,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **状态切换**：消抖确认后执行（地面→空中 300ms / 空中→地面 500ms），紧急状态绕过立即切换
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
+- **操作员位置**：优先使用飞控 Home 点，其次使用首次解锁时记录的起飞点，最后编码为 0（未知）
 - **看门狗**：主循环 5s 无响应 → 系统自动复位
 - **飞行日志导出**：PC 端 `python flight_log_dump.py COMx` → 通过 UART0 发送 `DUMP\r\n` → ESP32 回复二进制记录 → 解码为 GB 46750 全部 21 字段的 CSV 文件
 
@@ -309,6 +314,9 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] MAVLink v1/v2 双协议解析（CRC 校验 + 消息解码）
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
+- [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 0（未知）
+- [x] GB 46750 数据包逐字节单元测试（golden packet 验证，5585 测试用例通过）
+- [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）

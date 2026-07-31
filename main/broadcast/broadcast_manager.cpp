@@ -122,7 +122,7 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
     // 2. 数据更新: 验证 + 构建新包
     if (nowMs - _lastDataUpdateMs >= DATA_UPDATE_INTERVAL_MS) {
         _lastDataUpdateMs = nowMs;
-        validateAndBuildPacket(fd, nowMs);
+        validateAndBuildPacket(fd);
     }
 
     // 3. 状态转换 (地面↔空中↔紧急)
@@ -149,7 +149,7 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
 //   - M 字段缺失 (validMask 未置位): 编码为 unknown (0)，dataId 位仍为 1
 //   - 这确保 Message Counter 每包自增，接收方始终看到最新状态
 
-void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t nowMs) {
+void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
     // 数据无效时保留上次有效数据，防止飞行中因数据短暂丢失而误判为地面状态
     if (fd.freshness == FRESH_INVALID) {
         ESP_LOGW(TAG, "Data INVALID — keeping last known state, not updating packet");
@@ -172,9 +172,17 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
     }
 
     // 始终构建新包 (P0: 不再 "keeping previous packet")
+    uint8_t horizAcc = gb46750_mapHorizAcc(fd.horizAccM);
+    uint8_t vertAcc  = gb46750_mapVertAcc(fd.vertAccM);
+    if (horizAcc == 0) horizAcc = HORIZ_ACC;
+    if (vertAcc == 0)  vertAcc  = VERT_ACC;
+
+    uint8_t tsAcc = (fd.unixTimestampMs == 0) ? 0 : TS_ACC;
+
     gb46750_buildPacket(_currentPacket, fd, UAS_ID, REALNAME_ID,
                         OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
-                        HORIZ_ACC, VERT_ACC, SPEED_ACC, TS_ACC, nowMs);
+                        horizAcc, vertAcc, SPEED_ACC, tsAcc,
+                        fd.unixTimestampMs);
 }
 
 // ======================== BLE 自修复 ========================
@@ -338,9 +346,10 @@ void RIDBroadcastManager::handleBroadcast(uint64_t nowMs) {
         return;
     }
 
-    // 广播内容输出
+#if CONFIG_RID_VERBOSE_LOG
     ESP_LOGI(TAG, "TX #%lu (%d bytes):", (unsigned long)_broadcastCount, len);
     ESP_LOG_BUFFER_HEXDUMP(TAG, serialized, len, ESP_LOG_INFO);
+#endif
 
     if (!_broadcaster.updateBroadcastData(_currentPacket)) {
         ESP_LOGW(TAG, "Broadcast data update failed (count=%d)",

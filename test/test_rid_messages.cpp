@@ -461,4 +461,169 @@ void test_rid_messages() {
         uint16_t len = gb46750_serialize(pkt, fullBuf, sizeof(fullBuf));
         CHECK_EQ(len, pkt.totalLen);
     }
+
+    // ==== 20. Golden packet: end-to-end byte-level verification ----
+    // Given fixed inputs, verify EVERY byte of serialized output matches hand-calculated values.
+    // This catches offset errors, field ordering mistakes, and encoding bugs.
+    {
+        // Fixed input: known values for all fields
+        FlightData fd;
+        memset(&fd, 0, sizeof(fd));
+        fd.lat = 31.230500f;       // 31.2305° N
+        fd.lon = 121.473800f;      // 121.4738° E
+        fd.geoAlt = 100.0f;        // 100m MSL
+        fd.heightAgl = 50.0f;      // 50m AGL
+        fd.baroAlt = 102.0f;       // 102m baro
+        fd.speed = 5.5f;           // 5.5 m/s
+        fd.heading = 90.0f;        // 90° (East)
+        fd.vspeed = 2.0f;          // 2.0 m/s up
+        fd.opStatus = STATUS_AIRBORNE;  // 2
+        fd.opLat = 31.230000f;     // operator slightly south
+        fd.opLon = 121.473000f;
+        fd.opAlt = 10.0f;          // operator at 10m
+        fd.horizAccM = 5.0f;       // GPS eph=5m → horizAcc=10 (<10m)
+        fd.vertAccM = 2.0f;        // GPS epv=2m → vertAcc=5 (<3m)
+        fd.validMask = FLD_ALL;    // all fields valid
+        fd.freshness = FRESH_OK;
+        fd.unixTimestampMs = 1700000000000ULL;  // fixed timestamp
+
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1,     // opCategory (open)
+                           1,     // uaClass (light)
+                           0,     // opLocType (takeoff point)
+                           0,     // coordSys (WGS-84)
+                           10,    // horizAcc
+                           5,     // vertAcc
+                           3,     // speedAcc
+                           5,     // tsAcc
+                           fd.unixTimestampMs);
+
+        uint8_t buf[GB46750_MAX_PACKET];
+        uint16_t len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+
+        // Verify header
+        CHECK_EQ(buf[0], 0xFF);   // dataType
+        CHECK_EQ(buf[1], 0x01);   // version
+
+        // dataLength should match contentLen
+        CHECK_EQ(buf[2], pkt.contentLen);
+
+        // dataId bytes (3 bytes) - verify bitmask pattern per GB 46750 Table 2
+        // Byte 0: UPIC(0x80) + REALNAME(0x40) + OP_CAT(0x20) + UA_CLASS(0x10) + OP_LOC_TYPE(0x08) + OP_LOC(0x04) + OP_ALT(0x02) + EXT(0x01)
+        CHECK_EQ(buf[3], 0xFF);   // all bits set (M fields + OP_CAT(O) + EXT)
+
+        // Byte 1: UA_POS(0x80) + TRACK(0x40) + SPEED(0x20) + REL_H(0x10) + V_SPD(0x08) + GEO_ALT(0x04) + BARO_ALT(0x02) + EXT(0x01)
+        CHECK_EQ(buf[4], 0xFF);   // all bits set (all O fields present because validMask=FLD_ALL)
+
+        // Byte 2: OP_STATUS(0x80) + COORD(0x40) + H_ACC(0x20) + V_ACC(0x10) + S_ACC(0x08) + TS(0x04) + TS_ACC(0x02)
+        CHECK_EQ(buf[5], 0xFE);   // all except bit 0 (no extension)
+
+        // Content starts at offset 6 (after 1+1+1+3 bytes header)
+        uint8_t* c = buf + 6;
+        int off = 0;
+
+        // 001: UAS_ID (20 bytes)
+        CHECK_EQ(memcmp(c + off, TEST_UAS, 20), 0);
+        off += 20;
+
+        // 002: REALNAME (8 bytes)
+        CHECK_EQ(memcmp(c + off, TEST_REAL, 8), 0);
+        off += 8;
+
+        // 003: OP_CATEGORY (1 byte)
+        CHECK_EQ(c[off], 1);
+        off += 1;
+
+        // 004: UA_CLASS (1 byte)
+        CHECK_EQ(c[off], 1);
+        off += 1;
+
+        // 005: OP_LOC_TYPE (1 byte)
+        CHECK_EQ(c[off], 0);
+        off += 1;
+
+        // 006: OP_POS (8 bytes: lat4 + lon4)
+        int32_t opLat = read_i32le(c + off);
+        int32_t opLon = read_i32le(c + off + 4);
+        CHECK_CLOSE((double)opLat / 1e7, 31.230000, 0.00001);
+        CHECK_CLOSE((double)opLon / 1e7, 121.473000, 0.00001);
+        off += 8;
+
+        // 007: OP_ALT (2 bytes): (10 + 1000) * 2 = 2020
+        uint16_t opAlt = read_u16le(c + off);
+        CHECK_EQ(opAlt, 2020);
+        off += 2;
+
+        // 008: UA_POS (8 bytes: lat4 + lon4)
+        int32_t uaLat = read_i32le(c + off);
+        int32_t uaLon = read_i32le(c + off + 4);
+        CHECK_CLOSE((double)uaLat / 1e7, 31.230500, 0.00001);
+        CHECK_CLOSE((double)uaLon / 1e7, 121.473800, 0.00001);
+        off += 8;
+
+        // 009: TRACK_ANGLE (2 bytes): 90.0 * 10 = 900
+        uint16_t hdg = read_u16le(c + off);
+        CHECK_EQ(hdg, 900);
+        off += 2;
+
+        // 010: GROUND_SPEED (2 bytes): 5.5 * 10 = 55
+        uint16_t spd = read_u16le(c + off);
+        CHECK_EQ(spd, 55);
+        off += 2;
+
+        // 011: REL_HEIGHT (2 bytes, O): (50 + 9000) * 2 = 18100
+        uint16_t relH = read_u16le(c + off);
+        CHECK_EQ(relH, 18100);
+        off += 2;
+
+        // 012: VERT_SPEED (1 byte, O): 2.0 m/s up → dir=0, val=4
+        uint8_t vs = c[off];
+        CHECK_EQ(vs & 0x80, 0);      // bit7=0: rising
+        CHECK_EQ(vs & 0x7F, 4);      // 2.0 * 2 = 4
+        off += 1;
+
+        // 013: GEO_ALT (2 bytes): (100 + 1000) * 2 = 2200
+        uint16_t geoAlt = read_u16le(c + off);
+        CHECK_EQ(geoAlt, 2200);
+        off += 2;
+
+        // 014: BARO_ALT (2 bytes, O): (102 + 1000) * 2 = 2204
+        uint16_t baroAlt = read_u16le(c + off);
+        CHECK_EQ(baroAlt, 2204);
+        off += 2;
+
+        // 015: OP_STATUS (1 byte)
+        CHECK_EQ(c[off], STATUS_AIRBORNE);
+        off += 1;
+
+        // 016: COORD_SYS (1 byte)
+        CHECK_EQ(c[off], 0);  // WGS-84
+        off += 1;
+
+        // 017-019: Precision (3 bytes)
+        CHECK_EQ(c[off], 10);     // HORIZ_ACC
+        CHECK_EQ(c[off + 1], 5);  // VERT_ACC
+        CHECK_EQ(c[off + 2], 3);  // SPEED_ACC
+        off += 3;
+
+        // 020: TIMESTAMP (6 bytes): 1700000000000
+        uint64_t ts = 0;
+        for (int i = 0; i < 6; i++) {
+            ts |= ((uint64_t)c[off + i]) << (i * 8);
+        }
+        CHECK_EQ(ts, 1700000000000ULL);
+        off += 6;
+
+        // 021: TS_ACC (1 byte)
+        CHECK_EQ(c[off], 5);
+        off += 1;
+
+        // Final check: total content length matches offset
+        CHECK_EQ(pkt.contentLen, off);
+        CHECK_EQ(len, 1 + 1 + 1 + 3 + off);  // header + dataId + content
+    }
+
+    printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");
 }

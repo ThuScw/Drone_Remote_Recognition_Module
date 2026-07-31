@@ -34,11 +34,12 @@
 #define COORD_SYS 0
 
 // 精度取值 (GB 46750-2025 Table 3-017/018/019)
-#define HORIZ_ACC 10  // <10m
-#define VERT_ACC  5   // <3m
+// 当 GPS eph/epv 可用时，动态计算精度；以下为 GPS 精度不可用时的 fallback 值
+#define HORIZ_ACC 10  // <10m (fallback)
+#define VERT_ACC  5   // <3m (fallback)
 #define SPEED_ACC 3   // <1m/s
 
-// 时间戳精度 (GB 46750-2025 Table 3-021)
+// 时间戳精度 (GB 46750-2025 Table 3-021) — GPS 授时后的动态值; 未授时设为 0 (未知)
 #define TS_ACC 5  // ≤0.1s
 
 // 广播间隔 (毫秒) — 完整包发送周期
@@ -71,12 +72,6 @@
 
 // 任务看门狗超时 (毫秒) — 主循环卡死超过此时长触发系统复位
 #define WATCHDOG_TIMEOUT_MS 5000
-
-// ================= 遥控站/操作员默认位置 =================
-// 当 MAVLink HOME_POSITION 不可用时作为操作员位置默认值
-#define MOCK_OP_LAT         31.230500f
-#define MOCK_OP_LON        121.473800f
-#define MOCK_OP_ALT         10.0f
 
 // ================= 日志配置 =================
 

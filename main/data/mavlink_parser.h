@@ -22,6 +22,7 @@
 #define MAVLINK_MSG_ATTITUDE              30
 #define MAVLINK_MSG_GLOBAL_POSITION_INT   33
 #define MAVLINK_MSG_VFR_HUD               74
+#define MAVLINK_MSG_SYSTEM_TIME            2
 #define MAVLINK_MSG_HOME_POSITION        105
 
 // ================= 解析状态 =================
@@ -87,6 +88,19 @@ struct MavlinkParser {
     float homeLon;
     float homeAlt;
     bool  homeValid;
+
+    // Takeoff point — recorded when first ARMED heartbeat received
+    // Used as operator position fallback when HOME_POSITION unavailable
+    float takeoffLat;
+    float takeoffLon;
+    float takeoffAlt;
+    bool  takeoffValid;
+
+    // Unix time (from SYSTEM_TIME)
+    int64_t  unixBootOffsetMs;    // Unix epoch ms when FC booted
+    bool     unixTimeValid;
+    uint64_t lastSystemTimeMs;    // ESP32 uptime of last SYSTEM_TIME message
+    uint32_t lastPositionBootMs;  // FC time_boot_ms from latest GLOBAL_POSITION_INT
 };
 
 // ================= API =================
