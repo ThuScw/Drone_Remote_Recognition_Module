@@ -101,7 +101,12 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
     // ESP32-S3 max TX power +9 dBm + antenna gain ≈ 11 dBm EIRP → compliant
     esp_err_t txRet = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, BLE_TX_POWER_LEVEL);
     if (txRet == ESP_OK) {
-        ESP_LOGI(TAG, "BLE advertising TX power set OK");
+        // 读回确认底层控制器真正生效
+        // ESP_PWR_LVL enum 值因芯片不同而不同 (ESP32: 0-7, ESP32-S3/C3: 0-14)
+        esp_power_level_t actualPwr = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV);
+        ESP_LOGI(TAG, "BLE ADV TX power: set=%d, actual=%d → %s",
+                 (int)BLE_TX_POWER_LEVEL, (int)actualPwr,
+                 (actualPwr == BLE_TX_POWER_LEVEL) ? "OK" : "MISMATCH");
     } else {
         ESP_LOGW(TAG, "BLE TX power set failed (rc=%d) — continuing with default", txRet);
     }

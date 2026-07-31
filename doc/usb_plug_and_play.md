@@ -262,5 +262,12 @@ for (size_t i = 0; i < num_devices; i++) {
 
 ---
 
-**最后更新**: 2026-07-29  
-**适用版本**: ESP-IDF v5.5+
+**最后更新**: 2026-07-31  
+**适用版本**: ESP-IDF v5.5.5+
+
+---
+
+## 相关功能
+
+- **飞行日志导出**：通过 UART0 的 `DUMP` 命令导出飞行日志，详见 [`tools/flight_log_dump.py`](../tools/flight_log_dump.py)
+- **MAVLink TX 安全开关**：`config.h` 中 `MAVLINK_TX_ENABLED=0` 时 USB CDC 只读模式，`out_buffer_size=0`，且打开后显式清除 DTR/RTS

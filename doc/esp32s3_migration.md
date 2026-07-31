@@ -29,6 +29,8 @@
 - MAVLink TX 安全开关 (`MAVLINK_TX_ENABLED`, 默认 0=只读模式)
 - GPIO6 联锁定义 (`INTERLOCK_RID_OK_GPIO`)
 - 更新 GPIO 引脚定义 (LED 从 GPIO27 → GPIO48)
+- 飞行日志存储配置 (GB 46750-2025 5.1.8)：Flash 分区、记录间隔、环形缓冲区
+- BLE TX 功率配置 (`BLE_TX_POWER_LEVEL`)，ESP32-S3 使用 ESP_PWR_LVL_P9 (+9 dBm)
 
 #### 2.2 `flight_data.cpp` 重写
 
@@ -80,10 +82,15 @@ CONFIG_USB_HOST_CDC_ACM_DATA_BUF_SIZE=1024
 
 #### 2.4 `CMakeLists.txt` 更新
 
-**新增 USB 依赖**:
+**新增 USB 和存储依赖**:
 ```cmake
-REQUIRES ... usb
+REQUIRES ... usb spi_flash wear_levelling
+INCLUDE_DIRS "." "broadcast" "protocol" "broadcaster" "data" "indicators" "logging" "console"
 ```
+
+**新增模块**:
+- `logging/` — FlightLog 飞行数据持久化（环形缓冲区 + 异步磨损均衡写入）
+- `console/` — ConsoleCmd UART 命令行监听（DUMP 飞行日志导出）
 
 ## 构建步骤
 
@@ -241,5 +248,5 @@ git checkout -- .  # 撤销所有修改
 
 ---
 
-**最后更新**: 2026-07-29  
-**适用版本**: ESP-IDF v5.5+
+**最后更新**: 2026-07-31  
+**适用版本**: ESP-IDF v5.5.5+

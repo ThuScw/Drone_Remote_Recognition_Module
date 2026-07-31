@@ -15,7 +15,7 @@
 ```
 main/
 ├── config.h                        # 用户配置（UAS ID、精度、定时参数、GPIO引脚、USB Host）
-├── main.cpp                        # 精简编排器（~100行）：init + loop
+├── main.cpp                        # 精简编排器（~110行）：init + loop
 │
 ├── broadcast/
 │   └── broadcast_manager.h/cpp     # 广播编排器：数据验证、包构建、状态机、BLE自修复、
@@ -29,15 +29,23 @@ main/
 │   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
 │
 ├── data/
-│   ├── flight_data.h               # 数据源接口：void getFlightData(FlightData&, uint64_t)
-│   ├── flight_data.cpp             # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
-│   └── mavlink_parser.h/cpp        # MAVLink v1/v2 解析器（帧解析、消息解码、CRC校验）
+│   ├── flight_data.h/cpp           # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
+│   ├── mavlink_parser.h/cpp        # MAVLink v1/v2 解析器（帧解析、消息解码、CRC校验）
+│   ├── mavlink_crc.h/cpp           # CRC-16/MCRF4XX 校验
+│   └── mavlink_tx.h/cpp            # MAVLink TX 联锁命令（ARM/DISARM）
 │
 ├── indicators/
 │   └── indicators.h/cpp            # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
 │
-└── logging/
-    └── flight_log.h/cpp            # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
+├── logging/
+│   └── flight_log.h/cpp            # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
+│                                   # 环形缓冲区读写 + 异步磨损均衡写入
+│
+├── console/
+│   └── console_cmd.h/cpp           # UART 命令行监听（DUMP 飞行日志导出）
+│
+tools/
+└── flight_log_dump.py              # PC 端 Python 脚本：串口 DUMP → CSV 解码导出
 ```
 
 ### 数据流
@@ -48,10 +56,12 @@ main/
                                                                     ▼
                                                           RIDBroadcastManager::update()
                                                                     │
-                                                          ┌─────────┼──────────┐
-                                                          ▼         ▼          ▼
-                                                   validateData  buildPacket  handleBroadcast
-                                                    (范围检查)   (M=0,O=条件)  (永不跳过)
+                                                          ┌─────────┼──────────┬──────────┐
+                                                          ▼         ▼          ▼          ▼
+                                                   validateData  buildPacket  broadcast  flightLog
+                                                    (范围检查)   (M=0,O=条件)  (800ms)   (10s间隔)
+
+PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ flightLog.readRecord() ──→ CSV 文件
 ```
 
 ### 关键设计决策
@@ -67,6 +77,8 @@ main/
 - **空中不拉闸、地面拉闸**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞 (GB 46750-2025 5.1.7)
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION 六种消息，满足 GB 46750 全部 21 字段需求
+- **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * 96) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
+- **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×96 bytes + `+DONE\r\n` 导出全部飞行记录
 
 ### 广播策略
 
@@ -76,6 +88,7 @@ main/
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
 - **看门狗**：主循环 5s 无响应 → 系统自动复位
+- **飞行日志导出**：PC 端 `python flight_log_dump.py COMx` → 通过 UART0 发送 `DUMP\r\n` → ESP32 回复二进制记录 → 解码为 GB 46750 全部 21 字段的 CSV 文件
 
 ### 硬件接口
 
@@ -86,7 +99,7 @@ main/
 | GPIO19/20 | USB OTG (D-/D+) | 双向 | 连接飞控 USB 口，读取 MAVLink 数据 |
 | GPIO6 | 飞控联锁 RID_OK | 输出 | 自检通过→拉高（飞控允许起飞），异常→拉低（飞控禁止起飞），符合 GB 46750-2025 5.1.7 |
 | GPIO48 | WS2812B RGB LED | 输出 | RMT 外设驱动，绿色慢闪(0.5Hz)=地面待机，蓝色快闪(2.5Hz)=空中/紧急广播中，红色常亮=模块故障 |
-| COM 口 | UART0 | - | 连接电脑，用于调试和烧录 |
+| COM 口 | UART0 | 双向 | 连接电脑：调试输出 + 烧录 + `DUMP` 命令行飞行日志导出 |
 
 **USB 接口说明**：
 - **"USB" 口**（GPIO19/20）：连接飞控，USB Host 模式读取数据
@@ -240,7 +253,29 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 - Service UUID：`0x0D50`（ASTM F3411 RID Service）
 - Service Data 中为 GB 46750-2025 编码的数据包
 
-串口监控输出示例：
+### 导出飞行日志
+
+通过 PC 端 Python 脚本导出飞行日志为 CSV：
+
+```bash
+# 安装依赖
+pip install pyserial
+
+# 自动扫描 COM 口
+python tools/flight_log_dump.py
+
+# 指定 COM 口
+python tools/flight_log_dump.py COM3
+
+# 指定输出文件
+python tools/flight_log_dump.py COM3 -o flight_20260731.csv
+```
+
+**导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×96 bytes 二进制记录 → `+DONE\r\n`
+
+**CSV 输出**包含 28 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
+
+### 串口监控输出示例
 
 ```
 I (1234) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
@@ -265,6 +300,7 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 | CRC 风暴 | `CRC storm detected` | 关闭 USB 设备 → 重置解析器 → 重连（5s 冷却） |
 | 堆内存不足 | `LOW HEAP WARNING` | 每 60s 监控，< 10KB 输出告警 |
 | 飞行日志栈溢出 | `stack watermark LOW` | < 512 bytes 输出告警 |
+| 飞行日志读取失败 | `readRecord: CRC mismatch` | 记录损坏，跳过该条继续导出 |
 
 ## 产品化 Checklist
 
@@ -272,13 +308,13 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] 确认飞控 VID/PID（0x1B8C / 0x0036）
 - [x] MAVLink v1/v2 双协议解析（CRC 校验 + 消息解码）
 - [x] CRC 风暴检测与 USB 自恢复
+- [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
-- [ ] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
+- [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
-- [ ] FlightLog 读取接口：实现 `readRecord()` 和导出功能 (GB 46750-2025 5.1.8 附录要求提供访问方式)
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
 
 ### 量产安全配置（最终生产阶段）

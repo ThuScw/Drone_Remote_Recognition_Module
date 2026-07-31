@@ -1,0 +1,147 @@
+PS C:\Users\86134\Desktop\Code\ESP\Drone_Remote_Recognition_Module> 
+PS C:\Users\86134\Desktop\Code\ESP\Drone_Remote_Recognition_Module> 
+PS C:\Users\86134\Desktop\Code\ESP\Drone_Remote_Recognition_Module> $env:IDF_PATH = 'C:/Espressif/frameworks/esp-idf-v5.5.5/';
+PS C:\Users\86134\Desktop\Code\ESP\Drone_Remote_Recognition_Module>  & 'C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe' 'C:\Espressif\frameworks\esp-idf-v5.5.5\tools\idf_monitor.py' -p COM9 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --make '''C:\Espressif\python_env\idf5.5_py3.11_env\Scripts\python.exe'' ''C:\Espressif\frameworks\esp-idf-v5.5.5\tools\idf.py''' --target esp32s3 'c:\Users\86134\Desktop\Code\ESP\Drone_Remote_Recognition_Module\build\ESP32S3_RID.elf'
+--- Warning: GDB cannot open serial ports accessed as COMx
+--- Using \\.\COM9 instead...
+--- esp-idf-monitor 1.9.0 on \\.\COM9 115200
+--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x14f0
+load:0x403c8700,len:0xd24
+load:0x403cb700,len:0x2eec
+entry 0x403c8924
+I (24) boot: ESP-IDF v5.5.5 2nd stage bootloader
+I (25) boot: compile time Jul 31 2026 11:26:44
+I (25) boot: Multicore bootloader
+I (25) boot: chip revision: v0.2
+I (28) boot: efuse block revision: v1.3
+I (31) boot.esp32s3: Boot SPI Speed : 80MHz
+I (35) boot.esp32s3: SPI Mode       : DIO
+I (39) boot.esp32s3: SPI Flash Size : 8MB
+I (43) boot: Enabling RNG early entropy source...
+I (47) boot: Partition Table:
+I (50) boot: ## Label            Usage          Type ST Offset   Length
+I (56) boot:  0 nvs              WiFi data        01 02 00009000 00010000
+I (63) boot:  1 otadata          OTA data         01 00 00019000 00002000
+I (69) boot:  2 phy_init         RF data          01 01 0001b000 00001000
+I (76) boot:  3 factory          factory app      00 00 00020000 00180000
+I (82) boot:  4 flight_log       Unknown data     01 06 001a0000 00600000
+I (89) boot: End of partition table
+I (92) boot: Defaulting to factory image
+I (96) esp_image: segment 0: paddr=00020020 vaddr=3c070020 size=1b6b4h (112308) map
+I (123) esp_image: segment 1: paddr=0003b6dc vaddr=3fc9c200 size=0453ch ( 17724) load
+I (128) esp_image: segment 2: paddr=0003fc20 vaddr=40374000 size=003f8h (  1016) load
+I (128) esp_image: segment 3: paddr=00040020 vaddr=42000020 size=61414h (398356) map
+I (208) esp_image: segment 4: paddr=000a143c vaddr=403743f8 size=17d28h ( 97576) load
+I (230) esp_image: segment 5: paddr=000b916c vaddr=50000000 size=00020h (    32) load
+I (240) boot: Loaded app from partition at offset 0x20000
+I (240) boot: Disabling RNG early entropy source...
+I (250) cpu_start: Multicore app
+I (259) cpu_start: GPIO 44 and 43 are used as console UART I/O pins
+I (259) cpu_start: Pro cpu start user code
+I (260) cpu_start: cpu freq: 160000000 Hz
+I (261) app_init: Application information:
+I (265) app_init: Project name:     ESP32S3_RID
+I (269) app_init: App version:      2297743-dirty
+I (274) app_init: Compile time:     Jul 31 2026 15:32:25
+I (279) app_init: ELF file SHA256:  35952912e...
+I (283) app_init: ESP-IDF:          v5.5.5
+I (287) efuse_init: Min chip rev:     v0.0
+I (291) efuse_init: Max chip rev:     v0.99 
+I (295) efuse_init: Chip rev:         v0.2
+I (298) heap_init: Initializing. RAM available for dynamic allocation:
+I (305) heap_init: At 3FCA18D8 len 00047E38 (287 KiB): RAM
+I (310) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM
+I (315) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM
+I (320) heap_init: At 600FE000 len 00001FE8 (7 KiB): RTCRAM
+I (327) spi_flash: detected chip: generic
+I (329) spi_flash: flash io: dio
+I (332) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (339) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (345) coexist: coex firmware version: 6f3d08c
+I (349) coexist: coexist rom version e7ae62f
+I (354) main_task: Started on CPU0
+I (374) main_task: Calling app_main()
+I (394) SYS: Task watchdog enabled (5000 ms timeout)
+I (394) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
+I (394) SYS: Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM
+I (404) BLE_INIT: BT controller compile version [51d9dfd]
+I (404) BLE_INIT: Using main XTAL as clock source
+I (414) BLE_INIT: Feature Config, ADV:1, BLE_50:1, DTM:1, SCAN:1, CCA:0, SMP:1, CONNECT:1I (414) BLE_INIT: Bluetooth MAC: dc:da:0c:64:63:26
+I (424) phy_init: phy_version 712,87e8c20e,Apr 13 2026,18:51:10
+I (484) phy_init: Saving new calibration data due to checksum failure or outdated calibration data, mode(0)
+I (504) BLE_RID: Addr type=0, MAC=DC:DA:0C:64:63:26
+I (504) BLE_RID: BLE ADV TX power: set=11, actual=11 → OK
+I (504) BLE_RID: Initialized — BLE5 Extended Advertising ready
+I (514) IND: WS2812 LED GPIO48 init OK
+I (514) SYS: MAVLink TX disabled — using GPIO6 hardware interlock only
+I (524) FLOG: Partition 'flight_log': 6080 KB, 0 valid records, next offset=0
+I (524) FLOG: Capacity: ~180 flight hours at 10s interval
+I (534) FLOG: Flight log initialized (async, wear-leveled)
+I (544) CONSOLE: Console command listener ready (type DUMP to export flight log)
+I (564) NimBLE: GAP procedure initiated: extended advertise; instance=0
+
+I (564) BLE_RID: Broadcast started — 98 bytes AD data
+I (564) NimBLE: GAP procedure initiated: stop extended advertising.
+
+I (564) BLE_RID: Broadcast stopped
+I (574) BLE_RID: Self-test PASS — BLE extended advertising functional
+I (574) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
+I (584) SYS: Ready. Monitor with nRF Connect.
+
+I (584) FLIGHT_DATA: Initializing USB Host for flight controller data
+I (624) FLIGHT_DATA: USB Host driver installed
+I (624) FLIGHT_DATA: USB Host task started
+I (624) FLIGHT_DATA: CDC-ACM host driver installed
+I (624) FLIGHT_DATA: USB Host initialized. Waiting for flight controller connection...
+I (914) BCAST: Status transition 255→0 (debounced, count=30)
+W (1584) BCAST: Data INVALID — keeping last known state, not updating packet
+I (2334) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (3344) BCAST: Data INVALID — keeping last known state, not updating packet
+I (4344) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (5344) BCAST: Data INVALID — keeping last known state, not updating packet
+W (5354) FLIGHT_DATA: USB device not connected, waiting...
+I (5354) FLIGHT_DATA: frames=0(v1=0,v2=0) crc_err=0 armed=0 status=0 fix=0 sats=0 lat=0.000000 lon=0.000000 alt=0.0 crc_storm=0 recovery=0
+W (5354) BCAST: Data INVALID — keeping last known state, not updating packet
+I (6354) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (7354) BCAST: Data INVALID — keeping last known state, not updating packet
+W (7364) BCAST: Data INVALID — keeping last known state, not updating packet
+I (8364) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (9364) BCAST: Data INVALID — keeping last known state, not updating packet
+W (9374) BCAST: Data INVALID — keeping last known state, not updating packet
+W (10364) FLIGHT_DATA: USB device not connected, waiting...
+I (10364) FLIGHT_DATA: frames=0(v1=0,v2=0) crc_err=0 armed=0 status=0 fix=0 sats=0 lat=0.000000 lon=0.000000 alt=0.0 crc_storm=0 recovery=0
+I (10374) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (11374) BCAST: Data INVALID — keeping last known state, not updating packet
+W (11384) BCAST: Data INVALID — keeping last known state, not updating packet
+I (12384) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (13384) BCAST: Data INVALID — keeping last known state, not updating packet
+W (13394) BCAST: Data INVALID — keeping last known state, not updating packet
+I (14394) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (15394) BCAST: Data INVALID — keeping last known state, not updating packet
+W (15404) FLIGHT_DATA: USB device not connected, waiting...
+I (15404) FLIGHT_DATA: frames=0(v1=0,v2=0) crc_err=0 armed=0 status=0 fix=0 sats=0 lat=0.000000 lon=0.000000 alt=0.0 crc_storm=0 recovery=0
+W (15404) BCAST: Data INVALID — keeping last known state, not updating packet
+I (16404) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (17404) BCAST: Data INVALID — keeping last known state, not updating packet
+W (17414) BCAST: Data INVALID — keeping last known state, not updating packet
+I (18414) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (19414) BCAST: Data INVALID — keeping last known state, not updating packet
+W (19424) BCAST: Data INVALID — keeping last known state, not updating packet
+W (20414) FLIGHT_DATA: USB device not connected, waiting...
+I (20414) FLIGHT_DATA: frames=0(v1=0,v2=0) crc_err=0 armed=0 status=0 fix=0 sats=0 lat=0.000000 lon=0.000000 alt=0.0 crc_storm=0 recovery=0
+I (20424) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (21424) BCAST: Data INVALID — keeping last known state, not updating packet
+W (21434) BCAST: Data INVALID — keeping last known state, not updating packet
+I (22434) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (23434) BCAST: Data INVALID — keeping last known state, not updating packet
+W (23444) BCAST: Data INVALID — keeping last known state, not updating packet
+I (24444) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+W (25444) BCAST: Data INVALID — keeping last known state, not updating packet
+W (25454) FLIGHT_DATA: USB device not connected, waiting...
+I (25454) FLIGHT_DATA: frames=0(v1=0,v2=0) crc_err=0 armed=0 status=0 fix=0 sats=0 lat=0.000000 lon=0.000000 alt=0.0 crc_storm=0 recovery=0

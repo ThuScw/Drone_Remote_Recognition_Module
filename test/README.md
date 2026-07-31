@@ -45,7 +45,7 @@ ESP32-S3 RID -- Host Test Suite
 --- MAVLink Parser ---
 --- GB 46750-2025 Protocol ---
 
-=== 5128 passed, 424 failed (failures are pre-existing gpsFixType offset from .DAT files) ===
+=== ALL TESTS PASSED ===
 ```
 
 ## 目录结构
@@ -66,6 +66,9 @@ test/
 ├── Makefile               # Linux/macOS/MSYS2构建脚本
 ├── run.bat                # Windows双击运行脚本
 └── README.md              # 本文件
+
+tools/
+└── flight_log_dump.py     # PC端飞行日志DUMP导出工具（Python + pyserial）
 ```
 
 ## 测试用例清单
