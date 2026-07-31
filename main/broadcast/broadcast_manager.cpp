@@ -6,6 +6,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <esp_mac.h>
 #include "broadcast_manager.h"
 #include "config.h"
 
@@ -86,6 +87,26 @@ bool RIDBroadcastManager::init() {
     _lastFlightLogMs  = nowMs;
     _lastSelfTestMs   = nowMs;
     _lastHeapCheckMs  = nowMs;
+
+    // 基于蓝牙 MAC 地址的广播时隙偏移
+    // 每颗 ESP32 MAC 全球唯一，无需配置即可实现多机广播自然错开
+    uint8_t mac[6];
+    esp_err_t macRet = esp_read_mac(mac, ESP_MAC_BT);
+    uint16_t jitterMs = 0;
+    if (macRet == ESP_OK) {
+        // djb2 hash — 分布均匀, 无碰撞
+        uint32_t hash = 5381;
+        for (int i = 0; i < 6; i++) {
+            hash = ((hash << 5) + hash) + mac[i];
+        }
+        jitterMs = (uint16_t)(hash % BROADCAST_INTERVAL_MS);
+        // 往前偏移，使首包在当前窗口内的 jitterMs 时刻发送
+        _lastBroadcastMs = nowMs - (BROADCAST_INTERVAL_MS - jitterMs);
+        ESP_LOGI(TAG, "Broadcast jitter: %dms (MAC %02X:%02X:%02X:%02X:%02X:%02X)",
+                 jitterMs, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        ESP_LOGE(TAG, "Failed to read BT MAC (err=%d), using zero jitter", (int)macRet);
+    }
 
     ESP_LOGI(TAG, "Init OK — Packet=%d bytes, broadcast=%dms, update=%dms",
              _currentPacket.totalLen, BROADCAST_INTERVAL_MS, DATA_UPDATE_INTERVAL_MS);
