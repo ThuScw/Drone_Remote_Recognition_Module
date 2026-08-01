@@ -6,9 +6,9 @@
 
 | 被测模块 | 测试文件 | 覆盖内容 |
 |----------|----------|----------|
-| CRC-16/MCRF4XX | `test_crc.cpp` | CRC算法正确性、MAVLink CRC extra byte常量 |
-| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测、签名帧、未知msgid、压力测试（粘包/丢字节/乱码洪流/位翻转） |
-| GB 46750-2025编码 | `test_rid_messages.cpp` | 数据包构建、字段编码公式、M/O字段语义、范围验证、新鲜度 |
+| CRC-16/MCRF4XX | `test_crc.cpp` | CRC算法正确性、MAVLink CRC extra byte常量、1899 真实帧 CRC 对拍（pymavlink 独立值） |
+| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测、签名帧、未知msgid、boot_ms回绕、压力测试（粘包/丢字节/乱码洪流/位翻转） |
+| GB 46750-2025编码 | `test_rid_messages.cpp` | 数据包构建、字段编码公式、M/O字段语义、范围验证、新鲜度、过期字段老化、NaN/Inf防御 |
 
 ## 快速开始
 
@@ -45,7 +45,7 @@ ESP32-S3 RID -- Host Test Suite
 --- MAVLink Parser ---
 --- GB 46750-2025 Protocol ---
 
-=== ALL TESTS PASSED ===
+=== 8228 passed, 0 failed ===
 ```
 
 ## 目录结构
@@ -60,9 +60,9 @@ test/
 │   │   └── gpio.h         # 空桩（满足编译依赖）
 │   └── esp_bt.h           # 蓝牙枚举桩
 ├── test_main.cpp          # 极简测试框架（CHECK / CHECK_EQ / CHECK_CLOSE）
-├── test_crc.cpp           # CRC算法测试（6项）
-├── test_parser.cpp        # MAVLink解析测试（21项）
-├── test_rid_messages.cpp  # GB 46750-2025合规测试（21项）
+├── test_crc.cpp           # CRC算法测试（5项）
+├── test_parser.cpp        # MAVLink解析测试（24项）
+├── test_rid_messages.cpp  # GB 46750-2025合规测试（23项）
 ├── Makefile               # Linux/macOS/MSYS2构建脚本
 ├── run.bat                # Windows双击运行脚本
 └── README.md              # 本文件
@@ -77,12 +77,11 @@ tools/
 
 | 编号 | 测试项 | 说明 |
 |------|--------|------|
-| 1 | 空缓冲CRC | 空输入返回初始值0xFFFF |
-| 2 | 确定性 | 相同输入→相同输出 |
-| 3 | 区分性 | 不同输入→不同输出 |
-| 4 | 非零输出 | 非空数据CRC不为0 |
-| 5 | CRC extra byte | HEARTBEAT(50)、GPS_RAW_INT(24)、ATTITUDE(39)、HIGHRES_IMU(93)、HOME_POSITION(242→104)、SYSTEM_TIME(137)等9个已知值 |
-| 6 | 往返验证 | 合成HEARTBEAT帧，CRC计算→CRC_EXTRA累积，结果非平凡且确定 |
+| 1 | CRC extra byte 常量 | HEARTBEAT(50)、GPS_RAW_INT(24)、ATTITUDE(39)、HIGHRES_IMU(93)、HOME_POSITION(242→104)、SYSTEM_TIME(137)等9个已知值 |
+| 2 | 空缓冲CRC | 空输入返回初始值0xFFFF |
+| 3 | 真实帧 CRC 对拍 | 1899 帧全部与 pymavlink 独立计算的 CRC 一致（mismatches=0） |
+| 4 | 确定性 | 相同输入→相同输出 |
+| 5 | 区分性 | 不同输入→不同输出 |
 
 ### test_parser.cpp — MAVLink解析正确性
 
@@ -111,6 +110,9 @@ tools/
 | 19 | 丢字节/截断重同步 | 帧中途丢1字节+噪声/截断至一半，解析器跳过坏帧后从下一STX重新同步，后续合法帧全数恢复 |
 | 20 | 随机乱码洪流 | 3000字节随机噪声+30合法帧：未知msgid假帧不误报CRC错误、不触发假恢复，合法帧≥20恢复；限制噪声（排除0xFD/0xFE）时10帧全数解析、crcErrors=0 |
 | 21 | payload位翻转 | 合法帧payload翻转1bit → CRC拒绝、totalFrames=0、consecutiveCrcErrors=1 |
+| 22 | FC重启 boot_ms 回绕 | boot_ms 显著回退（>500ms 容差）→ 判定飞控重启，unixTimeValid 作废，fillFlightData 输出时间戳 0（编码侧按表3-020 未知）；新 SYSTEM_TIME 恢复偏移后时间戳正确重建 |
+| 23 | SYSTEM_TIME 先到不误判 | 飞控重启后 SYSTEM_TIME 先重锚定基线，后续位置帧 boot 虽小但同新纪元，不触发假回绕（bootRollovers 保持 0） |
+| 24 | 签名帧非阻塞 CRC | 签名帧 CRC 一收齐立即校验（不等待 13 字节签名尾部，签名可能被截断/不发送）；CRC 损坏立即拒绝并复位，解析器不卡死，后续有效帧可恢复 |
 
 ### test_rid_messages.cpp — GB 46750-2025合规性
 
@@ -137,6 +139,8 @@ tools/
 | 19 | 未知哨兵值 | Table 3 — validMask=0 时 006/008位置→0xFFFFFFFF、009/010→0xFFFF、高度/时间戳/状态→0 |
 | 20 | golden包字节级验证 | 固定输入下逐字节核对序列化输出（header/dataId/全部content字段） |
 | 21 | **独立解码** | 表3硬编码偏移的独立解码器反向解析golden包，打破编解码自洽闭环 |
+| 22 | 过期字段老化 | `gb46750_expireStaleFields`：位置/大地高度/航迹/地速超过阈值清除 validMask 位（编码侧输出哨兵值），opStatus/opPos 不老化；恰好等于阈值不清除 |
+| 23 | NaN/Inf 防御 | 校验层 isfinite 识别非法值置位 flags；编码层 NaN/Inf 输出表3哨兵值（位置 0xFFFFFFFF、高度 0、航迹/速度 0xFFFF、垂直速度 0xFF）；单一字段 NaN 不影响其它字段 |
 
 ## GB 46750-2025 字段编码公式对照
 

@@ -52,16 +52,42 @@ static void uart_rx_task(void* arg) {
 #include "usb/usb_host.h"
 #include "usb/cdc_acm_host.h"
 
-// 打开设备后显式清除 DTR/RTS，防止飞控被复位
-cdc_acm_host_set_control_line_state(_cdcDev, false, false);
+// 解析器 + USB 句柄封装为类成员（替代文件级全局 s_parser）
+class FlightDataSource {
+    MavlinkParser _parser;                  // 成员解析器
+    portMUX_TYPE  _parserMux;               // 解析器状态锁（数据回调 <-> 主循环）
+    // volatile: 跨任务共享 (主循环 <-> USB host 任务)，防止寄存器缓存读到过期值
+    volatile cdc_acm_dev_hdl_t _cdcDev = nullptr;
+    volatile bool _deviceConnected = false;
+    volatile bool _deviceReady = false;
+    SemaphoreHandle_t _devMutex;            // USB 句柄生命周期互斥锁
+};
+
+// 打开设备 — 用局部变量接收句柄（volatile 成员不能取地址）
+cdc_acm_dev_hdl_t newDev = nullptr;
+esp_err_t ret = cdc_acm_host_open(FC_USB_VID, FC_USB_PID, 0, &dev_config, &newDev);
+if (ret == ESP_OK) {
+    configureLineCoding(newDev);
+    // 显式清除 DTR/RTS，防止飞控被复位
+    cdc_acm_host_set_control_line_state(newDev, false, false);
+    // 配置完成后在互斥锁内发布句柄，避免与 DISCONNECT/recovery 竞态
+    xSemaphoreTake(_devMutex, portMAX_DELAY);
+    _cdcDev = newDev; _deviceConnected = true; _deviceReady = true;
+    xSemaphoreGive(_devMutex);
+}
 
 // MAVLINK_TX_ENABLED=0 时 out_buffer_size=0，只读模式
 dev_config.out_buffer_size = MAVLINK_TX_ENABLED ? 512 : 0;
 
-static void usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
+// USB 数据回调 — 在 _parserMux 临界区内喂字节
+static bool usbDataCb(const uint8_t* data, size_t data_len, void* arg) {
+    auto* self = static_cast<FlightDataSource*>(arg);
+    portENTER_CRITICAL_SAFE(&self->_parserMux);
     for (size_t i = 0; i < data_len; i++) {
-        mavlink_parseByte(s_parser, data[i], nowMs);
+        mavlink_parseByte(self->_parser, data[i], nowMs);
     }
+    portEXIT_CRITICAL_SAFE(&self->_parserMux);
+    return true;
 }
 ```
 
@@ -69,6 +95,11 @@ static void usb_data_callback(const uint8_t* data, size_t data_len, void* arg) {
 - 从轮询读取 UART 改为 USB 回调驱动
 - 新增 USB 设备连接/断开事件处理
 - 新增自动重连机制 (每 2 秒尝试一次)
+- 解析器改为类成员 + `_parserMux` 临界区，替代文件级全局 `s_parser`
+- `_cdcDev/_deviceConnected/_deviceReady` 标记 `volatile`（跨任务共享）
+- `_devMutex` 互斥锁保护 USB 句柄生命周期：防止 `tryUsbRecovery`（主循环）与 DISCONNECT 事件回调（USB host 任务）并发 close 同一句柄导致双重 close / use-after-free
+- USB host 任务注册任务看门狗（死锁时系统复位而非静默断流）
+- **CRC 风暴恢复**：连续 200 次 CRC 校验失败 → `tryUsbRecovery()` 关闭 USB 设备 + 重置解析器 + 重连（5s 冷却防止反复重连）
 
 #### 2.3 `sdkconfig.defaults` 更新
 
@@ -247,5 +278,5 @@ git checkout -- .  # 撤销所有修改
 
 ---
 
-**最后更新**: 2026-07-31  
+**最后更新**: 2026-08-01  
 **适用版本**: ESP-IDF v5.5.5+

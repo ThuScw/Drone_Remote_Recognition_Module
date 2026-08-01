@@ -45,8 +45,8 @@
 
 **配置**:
 ```c
-#define FC_USB_VID          0x1209  // Pixhawk VID
-#define FC_USB_PID          0x5740  // Pixhawk PID
+#define FC_USB_VID          0x1B8C  // 用户飞控 VID（已确认）
+#define FC_USB_PID          0x0036  // 用户飞控 PID
 ```
 
 **工作原理**:
@@ -83,8 +83,8 @@
 4. **查看硬件 ID**
    - 右键设备 → 属性 → 详细信息
    - 下拉选择"硬件 ID"
-   - 看到类似: `USB\VID_1209&PID_5740\...`
-   - VID = 0x1209, PID = 0x5740
+   - 本机飞控显示: `USB\VID_1B8C&PID_0036&REV_0101`
+   - VID = 0x1B8C, PID = 0x0036
 
 ### Linux
 
@@ -93,11 +93,11 @@
 lsusb
 
 # 输出示例:
-# Bus 001 Device 002: ID 1209:5740 ArduPilot
+# Bus 001 Device 002: ID 1B8C:0036 Flight Controller
 #       ↑              ↑    ↑
 #     总线号          VID  PID
 #
-# VID = 0x1209, PID = 0x5740
+# VID = 0x1B8C, PID = 0x0036
 ```
 
 ### macOS
@@ -107,8 +107,8 @@ lsusb
 system_profiler SPUSBDataType
 
 # 找到你的飞控，查看:
-# Vendor ID: 0x1209
-# Product ID: 0x5740
+# Vendor ID: 0x1B8C
+# Product ID: 0x0036
 ```
 
 ### 通过串口日志
@@ -120,7 +120,9 @@ system_profiler SPUSBDataType
 
 串口输出会显示：
 ```
-I (1234) FLIGHT_DATA: Found CDC-ACM device: VID=0x1209 PID=0x5740
+I (1234) FLIGHT_DATA: Trying to open USB device (VID=0x1B8C, PID=0x0036)
+I (1235) FLIGHT_DATA: USB device opened (VID=0x1B8C, PID=0x0036)
+I (1236) FLIGHT_DATA: USB device configured (DTR/RTS cleared for FC safety) — waiting for MAVLink data...
 ```
 
 ---
@@ -193,11 +195,11 @@ ESP32-S3 (USB Host)
 ```
 ESP32-S3 (USB Host)
     │
-    ├─ 查找 VID=0x1209, PID=0x5740
+    ├─ 查找 VID=0x1B8C, PID=0x0036
     │
     ├─ 设备1: VID=0x1234 → 不匹配，跳过
     │
-    ├─ 设备2: VID=0x1209, PID=0x5740 → ✓ 匹配！连接
+    ├─ 设备2: VID=0x1B8C, PID=0x0036 → ✓ 匹配！连接
     │
     └─ 开始读取 MAVLink 数据
 ```
@@ -246,23 +248,27 @@ for (size_t i = 0; i < num_devices; i++) {
 
 ### 开发测试阶段 & 量产阶段
 ```c
-#define FC_USB_VID          0x1209  // 指定飞控型号
-#define FC_USB_PID          0x5740
+#define FC_USB_VID          0x1B8C  // 本机飞控（已确认，所有同型号无人机一致）
+#define FC_USB_PID          0x0036
 ```
 
 ### 多飞控环境
 ```c
 // 每架无人机烧录不同的固件，指定各自的 VID/PID
-#define FC_USB_VID          0x1209  // 无人机 A
-#define FC_USB_PID          0x5740
+#define FC_USB_VID          0x1B8C  // 无人机 A
+#define FC_USB_PID          0x0036
 
 // 或保持即插即用，通过 UAS_ID 区分
 #define UAS_ID "DRONE_A_001"
 ```
 
+> 常见飞控 VID/PID 参考（config.h 内注释）：
+> Pixhawk/Cube (ArduPilot) `0x1209/0x5740`、PX4 `0x26AC/0x0011`、Betaflight `0x0483/0x5740`、
+> 通用 CDC-ACM `0x303A/0x4001`、CH340 `0x1A86/0x7523`、CP2102 `0x10C4/0xEA60`。
+
 ---
 
-**最后更新**: 2026-07-31  
+**最后更新**: 2026-08-01  
 **适用版本**: ESP-IDF v5.5.5+
 
 ---

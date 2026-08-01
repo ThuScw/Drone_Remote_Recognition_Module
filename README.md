@@ -83,6 +83,13 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
 - **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * 96) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
 - **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×96 bytes + `+DONE\r\n` 导出全部飞行记录
+- **飞控重启 / boot_ms 回绕检测**：`bootMs` 显著回退（>500ms 容差 `MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS`）判定飞控重启，`unixTimeValid` 作废、时间戳输出 0（未知）；新 `SYSTEM_TIME` 重锚定基线后时间戳正确重建，且 SYSTEM_TIME 先到不误判回绕
+- **过期字段老化**：广播前 `gb46750_expireStaleFields()` 将位置/大地高度/航迹/地速中超过新鲜度阈值的字段清除 validMask 位，编码侧输出表3未知哨兵值；`opStatus`/操作员位置不老化（避免误判地面停播）
+- **NaN/Inf 防御**：校验层 `isfinite` 识别非法值并置位 flags；编码层 NaN/Inf 一律编码为表3哨兵值，单一字段非法不影响其它字段
+- **签名帧非阻塞 CRC**：MAVLink v2 签名帧 CRC 字节一收齐立即校验，13 字节签名视为"可选尾部"只消费不校验——避免解析器卡死、防止截断签名时读垃圾字节
+- **任务看门狗覆盖 4 任务**：TWDT 同时订阅 main / usb_host(flight_data) / flight_log / console_cmd 四任务，任一任务 5s 无响应即触发系统复位（GB 42590-2023 A.2.3.5.5）
+- **跨任务共享变量安全**：`_cdcDev/_deviceConnected/_deviceReady` 标记 `volatile`，USB 句柄生命周期由 `_devMutex` 保护，避免主循环与 USB Host 任务间寄存器缓存读到过期值
+- **栈高水位监控**：启动时打印主任务栈高水位，此后每 60s 复查一次；HWM < 1024B 输出告警提示增大栈
 
 ### 广播策略
 
@@ -92,7 +99,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
 - **操作员位置**：优先使用飞控 Home 点，其次使用首次解锁时记录的起飞点，最后编码为表3未知哨兵值 0xFFFFFFFF
-- **看门狗**：主循环 5s 无响应 → 系统自动复位
+- **看门狗**：任务看门狗覆盖 main / usb_host / flight_log / console_cmd 四任务，任一任务 5s 无响应 → 系统自动复位
 - **飞行日志导出**：PC 端 `python flight_log_dump.py COMx` → 通过 UART0 发送 `DUMP\r\n` → ESP32 回复二进制记录 → 解码为 GB 46750 全部 21 字段的 CSV 文件
 
 ### 硬件接口
@@ -300,12 +307,13 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 |--------|----------|----------|
 | BLE 同步丢失 | `Runtime check FAIL` | 连续 3 次触发 `triggerSelfHeal()` |
 | 广播更新失败 | `update failed #N` | 连续 3 次触发 `triggerSelfHeal()` |
-| 主循环卡死 | 无输出 | 看门狗 5s 后复位 |
+| 任一任务卡死 | 无输出 | 任务看门狗 5s 后系统复位（覆盖 main/usb_host/flight_log/console_cmd） |
 | BLE 控制器复位 | `NimBLE controller reset` | `triggerSelfHeal()` 三级递进恢复 |
 | USB 设备断开 | `USB device disconnected` | 自动重连（每 2 秒重试） |
 | CRC 风暴 | `CRC storm detected` | 关闭 USB 设备 → 重置解析器 → 重连（5s 冷却） |
 | 堆内存不足 | `LOW HEAP WARNING` | 每 60s 监控，< 10KB 输出告警 |
 | 飞行日志栈溢出 | `stack watermark LOW` | < 512 bytes 输出告警 |
+| 主任务栈不足 | `Main stack LOW (HWM=...)` | 启动及每 60s 复查，HWM < 1024 bytes 输出告警 |
 | 飞行日志读取失败 | `readRecord: CRC mismatch` | 记录损坏，跳过该条继续导出 |
 
 ## 产品化 Checklist
@@ -316,7 +324,7 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] PC 测试套件 8132 用例全部通过（含真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
+- [x] PC 测试套件 8228 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
@@ -386,3 +394,5 @@ idf.py build
 
 - [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
 - [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用
+
+**最后更新**: 2026-08-01
