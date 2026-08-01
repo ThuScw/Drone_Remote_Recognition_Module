@@ -95,7 +95,7 @@ bool RIDBroadcastManager::init() {
     esp_err_t macRet = esp_read_mac(mac, ESP_MAC_BT);
     uint16_t jitterMs = 0;
     if (macRet == ESP_OK) {
-        // djb2 hash — 分布均匀, 无碰撞
+        // djb2 hash of BT MAC — 均匀分布, 使不同设备的首包时隙错开
         uint32_t hash = 5381;
         for (int i = 0; i < 6; i++) {
             hash = ((hash << 5) + hash) + mac[i];

@@ -120,7 +120,7 @@ void test_rid_messages() {
 
     // ==== 1. Packet structure ----
     {
-        FlightData fd = makeFd(31.2305f, 121.4738f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        FlightData fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
 
         GB46750Packet pkt;
         gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
@@ -136,7 +136,7 @@ void test_rid_messages() {
 
     // ==== 2. Packet structural verification (gb46750_packetVerify) ----
     {
-        FlightData fd = makeFd(31.23f, 121.47f, 50.0f, 3.0f, 180.0f, STATUS_GROUND);
+        FlightData fd = makeFd(34.5f, 110.25f, 50.0f, 3.0f, 180.0f, STATUS_GROUND);
         GB46750Packet pkt;
         gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
                            1, 1, 0, 0, 10, 5, 3, 5, 1000ULL);
@@ -238,7 +238,7 @@ void test_rid_messages() {
 
     // ==== 6. Lat/Lon encoding: deg * 1e7, int32 LE ----
     {
-        FlightData fd = makeFd(31.2305f, 121.4738f, 50.0f, 0.0f, 0.0f, STATUS_GROUND);
+        FlightData fd = makeFd(34.5f, 110.25f, 50.0f, 0.0f, 0.0f, STATUS_GROUND);
         GB46750Packet pkt;
         gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
                            1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
@@ -248,15 +248,15 @@ void test_rid_messages() {
         // OP_POS at offset 31: lat(4) + lon(4)
         int32_t opLat_i = read_i32le(pkt.content + 31);
         int32_t opLon_i = read_i32le(pkt.content + 35);
-        CHECK_CLOSE((double)opLat_i / 1e7, 31.2305, 0.00001);
-        CHECK_CLOSE((double)opLon_i / 1e7, 121.4738, 0.00001);
+        CHECK_CLOSE((double)opLat_i / 1e7, 34.5, 0.00001);
+        CHECK_CLOSE((double)opLon_i / 1e7, 110.25, 0.00001);
 
         // OP_ALT at offset 39: 2 bytes
         // UA_POS at offset 41: lat(4) + lon(4)
         int32_t uaLat_i = read_i32le(pkt.content + 41);
         int32_t uaLon_i = read_i32le(pkt.content + 45);
-        CHECK_CLOSE((double)uaLat_i / 1e7, 31.2305, 0.00001);
-        CHECK_CLOSE((double)uaLon_i / 1e7, 121.4738, 0.00001);
+        CHECK_CLOSE((double)uaLat_i / 1e7, 34.5, 0.00001);
+        CHECK_CLOSE((double)uaLon_i / 1e7, 110.25, 0.00001);
     }
 
     // ==== 7. Altitude encoding: (alt + 1000) * 2, resolution 0.5m ----
@@ -564,8 +564,8 @@ void test_rid_messages() {
         // Fixed input: known values for all fields
         FlightData fd;
         memset(&fd, 0, sizeof(fd));
-        fd.lat = 31.230500f;       // 31.2305° N
-        fd.lon = 121.473800f;      // 121.4738° E
+        fd.lat = 34.500000f;       // 34.5° N
+        fd.lon = 110.250000f;      // 110.25° E
         fd.geoAlt = 100.0f;        // 100m MSL
         fd.heightAgl = 50.0f;      // 50m AGL
         fd.baroAlt = 102.0f;       // 102m baro
@@ -573,8 +573,8 @@ void test_rid_messages() {
         fd.heading = 90.0f;        // 90° (East)
         fd.vspeed = 2.0f;          // 2.0 m/s up
         fd.opStatus = STATUS_AIRBORNE;  // 2
-        fd.opLat = 31.230000f;     // operator slightly south
-        fd.opLon = 121.473000f;
+        fd.opLat = 34.000000f;     // operator slightly south
+        fd.opLon = 110.000000f;
         fd.opAlt = 10.0f;          // operator at 10m
         fd.horizAccM = 5.0f;       // GPS eph=5m → horizAcc=10 (<10m)
         fd.vertAccM = 2.0f;        // GPS epv=2m → vertAcc=5 (<3m)
@@ -642,8 +642,8 @@ void test_rid_messages() {
         // 006: OP_POS (8 bytes: lat4 + lon4)
         int32_t opLat = read_i32le(c + off);
         int32_t opLon = read_i32le(c + off + 4);
-        CHECK_CLOSE((double)opLat / 1e7, 31.230000, 0.00001);
-        CHECK_CLOSE((double)opLon / 1e7, 121.473000, 0.00001);
+        CHECK_CLOSE((double)opLat / 1e7, 34.000000, 0.00001);
+        CHECK_CLOSE((double)opLon / 1e7, 110.000000, 0.00001);
         off += 8;
 
         // 007: OP_ALT (2 bytes): (10 + 1000) * 2 = 2020
@@ -654,8 +654,8 @@ void test_rid_messages() {
         // 008: UA_POS (8 bytes: lat4 + lon4)
         int32_t uaLat = read_i32le(c + off);
         int32_t uaLon = read_i32le(c + off + 4);
-        CHECK_CLOSE((double)uaLat / 1e7, 31.230500, 0.00001);
-        CHECK_CLOSE((double)uaLon / 1e7, 121.473800, 0.00001);
+        CHECK_CLOSE((double)uaLat / 1e7, 34.500000, 0.00001);
+        CHECK_CLOSE((double)uaLon / 1e7, 110.250000, 0.00001);
         off += 8;
 
         // 009: TRACK_ANGLE (2 bytes): 90.0 * 10 = 900
@@ -727,8 +727,8 @@ void test_rid_messages() {
     {
         FlightData fd;
         memset(&fd, 0, sizeof(fd));
-        fd.lat = 31.230500f;
-        fd.lon = 121.473800f;
+        fd.lat = 34.500000f;
+        fd.lon = 110.250000f;
         fd.geoAlt = 100.0f;
         fd.heightAgl = 50.0f;
         fd.baroAlt = 102.0f;
@@ -736,8 +736,8 @@ void test_rid_messages() {
         fd.heading = 90.0f;
         fd.vspeed = 2.0f;
         fd.opStatus = STATUS_AIRBORNE;
-        fd.opLat = 31.230000f;
-        fd.opLon = 121.473000f;
+        fd.opLat = 34.000000f;
+        fd.opLon = 110.000000f;
         fd.opAlt = 10.0f;
         fd.validMask = FLD_ALL;
         fd.unixTimestampMs = 1700000000000ULL;
@@ -753,11 +753,11 @@ void test_rid_messages() {
         DecodedFields d;
         CHECK(decodePacket(buf, len, d));
 
-        CHECK_CLOSE((double)d.opLat / 1e7, 31.230000, 0.00001);
-        CHECK_CLOSE((double)d.opLon / 1e7, 121.473000, 0.00001);
+        CHECK_CLOSE((double)d.opLat / 1e7, 34.000000, 0.00001);
+        CHECK_CLOSE((double)d.opLon / 1e7, 110.000000, 0.00001);
         CHECK_EQ(d.opAlt, 2020);              // (10+1000)*2
-        CHECK_CLOSE((double)d.uaLat / 1e7, 31.230500, 0.00001);
-        CHECK_CLOSE((double)d.uaLon / 1e7, 121.473800, 0.00001);
+        CHECK_CLOSE((double)d.uaLat / 1e7, 34.500000, 0.00001);
+        CHECK_CLOSE((double)d.uaLon / 1e7, 110.250000, 0.00001);
         CHECK_EQ(d.heading, 900);             // 90.0*10
         CHECK_EQ(d.speed, 55);                // 5.5*10
         CHECK_EQ(d.relHeight, 18100);         // (50+9000)*2

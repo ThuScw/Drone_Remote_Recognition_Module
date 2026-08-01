@@ -55,7 +55,7 @@ test/
 ├── stubs/
 │   ├── esp_log.h          # ESP_LOG宏 → fprintf（测试可见输出）
 │   ├── esp_timer.h        # esp_timer_get_time() → 可控全局变量
-│   ├── config.h           # 测试用常量（超时阈值、mock坐标等）
+│   ├── config.h           # 测试用常量（超时阈值、测试坐标等）
 │   ├── driver/
 │   │   └── gpio.h         # 空桩（满足编译依赖）
 │   └── esp_bt.h           # 蓝牙枚举桩

@@ -36,6 +36,12 @@ encrypted_*.bin
 pre_encrypted_*.bin
 .flash_encryption_key.bin
 
+# ===== Compile Artifacts =====
+*.exe
+*.o
+*.elf
+*.bin
+
 # ===== Testing & Coverage =====
 TEST_LOGS/
 coverage_report/
