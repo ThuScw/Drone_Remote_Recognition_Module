@@ -217,6 +217,12 @@ bool BleRidBroadcaster::reinitNimble() {
     _updateFailures = 0;
     _advertising = false;
 
+    // 协议栈复位后重新应用广播 TX 功率 (GB 46750-2025 6.1.3 EIRP), 与 begin() 保持一致
+    esp_err_t txRet = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, BLE_TX_POWER_LEVEL);
+    if (txRet != ESP_OK) {
+        ESP_LOGW(TAG, "reinitNimble: TX power set failed (rc=%d)", txRet);
+    }
+
     ESP_LOGI(TAG, "Nimble reinit complete");
     return true;
 }

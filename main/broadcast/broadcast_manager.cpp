@@ -28,6 +28,7 @@ RIDBroadcastManager::RIDBroadcastManager(
     , _debounceTarget(0xFF)
     , _debounceCount(0)
     , _lastBroadcastMs(0)
+    , _lastBroadcastSuccessMs(0)
     , _lastDataUpdateMs(0)
     , _lastSelfTestMs(0)
     , _lastFlightLogMs(0)
@@ -172,10 +173,10 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
     }
 
     // 始终构建新包 (P0: 不再 "keeping previous packet")
+    // 精度: 直接用 GPS eph/epv 映射结果; eph/epv 不可用 (≤0) 时映射为 0 (unknown),
+    // 如实上报 unknown, 不做 fallback 伪造 (表3-017/018 unknown=0)
     uint8_t horizAcc = gb46750_mapHorizAcc(fd.horizAccM);
     uint8_t vertAcc  = gb46750_mapVertAcc(fd.vertAccM);
-    if (horizAcc == 0) horizAcc = HORIZ_ACC;
-    if (vertAcc == 0)  vertAcc  = VERT_ACC;
 
     uint8_t tsAcc = (fd.unixTimestampMs == 0) ? 0 : TS_ACC;
 
@@ -194,17 +195,18 @@ void RIDBroadcastManager::triggerSelfHeal() {
     auto result = _broadcaster.attemptSelfHeal(_currentPacket);
 
     if (result != BleRidBroadcaster::RecoveryResult::FAILED) {
-        const char* mode = (result == BleRidBroadcaster::RecoveryResult::RECOVERED)
-                           ? "recovered" : "degraded";
+        // DEGRADED (PHY 切换/NimBLE 重初始化后) → LED 橙色降级提示 (旧7)
+        const bool degraded = (result == BleRidBroadcaster::RecoveryResult::DEGRADED);
+        const char* mode = degraded ? "degraded" : "recovered";
         ESP_LOGI(TAG, "Self-heal OK (%s)", mode);
 
         if (isAirborne()) {
             _broadcastActive = true;
-            _statusLed.setState(LedState::BROADCASTING);
+            _statusLed.setState(degraded ? LedState::DEGRADED : LedState::BROADCASTING);
         } else {
             _broadcastActive = false;
             _broadcaster.stopBroadcast();
-            _statusLed.setState(LedState::STANDBY);
+            _statusLed.setState(degraded ? LedState::DEGRADED : LedState::STANDBY);
             ESP_LOGI(TAG, "On ground — broadcast stopped, interlock ready");
         }
     } else {
@@ -355,6 +357,8 @@ void RIDBroadcastManager::handleBroadcast(uint64_t nowMs) {
         ESP_LOGW(TAG, "Broadcast data update failed (count=%d)",
                  _broadcaster.getUpdateFailures());
         // handleBleRecovery() 会在下次 update() 中处理连续失败
+    } else {
+        _lastBroadcastSuccessMs = nowMs;  // 仅记录实际发送成功的时刻 (问题2)
     }
 }
 
@@ -384,6 +388,15 @@ void RIDBroadcastManager::handleSelfTest() {
     if (!healthy) {
         ESP_LOGW(TAG, "Runtime self-test FAIL — triggering self-heal");
         triggerSelfHeal();
+    }
+
+    // 合规监测 (问题2): 空中广播期间若实际发送成功时间落后过多, 提示潜在静默数据缺口
+    uint64_t nowMs = (uint64_t)(esp_timer_get_time() / 1000);
+    if (_lastBroadcastSuccessMs != 0 &&
+        nowMs - _lastBroadcastSuccessMs > (uint64_t)(BROADCAST_INTERVAL_MS * 3)) {
+        ESP_LOGW(TAG, "No successful broadcast for %llu ms (interval=%dms) — possible silent data gap",
+                 (unsigned long long)(nowMs - _lastBroadcastSuccessMs),
+                 (int)BROADCAST_INTERVAL_MS);
     }
 }
 

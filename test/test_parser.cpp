@@ -124,6 +124,8 @@ void test_mavlink_parser() {
             CHECK_CLOSE(fd.lon, pos->expected.lon, 0.0001);
             CHECK(p.armed);
             CHECK_EQ(fd.opStatus, STATUS_AIRBORNE);
+            // 无气压计数据源: BARO_ALT (O 字段) 不置位, 避免伪造数值 (旧6)
+            CHECK_EQ((int)(fd.validMask & FLD_BARO_ALT), 0);
         }
     }
 
@@ -295,5 +297,71 @@ void test_mavlink_parser() {
             CHECK_CLOSE(p.homeLon, home->expected.homeLon, 0.0001);
             CHECK_CLOSE(p.homeAlt, home->expected.homeAlt, 0.01);
         }
+    }
+
+    // ==== 15. Unknown msgid frame does NOT count as CRC error (旧10) ----
+    // 未知 msgid 无 CRC extra byte, 无法校验; 之前一律计入连续 CRC 错误会触发假恢复风暴
+    {
+        MavlinkParser p;
+        mavlink_init(p);
+
+        // 构造 v2 帧, msgid=129 (我们的 CRC 表不支持, crcExtra 返回 0)
+        uint8_t frame[10 + 9 + 2];
+        size_t n = 0;
+        frame[n++] = 0xFD;
+        frame[n++] = 9;                 // payload len
+        frame[n++] = 0x00;              // incompat = 0 (unsigned)
+        frame[n++] = 0x00;              // compat
+        frame[n++] = 0x02;              // seq
+        frame[n++] = 1; frame[n++] = 1; // sysid/compid
+        frame[n++] = 0x81; frame[n++] = 0x00; frame[n++] = 0x00;  // msgid=129 (unknown)
+        memset(frame + n, 0, 9); n += 9;
+        frame[n++] = 0x00; frame[n++] = 0x00;  // CRC 任意值 (无法校验)
+
+        feed_frame(p, frame, n, 1000);
+        CHECK_EQ(p.totalFrames, 0u);        // 不是已知消息
+        CHECK_EQ(p.crcErrors, 0u);          // 不计入 CRC 错误
+        CHECK_EQ(p.consecutiveCrcErrors, 0u);
+    }
+
+    // ==== 16. MAVLink v2 signed frame parses correctly (问题4) ----
+    // 签名帧: INCOMPAT bit0=1, CRC 后追加 link_id(1)+timestamp(6)+signature(6),
+    // CRC 计算包含 link_id
+    {
+        MavlinkParser p;
+        mavlink_init(p);
+
+        uint8_t frame[10 + 9 + MAVLINK_V2_CRC_LEN + MAVLINK_V2_SIG_LEN];
+        size_t n = 0;
+        frame[n++] = 0xFD;
+        frame[n++] = 9;                              // payload len
+        frame[n++] = MAVLINK_IFLAG_SIGNED;           // incompat: signed
+        frame[n++] = 0x00;                           // compat
+        frame[n++] = 0x01;                           // seq
+        frame[n++] = 1; frame[n++] = 1;              // sysid/compid
+        frame[n++] = 0x00; frame[n++] = 0x00; frame[n++] = 0x00;  // msgid=0 (HEARTBEAT)
+
+        // HEARTBEAT payload: armed (base_mode bit7) + status
+        uint8_t payload[9] = {0, 0, 0, 0, 6, 2, 0x80, 4, 3};
+        memcpy(frame + n, payload, 9); n += 9;
+
+        uint8_t linkId = 0x5A;
+        // CRC = LEN..payload + crcExtra(HEARTBEAT=50); 参考实现确认签名帧 CRC 不含 link_id
+        uint16_t crc = mavlink_crc_calculate(frame + 1, n - 1);
+        crc = mavlink_crc_accumulate(50, crc);
+        frame[n++] = crc & 0xFF;
+        frame[n++] = crc >> 8;
+        frame[n++] = linkId;                         // link_id 在 CRC 之后 (签名块首字节)
+
+        uint64_t ts = 0x112233445566ULL;
+        for (int i = 0; i < 6; i++) frame[n++] = (ts >> (8 * i)) & 0xFF;
+        for (int i = 0; i < 6; i++) frame[n++] = 0xAB;  // 任意签名
+
+        bool got = feed_frame(p, frame, n, 1000);
+        CHECK(got);
+        CHECK_EQ(p.totalFrames, 1u);
+        CHECK_EQ(p.crcErrors, 0u);
+        CHECK(p.armed);  // 签名帧的 HEARTBEAT 正常解码
+        CHECK_EQ((int)p.systemStatus, 4);
     }
 }

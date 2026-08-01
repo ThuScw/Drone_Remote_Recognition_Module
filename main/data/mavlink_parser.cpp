@@ -236,7 +236,10 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     p.state = PARSE_STATE_IDLE;
                     break;
                 }
-                p.expectedLen = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN;
+                // v2 签名帧: INCOMPAT 标志位 bit0 → CRC 后追加 13 字节签名
+                p.isSigned = p.isV2 && ((p.buffer[2] & MAVLINK_IFLAG_SIGNED) != 0);
+                p.expectedLen = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN
+                                + (p.isSigned ? MAVLINK_V2_SIG_LEN : 0);
                 p.state = PARSE_STATE_PAYLOAD;
             }
             break;
@@ -254,12 +257,15 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
         case PARSE_STATE_CRC:
             p.buffer[p.bufferIdx++] = byte;
             if (p.bufferIdx >= p.expectedLen) {
-                uint16_t crcReceived = p.buffer[p.expectedLen - 2] |
-                                    (p.buffer[p.expectedLen - 1] << 8);
-
-                // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX 和 CRC)
                 uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
-                uint16_t crcDataLen = headerLen - 1 + p.payloadLen;  // LEN 到 payload 结束
+
+                // CRC 紧跟在 payload 之后; 签名帧的 13 字节签名在其后, 不能用 expectedLen 定位
+                uint16_t crcReceived = p.buffer[headerLen + p.payloadLen] |
+                                    ((uint16_t)p.buffer[headerLen + p.payloadLen + 1] << 8);
+
+                // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX、CRC 和签名)
+                // 参考实现 (mavlink/c_library_v2) 确认: 签名帧的 CRC 同样不含 link_id
+                uint16_t crcDataLen = headerLen - 1 + p.payloadLen;
                 uint16_t crcCalc = mavlink_crc_calculate(p.buffer + 1, crcDataLen);
 
                 // 加上 CRC extra byte
@@ -270,6 +276,14 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     msgid = p.buffer[5];
                 }
                 uint8_t crcExtra = mavlink_crc_extra(msgid);
+
+                if (crcExtra == 0) {
+                    // 未知 msgid: 无 CRC extra byte，无法校验。
+                    // 合法但不支持的帧不应计入 CRC 错误，否则会触发假"CRC 风暴"恢复
+                    p.state = PARSE_STATE_IDLE;
+                    break;
+                }
+
                 crcCalc = mavlink_crc_accumulate(crcExtra, crcCalc);
 
                 if (crcCalc == crcReceived) {
@@ -305,7 +319,7 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     fd.lon = p.lon;
     fd.geoAlt = p.altMsl;
     fd.heightAgl = p.altRel;
-    fd.baroAlt = p.altMsl;
+    // 不设置 fd.baroAlt — 无真实气压计数据源，直接填 MSL 高度属于数据伪造
 
     fd.horizAccM = p.gpsEph;
     fd.vertAccM  = p.gpsEpv;
@@ -364,6 +378,8 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     if (!opPosValid) {
         fd.validMask &= ~(FLD_OP_POS | FLD_OP_ALT);
     }
+    // 无气压计数据源: 不置 BARO_ALT (O 字段) 位，编码侧省略该字段，而非伪造数值
+    fd.validMask &= ~FLD_BARO_ALT;
 
     fd.ts_pos      = p.lastPositionMs;
     fd.ts_geoAlt   = p.lastPositionMs;

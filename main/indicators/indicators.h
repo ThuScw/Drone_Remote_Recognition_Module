@@ -10,6 +10,7 @@ enum class LedState {
     OFF,
     STANDBY,        // 绿色慢闪 — 地面待机
     BROADCASTING,   // 蓝色快闪 — 空中/紧急广播中
+    DEGRADED,       // 橙色快闪 — 自修复后降级运行 (PHY 切换 / NimBLE 重初始化)
     FAULT           // 红色常亮 — 模块故障
 };
 

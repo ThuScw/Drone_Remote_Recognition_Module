@@ -10,6 +10,8 @@
 #define MAVLINK_V2_HEADER_LEN     10   // STX+LEN+INCOMPAT+COMPAT+SEQ+SYSID+COMPID+MSGID(3)
 #define MAVLINK_V2_CRC_LEN        2
 #define MAVLINK_V2_MAX_PAYLOAD    253
+#define MAVLINK_V2_SIG_LEN        13   // 签名帧: link_id(1) + timestamp(6) + signature(6)
+#define MAVLINK_IFLAG_SIGNED      0x01 // INCOMPAT 标志位 0: 帧已签名
 
 #define MAVLINK_V1_MAGIC          0xFE
 #define MAVLINK_V1_HEADER_LEN     6    // STX+LEN+SEQ+SYSID+COMPID+MSGID(1)
@@ -38,12 +40,14 @@ enum MavlinkParseState {
 
 struct MavlinkParser {
     MavlinkParseState state;
-    uint8_t  buffer[MAVLINK_V2_HEADER_LEN + MAVLINK_V2_MAX_PAYLOAD + MAVLINK_V2_CRC_LEN];
+    uint8_t  buffer[MAVLINK_V2_HEADER_LEN + MAVLINK_V2_MAX_PAYLOAD
+                    + MAVLINK_V2_CRC_LEN + MAVLINK_V2_SIG_LEN];
     uint16_t bufferIdx;
-    uint16_t expectedLen;  // 预期帧总长度
+    uint16_t expectedLen;  // 预期帧总长度 (含 CRC, 签名帧含签名)
     uint16_t payloadLen;   // payload 长度
 
-    bool isV2;    // 当前帧是 MAVLink v2 (true) 还是 v1 (false)
+    bool isV2;      // 当前帧是 MAVLink v2 (true) 还是 v1 (false)
+    bool isSigned;  // v2 签名帧 (incompat_flags bit0), CRC 后追加 13 字节
 
     // 统计
     uint32_t totalFrames;

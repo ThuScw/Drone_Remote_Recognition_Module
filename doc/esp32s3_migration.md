@@ -14,7 +14,7 @@
 | **连接方式** | 飞控 TELEM TX → GPIO4 | 飞控 USB → USB OTG 口 |
 | **调试接口** | USB Serial/JTAG | COM 口 (UART0) |
 | **状态 LED** | GPIO27 | GPIO48 |
-| **联锁引脚** | GPIO6 | GPIO6 (不变) |
+| **联锁** | GPIO6 | MAVLink 联锁（无专用引脚） |
 
 ### 2. 软件变更
 
@@ -27,7 +27,6 @@
 - USB Host CDC-ACM 配置 (`FC_USB_VID`, `FC_USB_PID`, `FC_USB_BAUD_RATE` 等)
 - USB Host 任务配置 (`USB_HOST_TASK_STACK`, `USB_HOST_TASK_PRIO`)
 - MAVLink TX 安全开关 (`MAVLINK_TX_ENABLED`, 默认 0=只读模式)
-- GPIO6 联锁定义 (`INTERLOCK_RID_OK_GPIO`)
 - 更新 GPIO 引脚定义 (LED 从 GPIO27 → GPIO48)
 - 飞行日志存储配置 (GB 46750-2025 5.1.8)：Flash 分区、记录间隔、环形缓冲区
 - BLE TX 功率配置 (`BLE_TX_POWER_LEVEL`)，ESP32-S3 使用 ESP_PWR_LVL_P9 (+9 dBm)

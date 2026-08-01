@@ -73,7 +73,8 @@ private:
     static const uint8_t DEBOUNCE_THRESH_AIR_GND = 50;  // 空中→地面: ~500ms
 
     // --- 定时器 ---
-    uint64_t _lastBroadcastMs;
+    uint64_t _lastBroadcastMs;        // 最近一次广播尝试时间 (调度间隔基准)
+    uint64_t _lastBroadcastSuccessMs; // 最近一次广播数据实际更新成功时间 (合规监测)
     uint64_t _lastDataUpdateMs;
     uint64_t _lastSelfTestMs;
     uint64_t _lastFlightLogMs;

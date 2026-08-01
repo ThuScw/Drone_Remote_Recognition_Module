@@ -7,7 +7,7 @@
 | 被测模块 | 测试文件 | 覆盖内容 |
 |----------|----------|----------|
 | CRC-16/MCRF4XX | `test_crc.cpp` | CRC算法正确性、MAVLink CRC extra byte常量 |
-| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测 |
+| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测、签名帧、未知msgid |
 | GB 46750-2025编码 | `test_rid_messages.cpp` | 数据包构建、字段编码公式、M/O字段语义、范围验证、新鲜度 |
 
 ## 快速开始
@@ -97,8 +97,10 @@ tools/
 | 7 | v1帧兼容 | MAVLink v1 (0xFE)帧正常解析 |
 | 8 | 无效STX | 随机字节不触发解析 |
 | 9 | HOME_POSITION | home坐标提取验证 |
-| 10 | 完整fillFlightData | 全部字段正确填充，validMask=FLD_ALL |
+| 10 | 完整fillFlightData | 全部字段正确填充，validMask=FLD_ALL（不含BARO_ALT，无气压计源） |
 | 11 | 地面状态 | Armed=false+STANDBY→STATUS_GROUND |
+| 12 | 未知msgid帧 | 无CRC extra的未知msgid不计入CRC错误，避免假恢复风暴 |
+| 13 | 签名帧 | MAVLink v2签名帧（13字节签名块）正常解析，CRC验证正确 |
 
 ### test_rid_messages.cpp — GB 46750-2025合规性
 

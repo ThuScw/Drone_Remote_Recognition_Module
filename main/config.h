@@ -34,9 +34,9 @@
 #define COORD_SYS 0
 
 // 精度取值 (GB 46750-2025 Table 3-017/018/019)
-// 当 GPS eph/epv 可用时，动态计算精度；以下为 GPS 精度不可用时的 fallback 值
-#define HORIZ_ACC 10  // <10m (fallback)
-#define VERT_ACC  5   // <3m (fallback)
+// 广播时精度由 GPS eph/epv 实时映射（不可用如实上报 unknown=0），以下仅供 BLE 自检包使用
+#define HORIZ_ACC 10  // <10m
+#define VERT_ACC  5   // <3m
 #define SPEED_ACC 3   // <1m/s
 
 // 时间戳精度 (GB 46750-2025 Table 3-021) — GPS 授时后的动态值; 未授时设为 0 (未知)
@@ -80,11 +80,6 @@
 #define CONFIG_RID_VERBOSE_LOG 0
 
 // ================= GPIO 引脚分配 (ESP32-S3) =================
-
-// 飞控联锁 GPIO (GB 46750-2025, 5.1.7)
-// 模块自检通过 → GPIO6 拉高（允许飞控起飞），异常 → 拉低（禁止起飞）
-// 功能由 RIDInterlock 类管理，需要硬件连线到飞控的 RID 联锁输入引脚
-#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6
 
 // 状态指示灯 (GB 46750-2025, 5.1.5)
 // ESP32-S3-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO48，通过 RMT 外设驱动
@@ -154,7 +149,7 @@
 // MAVLink TX (USB 发送) — 通过 USB 向飞控发送 MAVLink 命令
 // 当前仅用于发送 ARM/DISARM 联锁命令 (MAV_CMD_COMPONENT_ARM_DISARM)
 // 警告: 如果飞控 USB 口也是烧录口，MAVLink TX 可能干扰飞控正常工作
-// 设为 0 禁用 MAVLink TX，仅使用 GPIO6 硬件联锁（推荐先禁用测试）
+// 设为 0 禁用 MAVLink TX（推荐先禁用测试；此时联锁仅维护内部 armed 状态，不主动向飞控发命令）
 // 设为 1 启用 MAVLink TX（需要确认飞控兼容后再开启）
 #define MAVLINK_TX_ENABLED 0
 

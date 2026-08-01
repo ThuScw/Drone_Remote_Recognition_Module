@@ -98,6 +98,18 @@ void StatusLed::update() {
         }
         return;
 
+    case LedState::DEGRADED:
+        // 橙色快闪: 300ms 开 / 300ms 关 → ~1.7Hz, 与广播蓝闪/待机绿闪区分
+        if (nowMs - _lastToggleMs >= 300) {
+            _lastToggleMs = nowMs;
+            if (_ledOn) {
+                setOff();
+            } else {
+                setColor(255, 128, 0);
+            }
+        }
+        return;
+
     case LedState::STANDBY:
         // 绿色慢闪: 200ms 开 / 1800ms 关 → 0.5Hz
         if (!_ledOn && nowMs - _lastToggleMs >= 1800) {

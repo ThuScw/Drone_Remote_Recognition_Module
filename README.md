@@ -102,7 +102,6 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 | 引脚 | 功能 | 方向 | 说明 |
 |------|------|------|------|
 | GPIO19/20 | USB OTG (D-/D+) | 双向 | 连接飞控 USB 口，读取 MAVLink 数据 |
-| GPIO6 | 飞控联锁 RID_OK | 输出 | 自检通过→拉高（飞控允许起飞），异常→拉低（飞控禁止起飞），符合 GB 46750-2025 5.1.7 |
 | GPIO48 | WS2812B RGB LED | 输出 | RMT 外设驱动，绿色慢闪(0.5Hz)=地面待机，蓝色快闪(2.5Hz)=空中/紧急广播中，红色常亮=模块故障 |
 | COM 口 | UART0 | 双向 | 连接电脑：调试输出 + 烧录 + `DUMP` 命令行飞行日志导出 |
 
@@ -177,11 +176,13 @@ idf.py -p <COM口> flash monitor
 #define FC_USB_STOP_BITS    1
 
 // MAVLink TX 安全开关（通过 USB 向飞控发送命令）
-#define MAVLINK_TX_ENABLED  0       // 0=禁用(只读模式，推荐) 1=启用(GPIO6+MAVLink双联锁)
+#define MAVLINK_TX_ENABLED  0       // 0=禁用(只读模式，推荐) 1=启用(MAVLink联锁)
 ```
 **⚠️ 安全警告**：`MAVLINK_TX_ENABLED=0` 时 USB CDC 以只读模式打开（`out_buffer_size=0`），且打开后显式清除 DTR/RTS，防止飞控被 USB 控制线信号复位。**首次接入飞控务必设为 0**，确认飞行稳定后再评估是否需要启用 MAVLink TX 联锁。
 
 ### 精度取值
+
+广播时的精度字段由 GPS eph/epv 实时映射（不可用时如实上报 unknown=0），以下常量仅供 BLE 自检包使用：
 
 ```c
 #define HORIZ_ACC 10  // 水平精度：<10m
@@ -204,7 +205,6 @@ idf.py -p <COM口> flash monitor
 ### GPIO 引脚
 
 ```c
-#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6   // 飞控联锁（自检通过→拉高允许起飞，异常→拉低禁止起飞）
 #define STATUS_LED_GPIO        GPIO_NUM_48  // WS2812B RGB LED（RMT 驱动）
 #define STATUS_LED_NUM_LEDS    1
 ```
@@ -216,6 +216,7 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 | `OFF` | 熄灭 | 未初始化 |
 | `STANDBY` | 绿色慢闪 (0.5Hz) | 地面待机，模块自检通过 |
 | `BROADCASTING` | 蓝色快闪 (2.5Hz) | 空中/紧急状态，正在广播 |
+| `DEGRADED` | 橙色快闪 (~1.7Hz) | 自修复后降级运行（PHY 切换 / NimBLE 重初始化） |
 | `FAULT` | 红色常亮 | 模块故障，三级自修复全部失败 |
 
 ### 飞行日志存储
@@ -315,13 +316,12 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] GB 46750 数据包逐字节单元测试（golden packet 验证，5585 测试用例通过）
+- [x] GB 46750 数据包逐字节单元测试（golden packet 验证，5626 测试用例通过）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
-- [ ] 连接 GPIO6 (联锁) 到飞控输入引脚，飞控端检测低电平拒绝解锁
-- [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 红色常亮=故障）
+- [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 橙色慢闪=降级 / 红色常亮=故障）
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
 - [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
 

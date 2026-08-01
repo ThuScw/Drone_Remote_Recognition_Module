@@ -79,7 +79,7 @@ extern "C" void app_main(void) {
     interlock.setSendCallback(flightData_sendArmDisarm);
     ESP_LOGI(TAG, "MAVLink TX enabled — arm/disarm commands will be sent over USB");
 #else
-    ESP_LOGI(TAG, "MAVLink TX disabled — using GPIO%d hardware interlock only", INTERLOCK_RID_OK_GPIO);
+    ESP_LOGI(TAG, "MAVLink TX disabled — interlock is passive (no arm/disarm commands sent to FC)");
 #endif
 
     if (!flightLog.init()) {
