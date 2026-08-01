@@ -46,9 +46,6 @@ private:
     // 构建 BLE5 AD Structure 并写入 os_mbuf, 返回 mbuf 指针
     struct os_mbuf* buildAdvData(const GB46750Packet& pkt, uint16_t& outLen);
 
-    // NimBLE 完整重初始化 (Tier 3)
-    bool reinitNimble();
-
     char     _deviceName[32] = {};
     uint8_t  _ownAddrType = 0;
     bool     _initialized = false;

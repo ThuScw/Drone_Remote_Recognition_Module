@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <esp_log.h>
 #include "rid_messages.h"
 
@@ -31,16 +32,21 @@ static void writeTimestamp(uint8_t* buf, uint64_t unixMs) {
 // ======================== 编码函数 (GB 46750-2025 Table 3) ========================
 
 // 经纬度: int32 LE, deg * 1e7
+// NaN/Inf 或超出物理范围 → 表3未知哨兵 (0xFFFFFFFF), 而非未定义行为的垃圾强转
 static void encodeLatLon(uint8_t* buf, float lat, float lon) {
-    int32_t lat_i = (int32_t)(lat * 10000000.0f);
-    int32_t lon_i = (int32_t)(lon * 10000000.0f);
+    int32_t lat_i = (isfinite(lat) && lat >= -90.0f && lat <= 90.0f)
+                    ? (int32_t)(lat * 10000000.0f) : -1;
+    int32_t lon_i = (isfinite(lon) && lon >= -180.0f && lon <= 180.0f)
+                    ? (int32_t)(lon * 10000000.0f) : -1;
     writeI32LE(buf, lat_i);
     writeI32LE(buf + 4, lon_i);
 }
 
 // 大地/气压高度: uint16 LE, (val + 1000) * 2, 分辨率 0.5m
 // GB 46750-2025 Table 3: 编码值 0 表示 "未知或不可用"
+// NaN/Inf → 0 (未知), 避免 NaN 比较全假导致钳位失效、强转未定义行为
 static uint16_t encodeAlt1000(float alt) {
+    if (!isfinite(alt)) return 0;
     float encoded = (alt + 1000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
@@ -49,6 +55,7 @@ static uint16_t encodeAlt1000(float alt) {
 
 // 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m
 static uint16_t encodeRelHeight(float h) {
+    if (!isfinite(h)) return 0;
     float encoded = (h + 9000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
@@ -56,7 +63,9 @@ static uint16_t encodeRelHeight(float h) {
 }
 
 // 航迹角: uint16 LE, val * 10, 范围 0~3599, 分辨率 0.1°
+// NaN/Inf → 0xFFFF (未知)。解析器在无航向时置 NAN, 若不加保护会被强转为垃圾值
 static uint16_t encodeHeading(float deg) {
+    if (!isfinite(deg)) return 0xFFFF;
     if (deg < 0.0f)      deg = 0.0f;
     if (deg >= 360.0f)   deg = 359.9f;
     uint16_t val = (uint16_t)(deg * 10.0f + 0.5f);
@@ -65,14 +74,18 @@ static uint16_t encodeHeading(float deg) {
 }
 
 // 地速: uint16 LE, val * 10, 分辨率 0.1 m/s
+// NaN/Inf → 0xFFFF (未知)
 static uint16_t encodeSpeed(float mps) {
+    if (!isfinite(mps)) return 0xFFFF;
     if (mps < 0.0f)        mps = 0.0f;
     if (mps > 6553.5f)     mps = 6553.5f;
     return (uint16_t)(mps * 10.0f + 0.5f);
 }
 
 // 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2
+// NaN/Inf → 0xFF (未知哨兵, 表3-012)
 static uint8_t encodeVSpeed(float mps) {
+    if (!isfinite(mps)) return 0xFF;
     uint8_t dir = (mps < 0.0f) ? 0x80 : 0x00;
     float absVal = (mps < 0.0f) ? -mps : mps;
     float encoded = absVal * 2.0f;
@@ -294,24 +307,26 @@ bool gb46750_packetVerify(const GB46750Packet& pkt) {
 bool gb46750_validateFlightData(const FlightData& fd, uint32_t& validationFlags) {
     validationFlags = 0;
 
+    // 注意: NaN 与任何值比较均为 false, 会绕过下面的范围判断,
+    // 因此必须先用 isfinite() 显式排除 NaN/Inf, 否则校验漏判。
     // 纬度: -90 ~ +90
-    if (fd.lat < -90.0f || fd.lat > 90.0f) {
+    if (!isfinite(fd.lat) || fd.lat < -90.0f || fd.lat > 90.0f) {
         validationFlags |= FLD_POS;
     }
     // 经度: -180 ~ +180
-    if (fd.lon < -180.0f || fd.lon > 180.0f) {
+    if (!isfinite(fd.lon) || fd.lon < -180.0f || fd.lon > 180.0f) {
         validationFlags |= FLD_POS;
     }
     // 大地高度: -1000 ~ 10000 m
-    if (fd.geoAlt < -1000.0f || fd.geoAlt > 10000.0f) {
+    if (!isfinite(fd.geoAlt) || fd.geoAlt < -1000.0f || fd.geoAlt > 10000.0f) {
         validationFlags |= FLD_GEO_ALT;
     }
     // 地速: 0 ~ 6553.5 m/s
-    if (fd.speed < 0.0f || fd.speed > 6553.5f) {
+    if (!isfinite(fd.speed) || fd.speed < 0.0f || fd.speed > 6553.5f) {
         validationFlags |= FLD_SPEED;
     }
     // 航迹角: 0 ~ 359.9°
-    if (fd.heading < 0.0f || fd.heading >= 360.0f) {
+    if (!isfinite(fd.heading) || fd.heading < 0.0f || fd.heading >= 360.0f) {
         validationFlags |= FLD_HEADING;
     }
     // 运行状态: 0-5 (Table 3-015)
@@ -319,8 +334,8 @@ bool gb46750_validateFlightData(const FlightData& fd, uint32_t& validationFlags)
         validationFlags |= FLD_OP_STATUS;
     }
     // 操作员位置: 同纬度/经度范围
-    if (fd.opLat < -90.0f || fd.opLat > 90.0f ||
-        fd.opLon < -180.0f || fd.opLon > 180.0f) {
+    if (!isfinite(fd.opLat) || fd.opLat < -90.0f || fd.opLat > 90.0f ||
+        !isfinite(fd.opLon) || fd.opLon < -180.0f || fd.opLon > 180.0f) {
         validationFlags |= FLD_OP_POS;
     }
 
@@ -361,6 +376,27 @@ DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint6
     }
 
     return worst;
+}
+
+// ======================== 过期字段老化 ========================
+//
+// GB 46750-2025 表3: 位置(008)、高度(013)、航迹(009)、速度(010) 在"未知或不可用"时
+// 应编码为对应哨兵值 (0xFFFFFFFF / 0xFFFF / 0)，而非广播过期坐标。这避免监管设备
+// 依据过期位置做禁飞区/冲突判断时产生安全事故。
+// opStatus/opPos 不老化: 运行状态由状态机消抖驱动，起飞点/Home 位置是静态语义。
+
+void gb46750_expireStaleFields(FlightData& fd, uint64_t nowMs, uint64_t thresholdMs) {
+    struct { uint32_t flag; uint64_t ts; } checks[] = {
+        { FLD_POS,      fd.ts_pos     },
+        { FLD_GEO_ALT,  fd.ts_geoAlt  },
+        { FLD_SPEED,    fd.ts_speed   },
+        { FLD_HEADING,  fd.ts_heading },
+    };
+    for (auto& ch : checks) {
+        if ((fd.validMask & ch.flag) && nowMs > ch.ts && nowMs - ch.ts > thresholdMs) {
+            fd.validMask &= ~ch.flag;
+        }
+    }
 }
 
 // GB 46750-2025 精度枚举映射 (Table 3-017/018)

@@ -39,6 +39,11 @@ enum MavlinkParseState {
 
 // ================= 解析上下文 =================
 
+// boot_ms 单调递增容差 (ms)。正常运行时 FC 的 time_boot_ms 只增不减;
+// 减少超过该容差即判定飞控重启或 boot_ms 回绕 (uint32 49.7天 / 11字节变体 4.66h)。
+// 500ms 容差抵御串口乱序等极罕见时钟抖动。
+#define MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS 500
+
 struct MavlinkParser {
     MavlinkParseState state;
     uint8_t  buffer[MAVLINK_V2_HEADER_LEN + MAVLINK_V2_MAX_PAYLOAD
@@ -105,7 +110,12 @@ struct MavlinkParser {
     int64_t  unixBootOffsetMs;    // Unix epoch ms when FC booted
     bool     unixTimeValid;
     uint64_t lastSystemTimeMs;    // ESP32 uptime of last SYSTEM_TIME message
-    uint32_t lastPositionBootMs;  // FC time_boot_ms from latest GLOBAL_POSITION_INT
+    // FC boot_ms of the latest time-synced sample (GLOBAL_POSITION_INT 或 SYSTEM_TIME)。
+    // 用于 unixTimestampMs = unixBootOffsetMs + lastPositionBootMs;
+    // 也作为 boot_ms 回绕/飞控重启检测的基线: 该值必须单调递增,
+    // 一旦显著回退则判定 FC 重启, 旧 unixBootOffsetMs 失效。
+    uint32_t lastPositionBootMs;
+    uint32_t bootRollovers;       // boot_ms 回绕/飞控重启检测计数 (诊断用)
 };
 
 // ================= API =================

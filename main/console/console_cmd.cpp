@@ -2,7 +2,10 @@
 #include "config.h"
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
+#include <sys/select.h>
 #include <esp_log.h>
+#include <esp_task_wdt.h>
 
 static const char* TAG = "CONSOLE";
 
@@ -29,20 +32,52 @@ void ConsoleCmd::init(FlightLog& flightLog) {
 
 void ConsoleCmd::taskFunc(void* param) {
     auto* self = static_cast<ConsoleCmd*>(param);
+
+    // 注册任务看门狗: 命令行任务卡死(如 DUMP 长输出)时系统复位而非静默失效。
+    // 本任务为诊断用途, 不注册也不影响 RID 合规广播, 属加固措施 (GB 42590 A.2.3.5.5)。
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "console_cmd task not subscribed to TWDT");
+    }
+
+    int fd = fileno(stdin);
     char line[kMaxCmdLen];
+    size_t lineLen = 0;
 
     while (true) {
-        if (fgets(line, sizeof(line), stdin)) {
-            size_t len = strlen(line);
-            while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n')) {
-                line[--len] = '\0';
+        // 用 select 有限等待替代阻塞 fgets: 空闲时也要定期喂狗, 避免任务
+        // 因 stdin 长时间无输入被看门狗误复位。按行累积, 保持"回车才执行"语义。
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        struct timeval tv = { 0, 500000 };   // 500ms 轮询
+        int sel = select(fd + 1, &rfds, NULL, NULL, &tv);
+        esp_task_wdt_reset();
+
+        if (sel < 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));   // EINTR 等 — 退避重试
+            continue;
+        }
+        if (sel == 0) {
+            continue;                        // 超时无输入 — 已喂狗, 本轮结束
+        }
+
+        char buf[64];
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(500));  // stdin 异常 — 退避重试
+            continue;
+        }
+        for (ssize_t i = 0; i < n; i++) {
+            char c = buf[i];
+            if (c == '\r' || c == '\n') {
+                if (lineLen > 0) {
+                    line[lineLen] = '\0';
+                    self->handleCommand(line);
+                    lineLen = 0;
+                }
+            } else if (lineLen + 1 < kMaxCmdLen) {
+                line[lineLen++] = c;
             }
-            if (len > 0) {
-                self->handleCommand(line);
-            }
-        } else {
-            // stdin closed or error — avoid busy-wait
-            vTaskDelay(pdMS_TO_TICKS(500));
         }
     }
 }
@@ -80,6 +115,10 @@ void ConsoleCmd::dumpAllRecords() {
 
     uint8_t buf[96];
     for (uint32_t i = 0; i < available; i++) {
+        // 逐条喂狗: 全量导出可能远超看门狗超时(96B/条 @115200≈120条/s,
+        // 5s 仅能传 ~600 条), 不在循环内喂狗会被 TWDT 误复位。
+        esp_task_wdt_reset();
+
         uint16_t outLen = 0;
         uint64_t ts = 0;
         uint16_t rd = _flightLog->readRecord(i, buf, &outLen, &ts);
@@ -90,6 +129,7 @@ void ConsoleCmd::dumpAllRecords() {
         fwrite(buf, 1, sizeof(buf), stdout);
     }
     fflush(stdout);
+    esp_task_wdt_reset();
 
     printf("+DONE\r\n");
     fflush(stdout);

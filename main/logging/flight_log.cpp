@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <esp_partition.h>
 #include <esp_timer.h>
+#include <esp_task_wdt.h>
 
 static const char* TAG = "FLOG";
 
@@ -145,11 +146,20 @@ void FlightLog::logTaskFunc(void* param) {
 }
 
 void FlightLog::logTaskLoop() {
+    // 注册任务看门狗: wl_write 在低电压等条件下可能无限等待,
+    // 死锁时系统复位而非静默丢失飞行记录 (GB 46750-2025 5.1.8 记录存储要求)
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "flight_log task not subscribed to TWDT");
+    }
+
     LogItem item;
     while (1) {
-        if (xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE) {
+        // 有限超时而非 portMAX_DELAY: 空闲时也要定期喂狗。
+        // 记录每 10s 一条, 100ms 轮询可及时排空队列, 不会堆积。
+        if (xQueueReceive(_queue, &item, pdMS_TO_TICKS(100)) == pdTRUE) {
             writeRecord(item.data, item.len, item.timestampMs);
         }
+        esp_task_wdt_reset();
 
         // P1: Stack watermark monitoring
         uint32_t watermark = uxTaskGetStackHighWaterMark(_taskHandle) * sizeof(StackType_t);

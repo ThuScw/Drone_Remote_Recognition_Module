@@ -38,6 +38,80 @@ static uint16_t frame_header_len(const TestFrame* tf) {
     return (tf->raw[0] == 0xFD) ? 10 : 6;
 }
 
+// --- 构造带指定 payload 的 v2 帧 (CRC 实时计算) ---
+static uint16_t build_v2_frame(uint16_t msgid, const uint8_t* payload, uint8_t plen,
+                               uint8_t incompat, uint8_t* out) {
+    size_t n = 0;
+    out[n++] = 0xFD;            // STX v2
+    out[n++] = plen;            // LEN
+    out[n++] = incompat;        // INCOMPAT
+    out[n++] = 0x00;            // COMPAT
+    out[n++] = 0x01;            // SEQ
+    out[n++] = 1; out[n++] = 1; // SYSID/COMPID
+    out[n++] = msgid & 0xFF;
+    out[n++] = (msgid >> 8) & 0xFF;
+    out[n++] = (msgid >> 16) & 0xFF;
+    memcpy(out + n, payload, plen); n += plen;
+    uint16_t crc = mavlink_crc_calculate(out + 1, (uint16_t)(n - 1));
+    crc = mavlink_crc_accumulate(mavlink_crc_extra(msgid), crc);
+    out[n++] = crc & 0xFF;
+    out[n++] = crc >> 8;
+    return (uint16_t)n;
+}
+
+static void put_u32le(uint8_t* b, uint32_t v) {
+    b[0] = v & 0xFF; b[1] = (v >> 8) & 0xFF; b[2] = (v >> 16) & 0xFF; b[3] = (v >> 24) & 0xFF;
+}
+static void put_u64le(uint8_t* b, uint64_t v) {
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)((v >> (8 * i)) & 0xFF);
+}
+
+// 构造 GLOBAL_POSITION_INT (msgid 33) 载荷: boot_ms(4)+lat(4)+lon(4)+alt(4)+rel(4)+vx(2)+vy(2)+vz(2)+hdg(2)
+static uint16_t build_gpi_frame(uint32_t bootMs, uint8_t* out) {
+    uint8_t payload[28] = {0};
+    put_u32le(payload, bootMs);
+    put_u32le(payload + 4, (uint32_t)(int32_t)(34.5f * 1e7f));   // lat
+    put_u32le(payload + 8, (uint32_t)(int32_t)(110.25f * 1e7f)); // lon
+    put_u32le(payload + 12, (uint32_t)(int32_t)(100000));        // alt 100m
+    put_u32le(payload + 16, (uint32_t)(int32_t)(50000));         // rel 50m
+    return build_v2_frame(33, payload, sizeof(payload), 0, out);
+}
+
+// 构造 SYSTEM_TIME (msgid 2) 载荷: unix_usec(8)+boot_ms(4)
+static uint16_t build_sys_time_frame(uint64_t unixUsec, uint32_t bootMs, uint8_t* out) {
+    uint8_t payload[12] = {0};
+    put_u64le(payload, unixUsec);
+    put_u32le(payload + 8, bootMs);
+    return build_v2_frame(2, payload, sizeof(payload), 0, out);
+}
+
+// 构造签名 HEARTBEAT 帧 (msgid 0, INCOMPAT bit0=1): 帧体 + CRC + 可选 13 字节签名
+// validCrc=false 时翻转 CRC; withSig=false 时不附加签名 (模拟截断签名流)
+static uint16_t build_signed_hb(uint8_t* out, bool validCrc, bool withSig) {
+    size_t n = 0;
+    out[n++] = 0xFD;                    // STX v2
+    out[n++] = 9;                       // payload len (HEARTBEAT)
+    out[n++] = MAVLINK_IFLAG_SIGNED;    // incompat: signed
+    out[n++] = 0x00;                    // compat
+    out[n++] = 0x01;                    // seq
+    out[n++] = 1; out[n++] = 1;         // sysid/compid
+    out[n++] = 0x00; out[n++] = 0x00; out[n++] = 0x00;  // msgid=0
+    uint8_t payload[9] = {0, 0, 0, 0, 6, 2, 0x80, 4, 3};  // armed + status=ACTIVE
+    memcpy(out + n, payload, 9); n += 9;
+    uint16_t crc = mavlink_crc_calculate(out + 1, (uint16_t)(n - 1));
+    crc = mavlink_crc_accumulate(50, crc);   // HEARTBEAT crcExtra = 50
+    if (!validCrc) crc ^= 0x00FF;
+    out[n++] = crc & 0xFF;
+    out[n++] = crc >> 8;
+    if (withSig) {
+        out[n++] = 0x5A;                // link_id (签名块首字节)
+        uint64_t ts = 0x112233445566ULL;
+        for (int i = 0; i < 6; i++) out[n++] = (uint8_t)((ts >> (8 * i)) & 0xFF);
+        for (int i = 0; i < 6; i++) out[n++] = 0xAB;   // 任意签名
+    }
+    return (uint16_t)n;
+}
+
 void test_mavlink_parser() {
     printf("--- MAVLink Parser (real flight data) ---\n");
 
@@ -580,5 +654,142 @@ void test_mavlink_parser() {
         CHECK_EQ(p.totalFrames, 0u);            // 帧被拒绝
         CHECK_EQ(p.crcErrors, 1u);
         CHECK_EQ(p.consecutiveCrcErrors, 1u);
+    }
+
+    // ==== 22. FC reboot boot_ms rollover detection (GB 46750-2025 8.2.1.3.3) ----
+    // 飞控重启后 boot_ms 从 0 重新计时, 若仍用旧 unixBootOffsetMs 拼时间戳会大幅倒退,
+    // 违反相邻帧时间戳差 ≤1s。检测到回绕后作废时间戳 (编码侧输出表3-020 未知=0)。
+    {
+        uint8_t frame[64];
+
+        // 22a: 正常单调递增 + 时间戳计算
+        MavlinkParser p;
+        mavlink_init(p);
+
+        // SYSTEM_TIME 建立偏移: unix=1700000000000ms, boot=5000000ms → offset = 1699995000000
+        uint64_t unixMs = 1700000000000ULL;
+        uint16_t slen = build_sys_time_frame(unixMs * 1000ULL, 5000000u, frame);
+        CHECK(feed_frame(p, frame, slen, 1000));
+        CHECK(p.unixTimeValid);
+        CHECK_EQ(p.bootRollovers, 0u);
+        CHECK_EQ(p.lastPositionBootMs, 5000000u);  // SYSTEM_TIME 已重新锚定基线
+
+        // 位置帧 boot 前进 100ms → 时间戳 = offset + 5000100 = 1700000000100
+        slen = build_gpi_frame(5000100u, frame);
+        CHECK(feed_frame(p, frame, slen, 2000));
+        CHECK_EQ(p.bootRollovers, 0u);   // 单调递增, 不触发
+
+        FlightData fd;
+        memset(&fd, 0, sizeof(fd));
+        CHECK(mavlink_fillFlightData(p, fd, 2000));
+        CHECK_EQ(fd.unixTimestampMs, unixMs + 100);   // 1700000000000 + 100
+
+        // 22b: 飞控重启 — boot_ms 从 5000100 掉到 100 → 时间戳作废
+        slen = build_gpi_frame(100u, frame);
+        CHECK(feed_frame(p, frame, slen, 3000));
+        CHECK_EQ(p.bootRollovers, 1u);
+        CHECK(!p.unixTimeValid);
+        CHECK_EQ(p.lastPositionBootMs, 100u);
+
+        memset(&fd, 0, sizeof(fd));
+        CHECK(mavlink_fillFlightData(p, fd, 3000));
+        CHECK_EQ(fd.unixTimestampMs, 0ULL);   // 编码侧按表3-020 输出未知(0), 不广播错误旧时间戳
+
+        // 22c: 新 SYSTEM_TIME 恢复时间域
+        slen = build_sys_time_frame((unixMs + 5000ULL) * 1000ULL, 300u, frame);
+        CHECK(feed_frame(p, frame, slen, 4000));
+        CHECK(p.unixTimeValid);
+
+        slen = build_gpi_frame(400u, frame);
+        CHECK(feed_frame(p, frame, slen, 4000));
+        CHECK_EQ(p.bootRollovers, 1u);            // 不新增
+        CHECK_EQ(p.lastPositionBootMs, 400u);
+
+        memset(&fd, 0, sizeof(fd));
+        CHECK(mavlink_fillFlightData(p, fd, 4000));
+        CHECK_EQ(fd.unixTimestampMs, unixMs + 5000ULL - 300ULL + 400ULL);  // = unixMs + 5100
+    }
+
+    // ==== 23. SYSTEM_TIME-first reboot: no false-positive rollover ----
+    // 飞控重启后 SYSTEM_TIME 先到 (重新锚定基线), 后续位置帧 boot 小但同纪元, 不得误判回绕
+    {
+        uint8_t frame[64];
+        MavlinkParser p;
+        mavlink_init(p);
+
+        // 旧状态: 位置帧 boot=5000000 (建立旧基线)
+        uint16_t slen = build_gpi_frame(5000000u, frame);
+        CHECK(feed_frame(p, frame, slen, 1000));
+
+        // 重启后 SYSTEM_TIME 先到: unix=1700000100000ms, boot=800
+        uint64_t unixMs = 1700000100000ULL;
+        slen = build_sys_time_frame(unixMs * 1000ULL, 800u, frame);
+        CHECK(feed_frame(p, frame, slen, 2000));
+        CHECK(p.unixTimeValid);
+        CHECK_EQ(p.lastPositionBootMs, 800u);  // 基线已重锚到新纪元
+
+        // 重启后首帧位置: boot=1000 (新纪元小值) → 不得误判回绕
+        slen = build_gpi_frame(1000u, frame);
+        CHECK(feed_frame(p, frame, slen, 3000));
+        CHECK_EQ(p.bootRollovers, 0u);          // 无假阳性
+        CHECK(p.unixTimeValid);
+
+        FlightData fd;
+        memset(&fd, 0, sizeof(fd));
+        CHECK(mavlink_fillFlightData(p, fd, 3000));
+        // offset = 1700000100000 - 800; ts = offset + 1000 = unixMs + 200
+        CHECK_EQ(fd.unixTimestampMs, unixMs + 200);
+    }
+
+    // ==== 24. 签名帧非阻塞: CRC 先校验 (问题 P1-6) ----
+    // 签名帧的 13 字节签名可能因流中断/噪声/飞控实际不发送而永远不来。
+    // 旧逻辑要等 expectedLen (含签名) 才校验 CRC → 解析器卡在 CRC 状态,
+    // 截断签名还会让 CRC 在错误时机读取垃圾字节。修复后 CRC 一收齐立即校验。
+    {
+        // 24a: 签名帧 CRC 有效但签名未送达 (仅发 21 字节) → CRC 不被签名阻塞, 帧照常解析
+        MavlinkParser p;
+        mavlink_init(p);
+
+        uint8_t frame[64];
+        uint16_t len = build_signed_hb(frame, true, false);   // 有效 CRC, 无签名
+        CHECK_EQ(len, 21u);                                   // 10+9+2
+        bool got = feed_frame(p, frame, len, 1000);
+        CHECK(got);                    // CRC 通过, 帧解析成功
+        CHECK_EQ(p.totalFrames, 1u);
+        CHECK_EQ(p.crcErrors, 0u);
+        CHECK(p.armed);                // HEARTBEAT 正常解码
+
+        // 补发 13 字节任意签名尾 → 消费完毕复位, 不卡死
+        uint8_t filler[13] = {0x10,0x11,0x12,0x13,0x14,0x15,0x16,
+                              0x17,0x18,0x19,0x1A,0x1B,0x1C};
+        for (size_t i = 0; i < 13; i++) mavlink_parseByte(p, filler[i], 1000);
+        CHECK_EQ((int)p.state, (int)PARSE_STATE_IDLE);   // 签名尾部消费完毕复位
+
+        // 后续有效位置帧正常解析 (解析器未被签名等待卡死)
+        uint8_t gpi[64];
+        uint16_t glen = build_gpi_frame(100u, gpi);
+        CHECK(feed_frame(p, gpi, glen, 2000));
+        CHECK_EQ(p.totalFrames, 2u);
+        CHECK_EQ(p.crcErrors, 0u);
+    }
+
+    {
+        // 24b: 签名帧 CRC 错误 → 立即拒绝 (不等签名), 解析器立即复位不卡死
+        MavlinkParser p;
+        mavlink_init(p);
+
+        uint8_t frame[64];
+        uint16_t len = build_signed_hb(frame, false, false);  // CRC 损坏, 无签名
+        feed_frame(p, frame, len, 1000);
+        CHECK_EQ(p.totalFrames, 0u);
+        CHECK_EQ(p.crcErrors, 1u);
+        CHECK_EQ(p.consecutiveCrcErrors, 1u);
+        CHECK_EQ((int)p.state, (int)PARSE_STATE_IDLE);   // 立即复位, 不等签名
+
+        // 后续有效帧可正常解析
+        uint8_t gpi[64];
+        uint16_t glen = build_gpi_frame(100u, gpi);
+        CHECK(feed_frame(p, gpi, glen, 2000));
+        CHECK_EQ(p.totalFrames, 1u);
     }
 }

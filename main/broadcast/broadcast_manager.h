@@ -42,8 +42,8 @@ public:
 private:
     // --- 内部方法 ---
     void handleBleRecovery();
-    void validateAndBuildPacket(const FlightData& fd);
-    void handleStatusTransition();
+    void validateAndBuildPacket(const FlightData& fd, uint64_t nowMs);
+    void handleStatusTransition(uint64_t nowMs);
     void handleBroadcast(uint64_t nowMs);
     void handleFlightLog(uint64_t nowMs);
     void handleSelfTest();
@@ -65,15 +65,18 @@ private:
     bool          _broadcastActive;
     uint8_t       _prevStatus;
 
-    // 状态消抖: 要求连续 N 次确认同一新状态才切换
+    // 状态消抖: 要求新状态持续确认达到指定时长才切换
     // 紧急状态绕过消抖立即生效
-    uint8_t _debounceTarget;   // 候选目标状态
-    uint8_t _debounceCount;    // 连续确认次数
-    static const uint8_t DEBOUNCE_THRESH_GND_AIR = 30;  // 地面→空中: ~300ms
-    static const uint8_t DEBOUNCE_THRESH_AIR_GND = 50;  // 空中→地面: ~500ms
+    // 时间戳驱动 (P1-4): 用墙钟时间而非 update() 调用次数计时 —
+    // 主循环负载波动会改变调用频率, 计数消抖的时长随之漂移 (如循环变慢到 20ms,
+    // 30 次就变成 600ms 而非预期的 ~300ms); 时间戳驱动使消抖时长恒定。
+    uint8_t  _debounceTarget;   // 候选目标状态
+    uint64_t _debounceStartMs;  // 候选目标状态首次出现的时刻 (消抖计时起点)
+    static const uint32_t DEBOUNCE_MS_GND_AIR = 300;  // 地面→空中
+    static const uint32_t DEBOUNCE_MS_AIR_GND = 500;  // 空中→地面 (更严格, 防飞行中误停广播)
 
     // --- 定时器 ---
-    uint64_t _lastBroadcastMs;        // 最近一次广播尝试时间 (调度间隔基准)
+    uint64_t _nextBroadcastMs;        // 下一次广播时刻 (绝对时隙, 相位累加防漂移)
     uint64_t _lastBroadcastSuccessMs; // 最近一次广播数据实际更新成功时间 (合规监测)
     uint64_t _lastDataUpdateMs;
     uint64_t _lastSelfTestMs;

@@ -778,5 +778,141 @@ void test_rid_messages() {
         CHECK(!decodePacket(bad, 8, d));          // wrong dataType / bad length
     }
 
+    // ==== 22. Expire stale fields (gb46750_expireStaleFields) ----
+    // GB 46750-2025 表3-008/009/010/013: 数据"未知或不可用"应编码为哨兵值
+    // (位置→0xFFFFFFFF, 航迹/速度→0xFFFF, 高度→0), 而不是广播过期的旧坐标 —
+    // 防止监管设备依据过期位置做禁飞区/冲突判断时产生安全事故。
+    {
+        // All fields fresh: nothing cleared
+        FlightData fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 5000; fd.ts_geoAlt = 5000; fd.ts_speed = 5000; fd.ts_heading = 5000;
+        gb46750_expireStaleFields(fd, 6000, 2000);   // now=6000, threshold=2000 → age=1000ms
+        CHECK(fd.validMask & FLD_POS);
+        CHECK(fd.validMask & FLD_GEO_ALT);
+        CHECK(fd.validMask & FLD_SPEED);
+        CHECK(fd.validMask & FLD_HEADING);
+
+        // Position stale (>threshold): FLD_POS cleared, others kept
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 3000; fd.ts_geoAlt = 5000; fd.ts_speed = 5000; fd.ts_heading = 5000;
+        gb46750_expireStaleFields(fd, 6000, 2000);   // pos age=3000ms > 2000
+        CHECK(!(fd.validMask & FLD_POS));
+        CHECK(fd.validMask & FLD_GEO_ALT);
+        CHECK(fd.validMask & FLD_SPEED);
+        CHECK(fd.validMask & FLD_HEADING);
+
+        // Speed + heading stale: cleared; pos/geoAlt kept
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 5000; fd.ts_geoAlt = 5000; fd.ts_speed = 3000; fd.ts_heading = 3000;
+        gb46750_expireStaleFields(fd, 6000, 2000);
+        CHECK(fd.validMask & FLD_POS);
+        CHECK(fd.validMask & FLD_GEO_ALT);
+        CHECK(!(fd.validMask & FLD_SPEED));
+        CHECK(!(fd.validMask & FLD_HEADING));
+
+        // opStatus and opPos must NOT be cleared (状态机与起飞点语义，保留上次已知状态)
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 1000; fd.ts_geoAlt = 1000; fd.ts_speed = 1000; fd.ts_heading = 1000;
+        fd.ts_opStatus = 1000; fd.ts_opPos = 1000;
+        gb46750_expireStaleFields(fd, 60000, 2000);  // everything very old
+        CHECK(fd.validMask & FLD_OP_STATUS);
+        CHECK(fd.validMask & FLD_OP_POS);
+
+        // A field already absent stays absent; at-threshold (=threshold) is NOT expired
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.validMask &= ~FLD_HEADING;
+        fd.ts_pos = 4000; fd.ts_geoAlt = 4000; fd.ts_speed = 4000;
+        gb46750_expireStaleFields(fd, 6000, 2000);   // age=2000 == threshold → kept
+        CHECK(fd.validMask & FLD_POS);
+        CHECK(fd.validMask & FLD_GEO_ALT);
+        CHECK(fd.validMask & FLD_SPEED);
+        CHECK(!(fd.validMask & FLD_HEADING));        // was already absent
+    }
+
+    // ==== 23. NaN/Inf defense (gb46750_validateFlightData + encode guards) ----
+    // GB 46750-2025 表3: 数据"未知或不可用"应编码为哨兵值。浮点字段一旦混入
+    // NaN/Inf (如飞控解析异常、传感器无效帧), 若不做防御:
+    //   (a) 编码函数 (int32)(float) 直接转换 NaN 是未定义行为 → 可能广播垃圾坐标;
+    //   (b) validateFlightData 的 NaN 比较全部为 false → 校验漏判。
+    // 本测试同时验证校验层(置位 flags)与编码层(输出未知哨兵)两条防线。
+    {
+        // --- 校验层: NaN/Inf 必须被识别为非法 ---
+        uint32_t flags = 0;
+        FlightData fd = makeFd(NAN, NAN, NAN, NAN, NAN, STATUS_AIRBORNE);
+        CHECK(!gb46750_validateFlightData(fd, flags));
+        CHECK(flags & FLD_POS);
+        CHECK(flags & FLD_GEO_ALT);
+        CHECK(flags & FLD_SPEED);
+        CHECK(flags & FLD_HEADING);
+        CHECK(flags & FLD_OP_POS);   // makeFd 把 opLat/opLon 也设为 NAN
+
+        // +Inf 高度同样判非法
+        fd = makeFd(34.5f, 110.25f, INFINITY, 5.0f, 90.0f, STATUS_AIRBORNE);
+        CHECK(!gb46750_validateFlightData(fd, flags));
+        CHECK(flags & FLD_GEO_ALT);
+
+        // --- 编码层: 字段在位(validMask 置位)但值为 NaN → 输出未知哨兵 ---
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.lat = NAN; fd.lon = NAN; fd.geoAlt = NAN;
+        fd.heading = NAN; fd.speed = NAN; fd.vspeed = NAN;
+        fd.opLat = NAN; fd.opLon = NAN; fd.opAlt = NAN;
+
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 1700000000ULL);
+        uint8_t buf[GB46750_MAX_PACKET];
+        uint16_t len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+
+        DecodedFields d;
+        CHECK(decodePacket(buf, len, d));
+        // 位置 → 0xFFFFFFFF
+        CHECK_EQ(d.opLat, (int32_t)0xFFFFFFFF);
+        CHECK_EQ(d.opLon, (int32_t)0xFFFFFFFF);
+        CHECK_EQ(d.uaLat, (int32_t)0xFFFFFFFF);
+        CHECK_EQ(d.uaLon, (int32_t)0xFFFFFFFF);
+        // 高度 → 0
+        CHECK_EQ(d.opAlt, 0);
+        CHECK_EQ(d.geoAlt, 0);
+        // 航迹/速度 → 0xFFFF
+        CHECK_EQ(d.heading, 0xFFFF);
+        CHECK_EQ(d.speed, 0xFFFF);
+        // 垂直速度 → 0xFF
+        CHECK_EQ(d.vspeed, 0xFF);
+        // 状态与时间戳不受 NaN 影响
+        CHECK_EQ(d.opStatus, STATUS_AIRBORNE);
+        CHECK_EQ(d.timestamp, 1700000000ULL);
+
+        // --- 编码层: +Inf 高度 → 0 (与 NaN 行为一致) ---
+        fd = makeFd(34.5f, 110.25f, INFINITY, 5.0f, 90.0f, STATUS_AIRBORNE);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 1700000000ULL);
+        len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+        CHECK(decodePacket(buf, len, d));
+        CHECK_EQ(d.geoAlt, 0);
+        // -Inf 速度 → 0xFFFF
+        fd = makeFd(34.5f, 110.25f, 100.0f, -INFINITY, 90.0f, STATUS_AIRBORNE);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 1700000000ULL);
+        len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+        CHECK(decodePacket(buf, len, d));
+        CHECK_EQ(d.speed, 0xFFFF);
+
+        // --- 单一 NaN 字段不影响其它字段 (隔离性) ---
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.speed = NAN;   // 只有速度失效
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 1700000000ULL);
+        len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+        CHECK(decodePacket(buf, len, d));
+        CHECK_EQ(d.speed, 0xFFFF);
+        CHECK_EQ(d.heading, 900);            // 正常值不受影响
+        CHECK_EQ(d.geoAlt, 2200);
+        CHECK_CLOSE((double)d.uaLat / 1e7, 34.5, 0.00001);
+    }
+
     printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");
 }

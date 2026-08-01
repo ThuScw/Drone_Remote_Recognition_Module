@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "broadcast_manager.h"
 #include "config.h"
@@ -27,8 +28,8 @@ RIDBroadcastManager::RIDBroadcastManager(
     , _broadcastActive(false)
     , _prevStatus(0xFF)
     , _debounceTarget(0xFF)
-    , _debounceCount(0)
-    , _lastBroadcastMs(0)
+    , _debounceStartMs(0)
+    , _nextBroadcastMs(0)
     , _lastBroadcastSuccessMs(0)
     , _lastDataUpdateMs(0)
     , _lastSelfTestMs(0)
@@ -85,7 +86,7 @@ bool RIDBroadcastManager::init() {
 
     uint64_t nowMs = (uint64_t)(esp_timer_get_time() / 1000);
     _lastDataUpdateMs = nowMs;
-    _lastBroadcastMs  = nowMs;
+    _nextBroadcastMs  = nowMs;
     _lastFlightLogMs  = nowMs;
     _lastSelfTestMs   = nowMs;
     _lastHeapCheckMs  = nowMs;
@@ -102,8 +103,8 @@ bool RIDBroadcastManager::init() {
             hash = ((hash << 5) + hash) + mac[i];
         }
         jitterMs = (uint16_t)(hash % BROADCAST_INTERVAL_MS);
-        // 往前偏移，使首包在当前窗口内的 jitterMs 时刻发送
-        _lastBroadcastMs = nowMs - (BROADCAST_INTERVAL_MS - jitterMs);
+        // 首包在 nowMs + jitterMs 时刻发送; 之后的时隙在网格上累加 (见 handleBroadcast)
+        _nextBroadcastMs = nowMs + jitterMs;
         ESP_LOGI(TAG, "Broadcast jitter: %dms (MAC %02X:%02X:%02X:%02X:%02X:%02X)",
                  jitterMs, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     } else {
@@ -124,11 +125,11 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
     // 2. 数据更新: 验证 + 构建新包
     if (nowMs - _lastDataUpdateMs >= DATA_UPDATE_INTERVAL_MS) {
         _lastDataUpdateMs = nowMs;
-        validateAndBuildPacket(fd);
+        validateAndBuildPacket(fd, nowMs);
     }
 
     // 3. 状态转换 (地面↔空中↔紧急)
-    handleStatusTransition();
+    handleStatusTransition(nowMs);
 
     // 4. 广播发送
     handleBroadcast(nowMs);
@@ -151,7 +152,7 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
 //   - M 字段缺失 (validMask 未置位): dataId 位仍为 1，值编码为表3未知哨兵值
 //   - 这确保每包都携带最新状态，接收方始终能解析到最新数据
 
-void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
+void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t nowMs) {
     // 数据无效时保留上次有效数据，防止飞行中因数据短暂丢失而误判为地面状态
     if (fd.freshness == FRESH_INVALID) {
         ESP_LOGW(TAG, "Data INVALID — keeping last known state, not updating packet");
@@ -173,18 +174,24 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
         // 不阻止包构建 — 无效字段在 buildPacket 中编码为表3未知哨兵值
     }
 
+    // 位置老化 (GB 46750-2025 表3-008/009/010/013): 超过阈值未更新的
+    // 位置/高度/速度/航向编码为"未知"哨兵值，而不是广播过期旧坐标 —
+    // 防止监管设备依据过期位置做禁飞区/冲突判断时产生安全事故。
+    FlightData broadcastFd = fd;
+    gb46750_expireStaleFields(broadcastFd, nowMs, DATA_FRESH_THRESHOLD_MS);
+
     // 始终构建新包 (P0: 不再 "keeping previous packet")
     // 精度: 直接用 GPS eph/epv 映射结果; eph/epv 不可用 (≤0) 时映射为 0 (unknown),
     // 如实上报 unknown, 不做 fallback 伪造 (表3-017/018 unknown=0)
-    uint8_t horizAcc = gb46750_mapHorizAcc(fd.horizAccM);
-    uint8_t vertAcc  = gb46750_mapVertAcc(fd.vertAccM);
+    uint8_t horizAcc = gb46750_mapHorizAcc(broadcastFd.horizAccM);
+    uint8_t vertAcc  = gb46750_mapVertAcc(broadcastFd.vertAccM);
 
-    uint8_t tsAcc = (fd.unixTimestampMs == 0) ? 0 : TS_ACC;
+    uint8_t tsAcc = (broadcastFd.unixTimestampMs == 0) ? 0 : TS_ACC;
 
-    gb46750_buildPacket(_currentPacket, fd, UAS_ID, REALNAME_ID,
+    gb46750_buildPacket(_currentPacket, broadcastFd, UAS_ID, REALNAME_ID,
                         OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
                         horizAcc, vertAcc, SPEED_ACC, tsAcc,
-                        fd.unixTimestampMs);
+                        broadcastFd.unixTimestampMs);
 }
 
 // ======================== BLE 自修复 ========================
@@ -252,12 +259,12 @@ bool RIDBroadcastManager::isAirborne() const {
             s == STATUS_FAIL_SAFE || s == STATUS_FAIL_EMERG);
 }
 
-void RIDBroadcastManager::handleStatusTransition() {
+void RIDBroadcastManager::handleStatusTransition(uint64_t nowMs) {
     uint8_t newStatus = _lastValidData.opStatus;
     if (newStatus == _prevStatus) {
         // 状态一致 — 重置消抖
         _debounceTarget = 0xFF;
-        _debounceCount = 0;
+        _debounceStartMs = 0;
         return;
     }
 
@@ -266,30 +273,30 @@ void RIDBroadcastManager::handleStatusTransition() {
         newStatus == STATUS_FAIL_EMERG) {
         ESP_LOGW(TAG, "Status EMERGENCY/FAIL-SAFE — immediate transition (status=%d)", newStatus);
         _debounceTarget = 0xFF;
-        _debounceCount = 0;
+        _debounceStartMs = 0;
         _prevStatus = newStatus;
         applyStatusChange(newStatus);
         return;
     }
 
-    // 消抖: 同一个新状态连续确认 N 次才切换
+    // 消抖: 目标状态首次出现时记录起点, 持续确认到指定时长才切换。
+    // 用墙钟时间计时 (而非 update() 调用次数), 消抖时长与主循环负载解耦。
     if (newStatus != _debounceTarget) {
         _debounceTarget = newStatus;
-        _debounceCount = 1;
+        _debounceStartMs = nowMs;
         return;
     }
 
-    _debounceCount++;
-    uint8_t threshold = (_debounceTarget == STATUS_GROUND)
-        ? DEBOUNCE_THRESH_AIR_GND   // 空中→地面: 更严格，防止飞行中误停广播
-        : DEBOUNCE_THRESH_GND_AIR;  // 地面→空中: 标准阈值
+    uint32_t debounceMs = (_debounceTarget == STATUS_GROUND)
+        ? DEBOUNCE_MS_AIR_GND   // 空中→地面: 更严格，防止飞行中误停广播
+        : DEBOUNCE_MS_GND_AIR;  // 地面→空中: 标准阈值
 
-    if (_debounceCount >= threshold) {
-        ESP_LOGI(TAG, "Status transition %d→%d (debounced, count=%d)",
-                 _prevStatus, newStatus, _debounceCount);
+    if (nowMs - _debounceStartMs >= debounceMs) {
+        ESP_LOGI(TAG, "Status transition %d→%d (debounced, %lums)",
+                 _prevStatus, newStatus, (unsigned long)(nowMs - _debounceStartMs));
         _prevStatus = newStatus;
         _debounceTarget = 0xFF;
-        _debounceCount = 0;
+        _debounceStartMs = 0;
         applyStatusChange(newStatus);
     }
 }
@@ -325,9 +332,19 @@ void RIDBroadcastManager::applyStatusChange(uint8_t newStatus) {
 
 void RIDBroadcastManager::handleBroadcast(uint64_t nowMs) {
     if (!_broadcastActive) return;
-    if (nowMs - _lastBroadcastMs < BROADCAST_INTERVAL_MS) return;
+    if (nowMs < _nextBroadcastMs) return;
 
-    _lastBroadcastMs = nowMs;
+    // 相位累加防漂移 (P1-5): 下一发送时刻在理想网格上累加 INTERVAL,
+    // 而不是重置为 nowMs — 否则每次广播最多额外漂移一个循环周期(≈10ms),
+    // 长时统计上间隔不均 (主循环延迟后基准点左移, 后续间隔被压缩)。
+    _nextBroadcastMs += BROADCAST_INTERVAL_MS;
+
+    // 追赶保护: 主循环长时间阻塞 (USB/Flash/BLE 自修复) 导致落后多个周期时,
+    // 只补发本次并把网格前移到当前时刻, 避免连续突发补包; 下一周期即恢复 ≤1s 间隔。
+    if (_nextBroadcastMs < nowMs) {
+        _nextBroadcastMs = nowMs;
+    }
+
     _broadcastCount++;
 
     // 新鲜度检查 — 仅用于日志告警，不阻止广播

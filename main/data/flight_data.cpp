@@ -5,6 +5,10 @@
 #include <inttypes.h>
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "usb/usb_host.h"
 #include "usb/cdc_acm_host.h"
@@ -17,6 +21,7 @@ static const char* TAG = "FLIGHT_DATA";
 
 class FlightDataSource {
 public:
+    FlightDataSource();
     void getFlightData(FlightData& fd, uint64_t nowMs);
     bool sendToFC(const uint8_t* data, size_t len);
     bool sendArmDisarm(bool arm);
@@ -47,10 +52,23 @@ private:
     volatile bool       _deviceReady = false;
     uint32_t           _recoveryCount = 0;
     uint64_t           _lastRecoveryMs = 0;
+
+    // 设备生命周期互斥锁: 串行化 _cdcDev 句柄的取用/关闭。
+    // 竞态来源: tryUsbRecovery (主循环任务) 与 DISCONNECT 事件回调 (USB host 任务)
+    // 可能同时 close 同一句柄 → 双重 close / use-after-free; sendToFC 检查后使用
+    // 句柄期间若被并发 close → use-after-free。加锁后同一句柄只被关闭一次,
+    // TX 期间句柄不被释放。
+    SemaphoreHandle_t  _devMutex = nullptr;
 };
 
 // Single module-level instance — public free functions delegate to it.
 static FlightDataSource s_source;
+
+// 静态单例构造: 创建设备生命周期互斥锁。
+// FreeRTOS 堆是静态数组, 调度器启动前 pvPortMalloc 可用, 此处创建安全。
+FlightDataSource::FlightDataSource() {
+    _devMutex = xSemaphoreCreateMutex();
+}
 
 // ======================== Public free-function API ========================
 
@@ -83,6 +101,11 @@ void FlightDataSource::usbEventCb(const cdc_acm_host_dev_event_data_t* event, vo
 
 void FlightDataSource::usbHostTask(void* arg) {
     auto* self = static_cast<FlightDataSource*>(arg);
+    // 注册任务看门狗: USB host 栈死锁时系统复位而非静默断流
+    // (GB 42590-2023 A.2.3.5.5 运行自检)
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "usb_host task not subscribed to TWDT");
+    }
     self->runUsbHostLoop();
 }
 
@@ -108,16 +131,26 @@ void FlightDataSource::onUsbEvent(const cdc_acm_host_dev_event_data_t* event) {
             ESP_LOGE(TAG, "USB CDC-ACM error: %d", event->data.error);
             break;
 
-        case CDC_ACM_HOST_DEVICE_DISCONNECTED:
+        case CDC_ACM_HOST_DEVICE_DISCONNECTED: {
             ESP_LOGW(TAG, "USB device disconnected");
-            _cdcDev = nullptr;
-            cdc_acm_host_close(event->data.cdc_hdl);
+            // 与 tryUsbRecovery 互斥: 若恢复流程已先关闭并置空句柄, 此处不再重复 close
+            cdc_acm_dev_hdl_t dev_to_close = nullptr;
+            if (_devMutex) xSemaphoreTake(_devMutex, portMAX_DELAY);
+            if (_cdcDev != nullptr) {
+                dev_to_close = _cdcDev;
+                _cdcDev = nullptr;
+            }
+            if (_devMutex) xSemaphoreGive(_devMutex);
+            if (dev_to_close != nullptr) {
+                cdc_acm_host_close(dev_to_close);
+            }
             portENTER_CRITICAL_SAFE(&_parserMux);
             mavlink_init(_parser);
             portEXIT_CRITICAL_SAFE(&_parserMux);
             _deviceConnected = false;
             _deviceReady = false;
             break;
+        }
 
         case CDC_ACM_HOST_SERIAL_STATE:
             ESP_LOGD(TAG, "Serial state: 0x%04X", event->data.serial_state.val);
@@ -135,11 +168,16 @@ void FlightDataSource::runUsbHostLoop() {
     ESP_LOGI(TAG, "USB Host task started");
 
     while (true) {
+        // 有限超时而非 portMAX_DELAY: 空闲时也要定期喂狗。
+        // 20ms 轮询远小于 CDC 输入环形缓冲(512B @115200baud≈44ms 填满),
+        // 不会造成数据堆积; 事件到达时 handle_events 会立即唤醒, 无额外延迟。
         uint32_t event_flags;
-        esp_err_t ret = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        esp_err_t ret = usb_host_lib_handle_events(pdMS_TO_TICKS(20), &event_flags);
         if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "USB Host event handling failed: %s", esp_err_to_name(ret));
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (ret != ESP_ERR_TIMEOUT) {
+                ESP_LOGE(TAG, "USB Host event handling failed: %s", esp_err_to_name(ret));
+            }
+            esp_task_wdt_reset();
             continue;
         }
 
@@ -151,6 +189,8 @@ void FlightDataSource::runUsbHostLoop() {
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
             ESP_LOGD(TAG, "All devices freed");
         }
+
+        esp_task_wdt_reset();
     }
 }
 
@@ -207,20 +247,23 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
     esp_err_t ret = cdc_acm_host_open(FC_USB_VID, FC_USB_PID, 0, &dev_config, &newDev);
 
     if (ret == ESP_OK) {
-        _cdcDev = newDev;
         ESP_LOGI(TAG, "USB device opened (VID=0x%04X, PID=0x%04X)",
                  FC_USB_VID, FC_USB_PID);
-        cdc_acm_host_desc_print(_cdcDev);
-        configureLineCoding(_cdcDev);
+        cdc_acm_host_desc_print(newDev);
+        configureLineCoding(newDev);
         // 显式清除 DTR/RTS 控制线状态
         // 飞控的 USB 口通常是烧录/配置口, DTR 可能连接到 MCU 的 BOOT0/NRST 引脚
         // 断言 DTR 可能触发飞控复位或进入 bootloader 模式，导致飞行中失控
         // 即使 driver 隐式设置了 DTR, 此处显式清除确保安全
-        cdc_acm_host_set_control_line_state(_cdcDev, false, false);
+        cdc_acm_host_set_control_line_state(newDev, false, false);
         ESP_LOGI(TAG, "USB device configured (DTR/RTS cleared for FC safety) — waiting for MAVLink data...");
-        _parser.consecutiveCrcErrors = 0;
+        // 配置完成后才发布句柄 (互斥锁内), 避免与 DISCONNECT/recovery 竞态
+        if (_devMutex) xSemaphoreTake(_devMutex, portMAX_DELAY);
+        _cdcDev = newDev;
         _deviceConnected = true;
         _deviceReady = true;
+        if (_devMutex) xSemaphoreGive(_devMutex);
+        _parser.consecutiveCrcErrors = 0;
         return ESP_OK;
     } else if (ret == ESP_ERR_NOT_FOUND) {
         ESP_LOGD(TAG, "Specified device not found, will retry...");
@@ -294,8 +337,14 @@ bool FlightDataSource::tryUsbRecovery(uint64_t nowMs) {
              (unsigned long)_recoveryCount,
              (unsigned long)_parser.consecutiveCrcErrors);
 
-    cdc_acm_dev_hdl_t dev_to_close = _cdcDev;
-    _cdcDev = nullptr;
+    // 与 DISCONNECT 事件互斥: 同一句柄只关闭一次, 避免双重 close / use-after-free
+    cdc_acm_dev_hdl_t dev_to_close = nullptr;
+    if (_devMutex) xSemaphoreTake(_devMutex, portMAX_DELAY);
+    if (_cdcDev != nullptr) {
+        dev_to_close = _cdcDev;
+        _cdcDev = nullptr;
+    }
+    if (_devMutex) xSemaphoreGive(_devMutex);
     if (dev_to_close != nullptr) {
         esp_err_t ret = cdc_acm_host_close(dev_to_close);
         if (ret == ESP_OK) {
@@ -407,12 +456,19 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
 
 bool FlightDataSource::sendToFC(const uint8_t* data, size_t len) {
     if (!data || len == 0) return false;
-    if (!_cdcDev || !_deviceReady) {
+
+    // 加锁跨越检查+TX: 防止检查 _cdcDev 后、TX 进行中被 DISCONNECT/recovery 并发 close
+    // 释放句柄 (use-after-free)。TX 阻塞 ≤100ms, 锁持有期间 close 等待, 无死锁 (TX 有超时)。
+    if (_devMutex) xSemaphoreTake(_devMutex, portMAX_DELAY);
+    cdc_acm_dev_hdl_t dev = _cdcDev;
+    if (dev == nullptr || !_deviceReady) {
+        if (_devMutex) xSemaphoreGive(_devMutex);
         ESP_LOGE(TAG, "TX: CDC device not ready");
         return false;
     }
 
-    esp_err_t ret = cdc_acm_host_data_tx_blocking(_cdcDev, data, len, 100);
+    esp_err_t ret = cdc_acm_host_data_tx_blocking(dev, data, len, 100);
+    if (_devMutex) xSemaphoreGive(_devMutex);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "TX to FC failed: %s", esp_err_to_name(ret));
         return false;

@@ -72,7 +72,23 @@ static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
 static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // GLOBAL_POSITION_INT: time_boot_ms(4) + lat(4) + lon(4) + alt(4) + relative_alt(4) + vx(2) + vy(2) + vz(2) + hdg(2) = 28 bytes
     // Some FC frames are 26-27 bytes (truncated hdg), handled by payloadLen check below
-    p.lastPositionBootMs = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+    uint32_t bootMs = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+
+    // boot_ms 回绕 / 飞控重启检测 (GB 46750-2025 8.2.1.3.3 相邻帧时间戳差 ≤1s):
+    // FC 重启后 boot_ms 从 0 重新计时, 会相对旧值显著减小。此时 unixBootOffsetMs
+    // 仍是旧启动时刻的 Unix 时间, 用它拼出的时间戳会大幅倒退, 违反时间戳一致性 —
+    // 立即作废时间戳, 让编码侧按表3-020 输出未知(0), 直到新 SYSTEM_TIME 重建偏移。
+    if (p.lastPositionBootMs > 0 &&
+        bootMs + MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS < p.lastPositionBootMs) {
+        p.unixTimeValid = false;
+        p.bootRollovers++;
+        #if CONFIG_RID_VERBOSE_LOG
+        ESP_LOGW(TAG, "FC reboot/boot_ms rollover: %lu -> %lu, timestamp invalidated",
+                 (unsigned long)p.lastPositionBootMs, (unsigned long)bootMs);
+        #endif
+    }
+    p.lastPositionBootMs = bootMs;
+
     p.lat = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
     p.lon = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
     p.altMsl = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1000.0f;
@@ -151,6 +167,12 @@ static void decode_system_time(MavlinkParser& p, const uint8_t* payload, uint8_t
     p.unixBootOffsetMs = (int64_t)(unixUsec / 1000ULL) - (int64_t)bootMs;
     p.unixTimeValid = true;
     p.lastSystemTimeMs = nowMs;
+    // 重新锚定 lastPositionBootMs 到当前 boot 纪元:
+    //  1) 飞控重启后若 SYSTEM_TIME 先于 GLOBAL_POSITION_INT 到达, 此处把基线更新到新纪元,
+    //     避免后续位置帧被误判为回绕 (回绕检测的假阳性);
+    //  2) 在新位置帧到来前, fillFlightData 用 SYSTEM_TIME 自身的 boot_ms 拼时间戳,
+    //     结果等于 SYSTEM_TIME 的 Unix 时刻, 而不是旧的巨值 boot_ms (杜绝垃圾时间戳)。
+    p.lastPositionBootMs = bootMs;
 
     #if CONFIG_RID_VERBOSE_LOG
     ESP_LOGI(TAG, "SYSTEM_TIME: unix=%llu ms, boot=%lu ms, offset=%lld ms",
@@ -214,6 +236,7 @@ void mavlink_init(MavlinkParser& p) {
     p.unixTimeValid = false;
     p.lastSystemTimeMs = 0;
     p.lastPositionBootMs = 0;
+    p.bootRollovers = 0;
     p.takeoffValid = false;  // takeoff point not recorded yet
 }
 
@@ -264,14 +287,25 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
             break;
         }
 
-        case PARSE_STATE_CRC:
-            p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= p.expectedLen) {
-                uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
+        case PARSE_STATE_CRC: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
+            // CRC 紧跟在 payload 之后 (2 字节); 签名帧的 13 字节签名在 CRC 之后
+            uint16_t crcEnd = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN;
 
-                // CRC 紧跟在 payload 之后; 签名帧的 13 字节签名在其后, 不能用 expectedLen 定位
-                uint16_t crcReceived = p.buffer[headerLen + p.payloadLen] |
-                                    ((uint16_t)p.buffer[headerLen + p.payloadLen + 1] << 8);
+            p.buffer[p.bufferIdx++] = byte;
+
+            // 签名帧非阻塞 (P1-6): CRC 字节一收齐就立即校验, 不等待 13 字节签名尾部。
+            // 签名可能因流中断/噪声/飞控实际不发送而永远不来 — 旧逻辑要等 expectedLen
+            // (含签名) 才校验 CRC, 期间解析器卡在 CRC 状态, 且截断签名会让 CRC 校验
+            // 在错误时机读取垃圾字节。这里把签名视为"可选尾部", 无需校验, 只消费丢弃。
+            if (p.bufferIdx < crcEnd) {
+                break;  // CRC 字节未收齐
+            }
+
+            if (p.bufferIdx == crcEnd) {
+                // --- CRC 字节刚收齐: 立即校验 ---
+                uint16_t crcReceived = p.buffer[crcEnd - 2] |
+                                       ((uint16_t)p.buffer[crcEnd - 1] << 8);
 
                 // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX、CRC 和签名)
                 // 参考实现 (mavlink/c_library_v2) 确认: 签名帧的 CRC 同样不含 link_id
@@ -303,7 +337,12 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     p.consecutiveCrcErrors = 0;
                     p.lastValidFrameMs = nowMs;
                     handle_frame(p, nowMs);
-                    p.state = PARSE_STATE_IDLE;
+                    if (!p.isSigned) {
+                        p.state = PARSE_STATE_IDLE;
+                        return true;
+                    }
+                    // 签名帧: CRC 已通过, 帧有效。签名不校验, 仅消费 13 字节
+                    // (由下面 bufferIdx >= expectedLen 复位), 本帧先返回成功。
                     return true;
                 } else {
                     p.crcErrors++;
@@ -312,10 +351,15 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                     ESP_LOGW(TAG, "CRC fail: %s msgid=%d recv=0x%04X calc=0x%04X",
                              p.isV2 ? "v2" : "v1", msgid, crcReceived, crcCalc);
                     #endif
+                    // 立即复位, 不等签名尾部
                     p.state = PARSE_STATE_IDLE;
                 }
+            } else if (p.bufferIdx >= p.expectedLen) {
+                // 签名帧: 13 字节签名尾部消费完毕 — 复位, 开始下一帧
+                p.state = PARSE_STATE_IDLE;
             }
             break;
+        }
     }
     return false;
 }

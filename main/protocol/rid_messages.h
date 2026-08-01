@@ -153,6 +153,12 @@ bool gb46750_validateFlightData(const FlightData& fd, uint32_t& validationFlags)
 // 返回整体新鲜度等级 (取最差值)
 DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint64_t thresholdMs);
 
+// 过期字段老化 — 清除超过阈值未更新的 M 字段 validMask 位
+// 使编码侧按表3"未知或不可用"哨兵值编码 (位置→0xFFFFFFFF, 航迹/速度→0xFFFF, 高度→0)
+// 依据 GB 46750-2025 表3: 位置等字段"未知或不可用"应取哨兵值，而非广播过期的旧坐标。
+// 注意: 不老化 opStatus/opPos (状态机与起飞点语义，保留上次已知状态)。
+void gb46750_expireStaleFields(FlightData& fd, uint64_t nowMs, uint64_t thresholdMs);
+
 // GPS 精度 (m) → GB 46750-2025 精度枚举值。返回 0 = unknown
 uint8_t gb46750_mapHorizAcc(float ephM);
 uint8_t gb46750_mapVertAcc(float epvM);

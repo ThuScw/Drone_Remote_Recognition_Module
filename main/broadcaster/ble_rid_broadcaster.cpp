@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 #include <esp_log.h>
 #include <esp_bt.h>
+#include <esp_system.h>
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs_id.h"
@@ -174,57 +175,22 @@ bool BleRidBroadcaster::runtimeCheck() {
 // --- Self-Healing: 三级递进恢复 ---
 // Tier 1: 原地重启广播 (stop + start, 同参数)
 // Tier 2: 切换 PHY 重试 (1M ↔ Coded, 对调物理层避开干扰)
-// Tier 3: 完整 NimBLE 重初始化 (复位协议栈, 代价最大)
+// Tier 3: 整机重启 (业界常见做法)
+//
+// 为什么 Tier 3 用 esp_restart() 而不是"运行时重新初始化 BLE":
+//   ESP-IDF v5.5.5 的 nimble_port_freertos_deinit() 只删除 host 任务
+//   (esp_nimble_disable → vTaskDelete(host_task_h)), 并不 deinit 控制器或 host 栈;
+//   紧接的 nimble_port_init() 会因控制器已初始化返回 ESP_ERR_INVALID_STATE,
+//   on_sync 也不会再次触发 → 软件级 reinit 必然失败。此前曾尝试修该路径,
+//   但业界量产产品对已损坏的无线电一律选择整机重启 —— 重启到已知良好状态
+//   远比"部分修复"可靠, 且中断时间 (~1-2s) 与其他方案相当。走到 Tier 3 时
+//   BLE 已死 (Tier 1/2 失败), 广播本已停止, 重启是回到广播的最快路径。
+//   注: 团队批评中"reinit 双 deinit 导致 double-free"的说法在 v5.5.5 不成立
+//   (esp_nimble_disable() 有 if(host_task_h) 守卫), 但其"reinit 危险/无效"
+//   的核心结论是对的, 只是机制不同。
 
 bool BleRidBroadcaster::needsRecovery() const {
     return s_needsRecovery;
-}
-
-bool BleRidBroadcaster::reinitNimble() {
-    ESP_LOGI(TAG, "Reinitializing NimBLE stack...");
-
-    // 停掉当前 host task
-    nimble_port_freertos_deinit();
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    // 重建信号量
-    if (s_syncSemaphore) {
-        vSemaphoreDelete(s_syncSemaphore);
-    }
-    s_syncSemaphore = xSemaphoreCreateBinary();
-    if (!s_syncSemaphore) {
-        ESP_LOGE(TAG, "reinitNimble: semaphore create failed");
-        return false;
-    }
-
-    s_synced = false;
-    s_needsRecovery = false;
-
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.reset_cb = on_reset;
-
-    nimble_port_init();
-    ble_svc_gap_device_name_set(_deviceName);
-    nimble_port_freertos_init(host_task);
-
-    if (xSemaphoreTake(s_syncSemaphore, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        ESP_LOGE(TAG, "reinitNimble: sync timeout (5s)");
-        return false;
-    }
-
-    _ownAddrType = s_ownAddrType;
-    _consecutiveFailures = 0;
-    _updateFailures = 0;
-    _advertising = false;
-
-    // 协议栈复位后重新应用广播 TX 功率 (GB 46750-2025 6.1.3 EIRP), 与 begin() 保持一致
-    esp_err_t txRet = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, BLE_TX_POWER_LEVEL);
-    if (txRet != ESP_OK) {
-        ESP_LOGW(TAG, "reinitNimble: TX power set failed (rc=%d)", txRet);
-    }
-
-    ESP_LOGI(TAG, "Nimble reinit complete");
-    return true;
 }
 
 BleRidBroadcaster::RecoveryResult BleRidBroadcaster::attemptSelfHeal(const GB46750Packet& pkt) {
@@ -255,20 +221,9 @@ BleRidBroadcaster::RecoveryResult BleRidBroadcaster::attemptSelfHeal(const GB467
         return RecoveryResult::DEGRADED;
     }
 
-    // --- Tier 3: 完整 NimBLE 协议栈重初始化 ---
-    ESP_LOGI(TAG, "Self-heal Tier 3: full Nimble reinit");
-    _useAltPhy = false;  // 恢复默认 PHY
-    if (reinitNimble()) {
-        if (startBroadcast(pkt)) {
-            ESP_LOGI(TAG, "Self-heal Tier 3 OK — Nimble restarted (degraded)");
-            _degraded = true;
-            return RecoveryResult::DEGRADED;
-        }
-    }
-
-    ESP_LOGE(TAG, "Self-heal ALL TIERS FAILED — module requires manual intervention");
-    _advertising = false;
-    return RecoveryResult::FAILED;
+    // --- Tier 3: 整机重启 (BLE 栈已损坏, 唯一干净可靠的恢复) ---
+    ESP_LOGE(TAG, "Self-heal Tier 3: BLE stack unrecoverable — restarting system");
+    esp_restart();  // 不返回; 重启后重新走 app_main, BLE/USB/日志全新初始化
 }
 
 // --- Private helper ---
