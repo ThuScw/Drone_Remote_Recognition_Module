@@ -41,9 +41,10 @@ private:
     portMUX_TYPE       _parserMux = portMUX_INITIALIZER_UNLOCKED;
     bool               _usbHostInitialized = false;
     TaskHandle_t       _usbHostTaskHandle = nullptr;
-    cdc_acm_dev_hdl_t  _cdcDev = nullptr;
-    bool               _deviceConnected = false;
-    bool               _deviceReady = false;
+    // volatile: 跨任务共享 (主循环 <-> USB host 任务), 防止编译器寄存器缓存导致读到过期状态
+    volatile cdc_acm_dev_hdl_t _cdcDev = nullptr;
+    volatile bool       _deviceConnected = false;
+    volatile bool       _deviceReady = false;
     uint32_t           _recoveryCount = 0;
     uint64_t           _lastRecoveryMs = 0;
 };
@@ -201,9 +202,12 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
     ESP_LOGI(TAG, "Trying to open USB device (VID=0x%04X, PID=0x%04X)",
              FC_USB_VID, FC_USB_PID);
 
-    esp_err_t ret = cdc_acm_host_open(FC_USB_VID, FC_USB_PID, 0, &dev_config, &_cdcDev);
+    // 用局部变量接收 open 结果 (不能对 volatile _cdcDev 取地址)
+    cdc_acm_dev_hdl_t newDev = nullptr;
+    esp_err_t ret = cdc_acm_host_open(FC_USB_VID, FC_USB_PID, 0, &dev_config, &newDev);
 
     if (ret == ESP_OK) {
+        _cdcDev = newDev;
         ESP_LOGI(TAG, "USB device opened (VID=0x%04X, PID=0x%04X)",
                  FC_USB_VID, FC_USB_PID);
         cdc_acm_host_desc_print(_cdcDev);

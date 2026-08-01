@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
+#include <freertos/task.h>
 #include "broadcast_manager.h"
 #include "config.h"
 
@@ -413,5 +414,14 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
 
     if (freeHeap < 10000) {
         ESP_LOGW(TAG, "LOW HEAP WARNING: only %u bytes remaining", (unsigned)freeHeap);
+    }
+
+    // 主任务 (app_main) 栈高水位 — update() 在主循环上下文执行
+    // StackType_t 在 ESP32 上为 1 字节, 乘以 sizeof 以保持跨端口一致
+    uint32_t stackHwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL) * (uint32_t)sizeof(StackType_t);
+    ESP_LOGI(TAG, "Main stack high-water: %lu bytes", (unsigned long)stackHwm);
+    if (stackHwm < 1024) {
+        ESP_LOGW(TAG, "Main stack LOW (HWM=%lu) — consider increasing CONFIG_ESP_MAIN_TASK_STACK_SIZE",
+                 (unsigned long)stackHwm);
     }
 }

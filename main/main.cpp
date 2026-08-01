@@ -97,6 +97,10 @@ extern "C" void app_main(void) {
 
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");
 
+    // 主任务栈高水位 (启动基线; 运行期每 60s 在 handleHeapMonitor 中复查)
+    ESP_LOGI(TAG, "Main task stack high-water: %lu bytes",
+             (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+
     // --- Main Loop ---
     FlightData fd = {};  // 零初始化: opStatus=STATUS_UNREPORTED(0), freshness=FRESH_INVALID
     while (1) {
