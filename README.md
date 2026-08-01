@@ -279,7 +279,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 
 **导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×96 bytes 二进制记录 → `+DONE\r\n`
 
-**CSV 输出**包含 28 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
+**CSV 输出**包含 27 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
 
 ### 串口监控输出示例
 
@@ -316,7 +316,7 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] GB 46750 数据包逐字节单元测试（golden packet 验证，5626 测试用例通过）
+- [x] PC 测试套件 8132 用例全部通过（含真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
