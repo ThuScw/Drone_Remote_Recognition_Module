@@ -7,7 +7,7 @@
 | 被测模块 | 测试文件 | 覆盖内容 |
 |----------|----------|----------|
 | CRC-16/MCRF4XX | `test_crc.cpp` | CRC算法正确性、MAVLink CRC extra byte常量 |
-| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测、签名帧、未知msgid |
+| MAVLink解析器 | `test_parser.cpp` | v1/v2帧解析、字段提取、CRC校验、超时检测、签名帧、未知msgid、压力测试（粘包/丢字节/乱码洪流/位翻转） |
 | GB 46750-2025编码 | `test_rid_messages.cpp` | 数据包构建、字段编码公式、M/O字段语义、范围验证、新鲜度 |
 
 ## 快速开始
@@ -61,7 +61,7 @@ test/
 │   └── esp_bt.h           # 蓝牙枚举桩
 ├── test_main.cpp          # 极简测试框架（CHECK / CHECK_EQ / CHECK_CLOSE）
 ├── test_crc.cpp           # CRC算法测试（6项）
-├── test_parser.cpp        # MAVLink解析测试（17项）
+├── test_parser.cpp        # MAVLink解析测试（21项）
 ├── test_rid_messages.cpp  # GB 46750-2025合规测试（21项）
 ├── Makefile               # Linux/macOS/MSYS2构建脚本
 ├── run.bat                # Windows双击运行脚本
@@ -107,6 +107,10 @@ tools/
 | 15 | 未知msgid帧 | 无CRC extra的未知msgid不计入CRC错误，避免假恢复风暴 |
 | 16 | 签名帧 | MAVLink v2签名帧（13字节签名块）正常解析，CRC验证正确 |
 | 17 | SYSTEM_TIME | 真实11B变体（boot_ms低3字节）与标准12B均正确解码unixUsec/bootMs |
+| 18 | 粘包重入 | 连续两帧无间隔送入，解析器正确拆出2帧（CRC无误、字段齐全），不误并帧 |
+| 19 | 丢字节/截断重同步 | 帧中途丢1字节+噪声/截断至一半，解析器跳过坏帧后从下一STX重新同步，后续合法帧全数恢复 |
+| 20 | 随机乱码洪流 | 3000字节随机噪声+30合法帧：未知msgid假帧不误报CRC错误、不触发假恢复，合法帧≥20恢复；限制噪声（排除0xFD/0xFE）时10帧全数解析、crcErrors=0 |
+| 21 | payload位翻转 | 合法帧payload翻转1bit → CRC拒绝、totalFrames=0、consecutiveCrcErrors=1 |
 
 ### test_rid_messages.cpp — GB 46750-2025合规性
 

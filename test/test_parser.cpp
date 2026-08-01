@@ -13,6 +13,31 @@ static bool feed_frame(MavlinkParser& p, const uint8_t* frame, uint16_t len, uin
     return gotFrame;
 }
 
+// Deterministic xorshift32 PRNG — 乱码洪流测试用可复现噪声
+static uint32_t g_rng = 0x12345678u;
+static uint32_t next_u32() {
+    g_rng ^= g_rng << 13;
+    g_rng ^= g_rng >> 17;
+    g_rng ^= g_rng << 5;
+    return g_rng;
+}
+
+// Collect up to maxN GLOBAL_POSITION_INT (msgid 33) frames with valid heading
+static int collect_pos_frames(const TestFrame* out[], int maxN) {
+    int n = 0;
+    for (int i = 0; i < kNumTestFrames && n < maxN; i++) {
+        if (kTestFrames[i].msgid == 33 && kTestFrames[i].expected.hdg >= 0) {
+            out[n++] = &kTestFrames[i];
+        }
+    }
+    return n;
+}
+
+// 帧头长度: 由 STX 判定 v1(6) / v2(10)
+static uint16_t frame_header_len(const TestFrame* tf) {
+    return (tf->raw[0] == 0xFD) ? 10 : 6;
+}
+
 void test_mavlink_parser() {
     printf("--- MAVLink Parser (real flight data) ---\n");
 
@@ -391,5 +416,169 @@ void test_mavlink_parser() {
         printf("  SYSTEM_TIME: 11B=%d 12B=%d\n", n11, n12);
         CHECK(n11 > 0);  // 真实 11B 截断变体必须被解码
         CHECK(n12 > 0);  // 标准 12B 也必须被解码
+    }
+
+    // ==== 18. 粘包: 两条消息背靠背无缝拼接 ====
+    // 模拟 UART/DMA 突发: HEARTBEAT 与位置帧紧挨着到达, 中间无间隔, 两帧都必须解析
+    {
+        const TestFrame* hb  = nullptr;
+        const TestFrame* pos = nullptr;
+        for (int i = 0; i < kNumTestFrames; i++) {
+            if (!hb  && kTestFrames[i].msgid == 0  && kTestFrames[i].expected.armed == 1)
+                hb  = &kTestFrames[i];
+            if (!pos && kTestFrames[i].msgid == 33 && kTestFrames[i].expected.hdg >= 0)
+                pos = &kTestFrames[i];
+        }
+        CHECK(hb && pos);
+
+        uint8_t glued[256];
+        uint16_t glen = 0;
+        memcpy(glued + glen, hb->raw,  hb->rawLen);   glen += hb->rawLen;
+        memcpy(glued + glen, pos->raw, pos->rawLen);  glen += pos->rawLen;
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, glued, glen, 1000);
+
+        CHECK_EQ(p.totalFrames, 2u);        // 两帧都通过 CRC 并解析
+        CHECK_EQ(p.crcErrors, 0u);
+        CHECK(p.armed);                     // HEARTBEAT 先到
+        CHECK_CLOSE(p.lat, pos->expected.lat, 0.0001);  // 位置帧后到, 数据保留
+        CHECK_CLOSE(p.lon, pos->expected.lon, 0.0001);
+    }
+
+    // ==== 19. 中途丢字节 / 截断 → 重新同步 ====
+    // 19a: payload 中间丢 1 字节 + 1 噪声字节 + 2 完整帧
+    //      解析器必须检测到 CRC 失败, 回 IDLE 后完整解析后续两帧
+    {
+        const TestFrame* pos[3];
+        CHECK(collect_pos_frames(pos, 3) == 3);
+
+        uint16_t hdr = frame_header_len(pos[0]);
+        uint16_t dropIdx = hdr + pos[0]->raw[1] / 2;  // payload 中间
+
+        uint8_t stream[512];
+        uint16_t slen = 0;
+        memcpy(stream + slen, pos[0]->raw, dropIdx);            slen += dropIdx;
+        memcpy(stream + slen, pos[0]->raw + dropIdx + 1,
+               pos[0]->rawLen - dropIdx - 1);                   slen += pos[0]->rawLen - dropIdx - 1;
+        stream[slen++] = 0x00;  // 1 字节噪声填补缺口
+        memcpy(stream + slen, pos[1]->raw, pos[1]->rawLen);     slen += pos[1]->rawLen;
+        memcpy(stream + slen, pos[2]->raw, pos[2]->rawLen);     slen += pos[2]->rawLen;
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, stream, slen, 1000);
+
+        CHECK_EQ(p.crcErrors, 1u);          // 丢字节的帧被检测
+        CHECK_EQ(p.totalFrames, 2u);        // 后续两帧完整解析
+        CHECK_CLOSE(p.lat, pos[2]->expected.lat, 0.0001);
+        CHECK_CLOSE(p.lon, pos[2]->expected.lon, 0.0001);
+    }
+
+    // 19b: 帧截断为一半后紧跟 20 个完整帧 → 重新锁定, 绝大多数后续帧解析成功
+    {
+        const TestFrame* pos[21];
+        CHECK(collect_pos_frames(pos, 21) == 21);
+
+        uint8_t stream[64 + 21 * 64];
+        uint16_t slen = 0;
+        uint16_t half = pos[0]->rawLen / 2;
+        memcpy(stream + slen, pos[0]->raw, half);  slen += half;  // 半截帧0
+        for (int i = 1; i <= 20; i++) {
+            memcpy(stream + slen, pos[i]->raw, pos[i]->rawLen);
+            slen += pos[i]->rawLen;
+        }
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, stream, slen, 1000);
+
+        CHECK(p.crcErrors >= 1);             // 半截帧被检测
+        CHECK(p.totalFrames >= 17);          // 20 帧中绝大多数重新锁定
+        CHECK_CLOSE(p.lat, pos[20]->expected.lat, 0.0001);
+        CHECK_CLOSE(p.lon, pos[20]->expected.lon, 0.0001);
+    }
+
+    // ==== 20. 随机乱码洪流 → 自愈恢复 ====
+    // 20a: 3000 字节全随机乱码后跟 30 个有效帧 (模拟电磁干扰位翻转 / 信道噪声)
+    //      乱码大多命中未知 msgid (静默跳过, 不计 crcErrors), 真正的考验是:
+    //      洪流结束后解析器能否重新锁定, 恢复出大多数后续有效帧
+    {
+        const TestFrame* pos[30];
+        CHECK(collect_pos_frames(pos, 30) == 30);
+
+        uint8_t storm[3000];
+        g_rng = 0x12345678u;
+        for (int i = 0; i < 3000; i++) storm[i] = (uint8_t)next_u32();
+
+        uint8_t stream[3000 + 30 * 64];
+        uint16_t slen = 0;
+        memcpy(stream + slen, storm, 3000);  slen += 3000;
+        for (int i = 0; i < 30; i++) {
+            memcpy(stream + slen, pos[i]->raw, pos[i]->rawLen);
+            slen += pos[i]->rawLen;
+        }
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, stream, slen, 1000);
+
+        // 单个假帧最多吞 ~265 字节 (payloadLen≤253), 30 帧里至少恢复出 20 帧
+        CHECK(p.totalFrames >= 20);
+    }
+
+    // 20b: 噪声穿插在有效帧之间 (无 STX 字节的乱码), 每帧都必须解析且计数器自愈归零
+    {
+        const TestFrame* pos[10];
+        CHECK(collect_pos_frames(pos, 10) == 10);
+
+        uint8_t stream[10 * (100 + 64)];
+        uint16_t slen = 0;
+        g_rng = 0xABCDEF01u;
+        for (int i = 0; i < 10; i++) {
+            // 100 字节噪声 (排除 0xFD/0xFE, 否则会误启假帧)
+            for (int j = 0; j < 100; j++) {
+                uint8_t b;
+                do { b = (uint8_t)next_u32(); } while (b == 0xFD || b == 0xFE);
+                stream[slen++] = b;
+            }
+            memcpy(stream + slen, pos[i]->raw, pos[i]->rawLen);
+            slen += pos[i]->rawLen;
+        }
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, stream, slen, 1000);
+
+        CHECK_EQ(p.totalFrames, 10u);        // 每帧都在噪声中完整解析
+        CHECK_EQ(p.crcErrors, 0u);           // 无 STX 噪声不产生假帧
+        CHECK_EQ(p.consecutiveCrcErrors, 0u); // 连续 CRC 计数器保持归零
+    }
+
+    // ==== 21. payload 位翻转被 CRC 拒绝 ====
+    // 模拟电磁干扰位翻转 (非 CRC 字节): 篡改 payload 中间 1 位, 帧必须被 CRC 拒绝
+    {
+        const TestFrame* pos = nullptr;
+        for (int i = 0; i < kNumTestFrames; i++) {
+            if (kTestFrames[i].msgid == 33 && kTestFrames[i].expected.hdg >= 0) {
+                pos = &kTestFrames[i];
+                break;
+            }
+        }
+        CHECK(pos);
+
+        uint8_t corrupted[128];
+        memcpy(corrupted, pos->raw, pos->rawLen);
+        uint16_t hdr = frame_header_len(pos);
+        corrupted[hdr + 5] ^= 0x04;  // payload 中某一位翻转
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, corrupted, pos->rawLen, 1000);
+
+        CHECK_EQ(p.totalFrames, 0u);            // 帧被拒绝
+        CHECK_EQ(p.crcErrors, 1u);
+        CHECK_EQ(p.consecutiveCrcErrors, 1u);
     }
 }
