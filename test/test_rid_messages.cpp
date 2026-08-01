@@ -36,6 +36,84 @@ static uint16_t read_u16le(const uint8_t* b) {
 }
 
 // ============================================================
+// Independent Table 3 decoder — has NO knowledge of gb46750_buildPacket
+// internals. Offsets are hardcoded from the standard's fixed field order
+// (GB 46750-2025 Table 3). Breaks the encoder↔test self-consistency loop:
+// if the encoder shifts a field, this decoder reads the wrong bytes and
+// the golden assertions below fail loudly.
+// ============================================================
+
+struct DecodedFields {
+    int32_t  opLat, opLon;
+    uint16_t opAlt;
+    int32_t  uaLat, uaLon;
+    uint16_t heading, speed;
+    uint16_t relHeight;   // 0xFFFF = O-field not present
+    uint8_t  vspeed;      // 0xFF = O-field not present
+    uint16_t geoAlt;
+    uint16_t baroAlt;     // 0xFFFF = O-field not present
+    uint8_t  opStatus;
+    uint8_t  coordSys;
+    uint8_t  horizAcc, vertAcc, speedAcc;
+    uint64_t timestamp;
+    uint8_t  tsAcc;
+};
+
+static bool decodePacket(const uint8_t* buf, uint16_t len, DecodedFields& out) {
+    if (!buf || len < 6) return false;
+    if (buf[0] != GB46750_DATA_TYPE) return false;
+    uint8_t dataIdLen = 3;  // Table 2: 3 dataId bytes for this message set
+    uint8_t dlen = buf[2];
+    if (len != 1 + 1 + 1 + dataIdLen + dlen) return false;
+
+    const uint8_t* c = buf + 6;  // content start (after 1+1+1+3 header)
+    uint16_t o = 0;
+
+    // 001 UAS_ID (20) ... 005 OP_LOC_TYPE (1): fixed leading fields
+    o += 20 + 8 + 1 + 1 + 1;
+
+    // 006 OP_POS (8)
+    out.opLat = read_i32le(c + o);  o += 4;
+    out.opLon = read_i32le(c + o);  o += 4;
+    // 007 OP_ALT (2)
+    out.opAlt = read_u16le(c + o);  o += 2;
+    // 008 UA_POS (8)
+    out.uaLat = read_i32le(c + o);  o += 4;
+    out.uaLon = read_i32le(c + o);  o += 4;
+    // 009 TRACK_ANGLE (2)
+    out.heading = read_u16le(c + o);  o += 2;
+    // 010 GROUND_SPEED (2)
+    out.speed = read_u16le(c + o);  o += 2;
+    // 011 REL_HEIGHT (2, O) — presence read from dataId[1]
+    out.relHeight = (buf[4] & DID_REL_HEIGHT) ? read_u16le(c + o) : 0xFFFF;
+    if (buf[4] & DID_REL_HEIGHT) o += 2;
+    // 012 VERT_SPEED (1, O)
+    out.vspeed = (buf[4] & DID_VERT_SPEED) ? c[o] : 0xFF;
+    if (buf[4] & DID_VERT_SPEED) o += 1;
+    // 013 GEO_ALT (2)
+    out.geoAlt = read_u16le(c + o);  o += 2;
+    // 014 BARO_ALT (2, O)
+    out.baroAlt = (buf[4] & DID_BARO_ALT) ? read_u16le(c + o) : 0xFFFF;
+    if (buf[4] & DID_BARO_ALT) o += 2;
+    // 015 OP_STATUS (1)
+    out.opStatus = c[o];  o += 1;
+    // 016 COORD_SYS (1)
+    out.coordSys = c[o];  o += 1;
+    // 017-019 precision (3)
+    out.horizAcc = c[o];  o += 1;
+    out.vertAcc  = c[o];  o += 1;
+    out.speedAcc = c[o];  o += 1;
+    // 020 TIMESTAMP (6, LE)
+    out.timestamp = 0;
+    for (int i = 0; i < 6; i++) out.timestamp |= ((uint64_t)c[o + i]) << (i * 8);
+    o += 6;
+    // 021 TS_ACC (1)
+    out.tsAcc = c[o];  o += 1;
+
+    return (o == dlen);
+}
+
+// ============================================================
 
 void test_rid_messages() {
     printf("--- GB 46750-2025 Encoding ---\n");
@@ -49,7 +127,7 @@ void test_rid_messages() {
                            1, 1, 0, 0, 10, 5, 3, 5, 1700000000ULL);
 
         CHECK_EQ(pkt.dataType, 0xFF);
-        CHECK_EQ(pkt.version, 0x01);
+        CHECK_EQ(pkt.version, 0x20);  // V1.0 = 0b001_00000
         CHECK_EQ(pkt.dataLength, pkt.contentLen);
         CHECK(pkt.contentLen > 0);
         CHECK_EQ(pkt.totalLen, 1 + 1 + 1 + pkt.dataIdLen + pkt.contentLen);
@@ -79,13 +157,15 @@ void test_rid_messages() {
 
         // Check header bytes
         CHECK_EQ(buf[0], 0xFF);  // dataType
-        CHECK_EQ(buf[1], 0x01);  // version
+        CHECK_EQ(buf[1], 0x20);  // version (V1.0 = 0b001_00000)
         CHECK_EQ(buf[2], pkt.dataLength);
     }
 
-    // ==== 4. M fields: dataId always set, value=0 when missing (GB 46750-2025 5.2.3) ----
+    // ==== 4. M fields: dataId always set, value=unknown sentinel when missing (GB 46750-2025 5.2.3/表3) ----
     //    Per GB 46750-2025 Table 2, M (mandatory) fields must be included in every packet.
-    //    When data is unavailable, the dataId bit stays 1 and value encodes as 0 (unknown).
+    //    When data is unavailable, the dataId bit stays 1 and value encodes as the Table 3
+    //    unknown sentinel: 006/008 position → 0xFFFFFFFF, 009/010 heading/speed → 0xFFFF,
+    //    007/013 altitude, 015 opStatus, 020 timestamp → 0.
     {
         FlightData fd;
         memset(&fd, 0, sizeof(fd));  // validMask=0, all fields zero
@@ -99,19 +179,34 @@ void test_rid_messages() {
         CHECK_EQ(pkt.dataId[1], 0xE5);  // UA_POS+TRACK_ANGLE+GROUND_SPEED+GEO_ALT+EXT (no O fields: REL_HEIGHT, VSPEED, BARO_ALT)
         CHECK_EQ(pkt.dataId[2], 0xFE);  // OP_STATUS+COORD_SYS+HORIZ_ACC+VERT_ACC+SPEED_ACC+TIMESTAMP+TS_ACC
 
-        // Value encoding: M fields missing → encoded as 0
-        // UA_POS at content offset 41 (after UAS_ID+REALNAME+OP_CAT+UA_CLASS+OP_LOC_TYPE+OP_POS+OP_ALT)
-        int32_t uaLat_i = read_i32le(pkt.content + 41);
-        int32_t uaLon_i = read_i32le(pkt.content + 45);
-        CHECK_EQ(uaLat_i, 0);
-        CHECK_EQ(uaLon_i, 0);
+        // Value encoding: M fields missing → Table 3 unknown sentinel (validMask=0 → no O fields)
+        // Content layout (validMask=0): UAS_ID(20)+REALNAME(8)+OP_CAT(1)+UA_CLASS(1)+OP_LOC_TYPE(1)
+        //   +OP_POS(8)+OP_ALT(2)+UA_POS(8)+HEADING(2)+SPEED(2)+GEO_ALT(2)+OP_STATUS(1)+COORD_SYS(1)
+        //   +HORIZ_ACC(1)+VERT_ACC(1)+SPEED_ACC(1)+TIMESTAMP(6)+TS_ACC(1)
 
-        // HEADING at offset 49, SPEED at offset 51 — both 0
-        CHECK_EQ(read_u16le(pkt.content + 49), 0);
-        CHECK_EQ(read_u16le(pkt.content + 51), 0);
+        // 006 OP_POS at offset 31 — unknown = 0xFFFFFFFF
+        CHECK_EQ(read_i32le(pkt.content + 31), (int32_t)0xFFFFFFFF);
+        CHECK_EQ(read_i32le(pkt.content + 35), (int32_t)0xFFFFFFFF);
+        // 007 OP_ALT at offset 39 — unknown = 0
+        CHECK_EQ(read_u16le(pkt.content + 39), 0);
 
-        // OP_STATUS at offset 55 — encoded as STATUS_UNREPORTED (0)
+        // 008 UA_POS at offset 41 — unknown = 0xFFFFFFFF
+        CHECK_EQ(read_i32le(pkt.content + 41), (int32_t)0xFFFFFFFF);
+        CHECK_EQ(read_i32le(pkt.content + 45), (int32_t)0xFFFFFFFF);
+
+        // 009 HEADING at offset 49 — unknown = 0xFFFF
+        CHECK_EQ(read_u16le(pkt.content + 49), 0xFFFF);
+        // 010 SPEED at offset 51 — unknown = 0xFFFF
+        CHECK_EQ(read_u16le(pkt.content + 51), 0xFFFF);
+
+        // 013 GEO_ALT at offset 53 — unknown = 0
+        CHECK_EQ(read_u16le(pkt.content + 53), 0);
+
+        // 015 OP_STATUS at offset 55 — encoded as STATUS_UNREPORTED (0)
         CHECK_EQ(pkt.content[55], (uint8_t)STATUS_UNREPORTED);
+
+        // 020 TIMESTAMP at offset 60-65 — unknown = 0
+        for (int i = 0; i < 6; i++) CHECK_EQ(pkt.content[60 + i], 0);
 
         CHECK(gb46750_packetVerify(pkt));
     }
@@ -505,7 +600,7 @@ void test_rid_messages() {
 
         // Verify header
         CHECK_EQ(buf[0], 0xFF);   // dataType
-        CHECK_EQ(buf[1], 0x01);   // version
+        CHECK_EQ(buf[1], 0x20);   // version (V1.0 = 0b001_00000)
 
         // dataLength should match contentLen
         CHECK_EQ(buf[2], pkt.contentLen);
@@ -623,6 +718,64 @@ void test_rid_messages() {
         // Final check: total content length matches offset
         CHECK_EQ(pkt.contentLen, off);
         CHECK_EQ(len, 1 + 1 + 1 + 3 + off);  // header + dataId + content
+    }
+
+    // ==== 21. Independent decode of golden packet (breaks self-consistency loop) ----
+    //    Round-trips through the Table 3 decoder defined above and asserts every
+    //    decoded field matches the original input. The decoder has no dependency on
+    //    the encoder's layout, so an encoder regression shows up as a decode mismatch.
+    {
+        FlightData fd;
+        memset(&fd, 0, sizeof(fd));
+        fd.lat = 31.230500f;
+        fd.lon = 121.473800f;
+        fd.geoAlt = 100.0f;
+        fd.heightAgl = 50.0f;
+        fd.baroAlt = 102.0f;
+        fd.speed = 5.5f;
+        fd.heading = 90.0f;
+        fd.vspeed = 2.0f;
+        fd.opStatus = STATUS_AIRBORNE;
+        fd.opLat = 31.230000f;
+        fd.opLon = 121.473000f;
+        fd.opAlt = 10.0f;
+        fd.validMask = FLD_ALL;
+        fd.unixTimestampMs = 1700000000000ULL;
+
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, fd.unixTimestampMs);
+
+        uint8_t buf[GB46750_MAX_PACKET];
+        uint16_t len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+
+        DecodedFields d;
+        CHECK(decodePacket(buf, len, d));
+
+        CHECK_CLOSE((double)d.opLat / 1e7, 31.230000, 0.00001);
+        CHECK_CLOSE((double)d.opLon / 1e7, 121.473000, 0.00001);
+        CHECK_EQ(d.opAlt, 2020);              // (10+1000)*2
+        CHECK_CLOSE((double)d.uaLat / 1e7, 31.230500, 0.00001);
+        CHECK_CLOSE((double)d.uaLon / 1e7, 121.473800, 0.00001);
+        CHECK_EQ(d.heading, 900);             // 90.0*10
+        CHECK_EQ(d.speed, 55);                // 5.5*10
+        CHECK_EQ(d.relHeight, 18100);         // (50+9000)*2
+        CHECK_EQ(d.vspeed, 4);                // 2.0*2, rising (bit7=0)
+        CHECK_EQ(d.geoAlt, 2200);             // (100+1000)*2
+        CHECK_EQ(d.baroAlt, 2204);            // (102+1000)*2
+        CHECK_EQ(d.opStatus, STATUS_AIRBORNE);
+        CHECK_EQ(d.coordSys, 0);
+        CHECK_EQ(d.horizAcc, 10);
+        CHECK_EQ(d.vertAcc, 5);
+        CHECK_EQ(d.speedAcc, 3);
+        CHECK_EQ(d.timestamp, 1700000000000ULL);
+        CHECK_EQ(d.tsAcc, 5);
+
+        // Decoder must reject malformed buffers
+        CHECK(!decodePacket(buf, 3, d));          // truncated
+        uint8_t bad[8] = {0xFE, 0x20, 0, 0, 0, 0, 0, 0};
+        CHECK(!decodePacket(bad, 8, d));          // wrong dataType / bad length
     }
 
     printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");

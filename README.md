@@ -23,7 +23,7 @@ main/
 │
 ├── protocol/
 │   └── rid_messages.h/cpp          # GB 46750-2025 协议编码（21字段，M字段始终存在，
-│                                   # 缺失编码为0；O字段条件编码）
+│                                   # 缺失编码为表3未知哨兵值（位置0xFFFFFFFF、航迹/速度0xFFFF）；O字段条件编码）
 │
 ├── broadcaster/
 │   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
@@ -68,10 +68,10 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 
 ### 关键设计决策
 
-- **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为 0（GB 46750 "未知" 值）——确保每个包都是新包
+- **M 字段始终存在**：即使数据不可用，`dataId` 位仍为 1，值编码为表3未知哨兵值（位置→0xFFFFFFFF、航迹/速度→0xFFFF，高度/时间戳/状态→0）——确保每个包都是新包
 - **永不跳过广播**：数据过期/缺失时仍广播（附带 `ESP_LOGW` 告警），满足 GB 46750 "全过程自动持续发送"
 - **GPS fix 解耦**：`mavlink_fillFlightData()` 不再以 `gpsFixType >= 2` 硬拦截数据输出；GPS_RAW_INT 和 GLOBAL_POSITION_INT 是独立 MAVLink 消息，到达顺序不确定，仅以 `lastPositionMs > 0` 判断是否有位置数据，GPS fix 不足降级为 STALE 质量标记
-- **操作员位置三级回退**：优先使用 `HOME_POSITION`（飞控 Home 点），其次使用首次解锁时记录的"起飞点"（符合 `OP_LOCATION_TYPE=0` 起飞点位置语义），最后编码为 0（未知，符合 GB 46750 Table 3 第 006 项要求）
+- **操作员位置三级回退**：优先使用 `HOME_POSITION`（飞控 Home 点），其次使用首次解锁时记录的"起飞点"（符合 `OP_LOCATION_TYPE=0` 起飞点位置语义），最后编码为表3未知哨兵值 0xFFFFFFFF（符合 GB 46750 Table 3 第 006 项要求）
 - **状态机消抖**：地面↔空中切换需连续确认（空中→地面 500ms，地面→空中 300ms），防止 HEARTBEAT 短暂波动误触发；紧急/失效状态绕过消抖立即生效
 - **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
@@ -91,7 +91,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **状态切换**：消抖确认后执行（地面→空中 300ms / 空中→地面 500ms），紧急状态绕过立即切换
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
-- **操作员位置**：优先使用飞控 Home 点，其次使用首次解锁时记录的起飞点，最后编码为 0（未知）
+- **操作员位置**：优先使用飞控 Home 点，其次使用首次解锁时记录的起飞点，最后编码为表3未知哨兵值 0xFFFFFFFF
 - **看门狗**：主循环 5s 无响应 → 系统自动复位
 - **飞行日志导出**：PC 端 `python flight_log_dump.py COMx` → 通过 UART0 发送 `DUMP\r\n` → ESP32 回复二进制记录 → 解码为 GB 46750 全部 21 字段的 CSV 文件
 
@@ -314,7 +314,7 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 - [x] MAVLink v1/v2 双协议解析（CRC 校验 + 消息解码）
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
-- [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 0（未知）
+- [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
 - [x] GB 46750 数据包逐字节单元测试（golden packet 验证，5585 测试用例通过）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
@@ -369,6 +369,18 @@ idf.py build
 ### 日志控制
 
 量产固件应在 `config.h` 中设置 `CONFIG_RID_VERBOSE_LOG 0`, 关闭 hex dump 和 TX 详细日志以减少 UART 功耗。
+
+## 已知限制（明确不做）
+
+以下两项属于 GB 46750-2025 的系统级 / 待主管部门发布要求，本模块**明确不做**，在此记录以避免误解：
+
+### 网络式 RID（GB 46750-2025 5.1.1）
+
+5.1.1 要求整机系统同时具备**广播式 + 网络式**两条远程识别链路。本模块只实现广播式（BLE 5.0+ 扩展广播）。网络式 RID 依赖飞控的蜂窝/4G 链路与云平台配套，属于整机系统集成职责，非本模块范围。
+
+### 防篡改 / 消息计数器（GB 46750-2025 5.2.2）
+
+5.2.2 规定数据包扩展内容应使用民用航空行业主管部门**统一发布的协议**。自行在包内添加消息计数器 / HMAC 字段不合规，故**不实现**。当前防篡改防线为模块级 Secure Boot + Flash 加密（见上文"安全配置"），待主管部门发布官方扩展协议后再跟进。
 
 ## 相关文档
 

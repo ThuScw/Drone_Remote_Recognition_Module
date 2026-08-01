@@ -126,7 +126,7 @@ bool BleRidBroadcaster::selfTest() {
         return false;
     }
 
-    // Build a minimal valid test packet — all fields encoded as unknown (0)
+    // Build a minimal valid test packet — validMask=FLD_ALL, so all fields encode as legal zero values
     FlightData testFd;
     memset(&testFd, 0, sizeof(testFd));
     testFd.validMask = FLD_ALL;

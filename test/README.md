@@ -62,7 +62,7 @@ test/
 ├── test_main.cpp          # 极简测试框架（CHECK / CHECK_EQ / CHECK_CLOSE）
 ├── test_crc.cpp           # CRC算法测试（6项）
 ├── test_parser.cpp        # MAVLink解析测试（11项）
-├── test_rid_messages.cpp  # GB 46750-2025合规测试（18项）
+├── test_rid_messages.cpp  # GB 46750-2025合规测试（21项）
 ├── Makefile               # Linux/macOS/MSYS2构建脚本
 ├── run.bat                # Windows双击运行脚本
 └── README.md              # 本文件
@@ -104,10 +104,10 @@ tools/
 
 | 编号 | 测试项 | 对应国标 |
 |------|--------|----------|
-| 1 | 包结构自检 | Section 5.2.1 — dataType=0xFF, version=0x01, totalLen自洽 |
+| 1 | 包结构自检 | Section 5.2.1 — dataType=0xFF, version=0x20 (V1.0=0b001_00000), totalLen自洽 |
 | 2 | packetVerify校验 | 结构校验函数正确性 |
 | 3 | serialize序列化 | 序列化输出非空 |
-| 4 | **M字段dataId恒为1** | Section 5.2.3 Table 2 — 数据不可用时编码为0而非省略 |
+| 4 | **M字段dataId恒为1** | Section 5.2.3 Table 2 — 数据不可用时编码为表3未知哨兵值（位置0xFFFFFFFF、航迹/速度0xFFFF）而非省略 |
 | 5 | **O字段条件出现** | Section 5.2.3 — REL_HEIGHT、VERT_SPEED、BARO_ALT仅在validMask允许时出现 |
 | 6 | 经纬度编码 | Table 3-008 — deg×1e7, int32 LE, 读回验证 |
 | 7 | 高度编码 | Table 3-013 — (alt+1000)×2, 分辨率0.5m, 100m和-500m两点验证 |
@@ -120,8 +120,11 @@ tools/
 | 14 | 新鲜度检查 | FRESH_OK/STALE/INVALID分级, 多字段混合、空数据边界 |
 | 15 | 负纬度编码 | 南半球(Sydney -33.8688°)正确处理 |
 | 16 | OpStatus字节位置 | content中运行状态字节偏移正确 |
-| 17 | 缺M字段 | dataId位仍置1，数值编码为0（合规关键） |
+| 17 | 缺M字段 | dataId位仍置1，数值编码为表3未知哨兵值（合规关键） |
 | 18 | 精度字段 | HORIZ_ACC、VERT_ACC、SPEED_ACC出现在content中 |
+| 19 | 未知哨兵值 | Table 3 — validMask=0 时 006/008位置→0xFFFFFFFF、009/010→0xFFFF、高度/时间戳/状态→0 |
+| 20 | golden包字节级验证 | 固定输入下逐字节核对序列化输出（header/dataId/全部content字段） |
+| 21 | **独立解码** | 表3硬编码偏移的独立解码器反向解析golden包，打破编解码自洽闭环 |
 
 ## GB 46750-2025 字段编码公式对照
 

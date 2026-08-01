@@ -5,7 +5,9 @@
 
 // GB 46750-2025 Section 5.2.1 数据包头部常量
 #define GB46750_DATA_TYPE   0xFF
-#define GB46750_VERSION     0x01  // V1.0
+// 版本号字节 (GB 46750-2025 表1): 第1~3位固定为"001"(主版本), 第4~8位为次版本 (MSB优先, 与表2数据标识位编号一致)
+// V1.0 = 0b001_00000 = 0x20
+#define GB46750_VERSION     0x20  // V1.0
 
 // 最大数据包长度: 1(type)+1(ver)+1(len)+3(id)+71(content) = 77
 #define GB46750_MAX_PACKET  128

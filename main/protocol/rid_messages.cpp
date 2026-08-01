@@ -85,7 +85,8 @@ static uint8_t encodeVSpeed(float mps) {
 //
 // P0 合规修复 (GB 46750-2025):
 //   - M (必填) 字段的数据标识位始终置 1，即使数据不可用也发送
-//   - 数据不可用时编码为 0 (标准定义的"未知或不可用"值)
+//   - 数据不可用时编码为表3规定的未知哨兵值:
+//     006/008 位置 → 0xFFFFFFFF; 009/010 航迹/速度 → 0xFFFF; 高度/时间戳/运行状态 → 0
 //   - O (可选) 字段的数据标识位根据 validMask 条件置位
 //   - 这确保每个包都是新包，接收方始终能获取最新状态
 
@@ -152,13 +153,13 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     // 005 遥控站位置类型 (1 byte, M, always)
     c[pos++] = opLocType;
 
-    // 006 遥控站位置 (8 bytes, M, always — unknown=0 if missing)
+    // 006 遥控站位置 (8 bytes, M, always — unknown=0xFFFFFFFF if missing)
     if (fd.validMask & FLD_OP_POS) {
         encodeLatLon(c + pos, fd.opLat, fd.opLon);
     } else {
-        writeI32LE(c + pos, 0);      // lat unknown
-        writeI32LE(c + pos + 4, 0);  // lon unknown
-        ESP_LOGW(TAG, "OP_POS missing, encoding (0,0)");
+        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
+        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
+        ESP_LOGW(TAG, "OP_POS missing, encoding unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
@@ -171,31 +172,31 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     }
     pos += 2;
 
-    // 008 无人机位置 (8 bytes, M, always — unknown=0 if missing)
+    // 008 无人机位置 (8 bytes, M, always — unknown=0xFFFFFFFF if missing)
     if (fd.validMask & FLD_POS) {
         encodeLatLon(c + pos, fd.lat, fd.lon);
     } else {
-        writeI32LE(c + pos, 0);      // lat unknown
-        writeI32LE(c + pos + 4, 0);  // lon unknown
-        ESP_LOGW(TAG, "UA_POS missing, encoding (0,0)");
+        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
+        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
+        ESP_LOGW(TAG, "UA_POS missing, encoding unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
-    // 009 航迹角 (2 bytes, M, always — unknown=0 if missing)
+    // 009 航迹角 (2 bytes, M, always — unknown=0xFFFF if missing)
     if (fd.validMask & FLD_HEADING) {
         writeU16LE(c + pos, encodeHeading(fd.heading));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "HEADING missing, encoding 0");
+        writeU16LE(c + pos, 0xFFFF);  // unknown
+        ESP_LOGW(TAG, "HEADING missing, encoding unknown (0xFFFF)");
     }
     pos += 2;
 
-    // 010 地速 (2 bytes, M, always — unknown=0 if missing)
+    // 010 地速 (2 bytes, M, always — unknown=0xFFFF if missing)
     if (fd.validMask & FLD_SPEED) {
         writeU16LE(c + pos, encodeSpeed(fd.speed));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "SPEED missing, encoding 0");
+        writeU16LE(c + pos, 0xFFFF);  // unknown
+        ESP_LOGW(TAG, "SPEED missing, encoding unknown (0xFFFF)");
     }
     pos += 2;
 

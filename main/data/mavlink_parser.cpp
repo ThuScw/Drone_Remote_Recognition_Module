@@ -340,8 +340,9 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     }
 
     // 操作员位置
-    // Priority: HOME_POSITION > takeoff point > unknown (0)
+    // Priority: HOME_POSITION > takeoff point > unknown (Table 3 item 006/007 哨兵值)
     // OP_LOCATION_TYPE=0 means "takeoff point", so using takeoff point is semantically correct
+    bool opPosValid = true;
     if (p.homeValid) {
         fd.opLat = p.homeLat;
         fd.opLon = p.homeLon;
@@ -351,13 +352,18 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
         fd.opLon = p.takeoffLon;
         fd.opAlt = p.takeoffAlt;
     } else {
-        // No home, no takeoff point → encode as unknown (0) per GB 46750 Table 3 item 006
+        // No home, no takeoff point → 不置 OP_POS/OP_ALT 位，
+        // 编码侧输出表3未知哨兵值 (006 位置 → 0xFFFFFFFF, 007 高度 → 0)
         fd.opLat = 0.0f;
         fd.opLon = 0.0f;
         fd.opAlt = 0.0f;
+        opPosValid = false;
     }
 
     fd.validMask = FLD_ALL;
+    if (!opPosValid) {
+        fd.validMask &= ~(FLD_OP_POS | FLD_OP_ALT);
+    }
 
     fd.ts_pos      = p.lastPositionMs;
     fd.ts_geoAlt   = p.lastPositionMs;

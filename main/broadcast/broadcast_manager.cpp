@@ -145,9 +145,9 @@ void RIDBroadcastManager::update(const FlightData& fd, uint64_t nowMs) {
 //
 // P0 合规修复:
 //   - 始终构建新包，不保留旧包
-//   - 范围验证失败的字段: 仍编码为 0 (unknown)，但不阻止包构建
-//   - M 字段缺失 (validMask 未置位): 编码为 unknown (0)，dataId 位仍为 1
-//   - 这确保 Message Counter 每包自增，接收方始终看到最新状态
+//   - 范围验证失败的字段: 编码为表3未知哨兵值，但不阻止包构建
+//   - M 字段缺失 (validMask 未置位): dataId 位仍为 1，值编码为表3未知哨兵值
+//   - 这确保每包都携带最新状态，接收方始终能解析到最新数据
 
 void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
     // 数据无效时保留上次有效数据，防止飞行中因数据短暂丢失而误判为地面状态
@@ -168,7 +168,7 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd) {
         ESP_LOGW(TAG, "Data range validation failed (flags=0x%08lx, count=%lu), "
                  "building with unknown values for invalid fields",
                  (unsigned long)validationFlags, (unsigned long)_validationFailCount);
-        // 不阻止包构建 — 无效字段在 buildPacket 中编码为 0
+        // 不阻止包构建 — 无效字段在 buildPacket 中编码为表3未知哨兵值
     }
 
     // 始终构建新包 (P0: 不再 "keeping previous packet")
