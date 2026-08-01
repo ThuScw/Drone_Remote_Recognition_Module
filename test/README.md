@@ -61,7 +61,7 @@ test/
 │   └── esp_bt.h           # 蓝牙枚举桩
 ├── test_main.cpp          # 极简测试框架（CHECK / CHECK_EQ / CHECK_CLOSE）
 ├── test_crc.cpp           # CRC算法测试（6项）
-├── test_parser.cpp        # MAVLink解析测试（11项）
+├── test_parser.cpp        # MAVLink解析测试（17项）
 ├── test_rid_messages.cpp  # GB 46750-2025合规测试（21项）
 ├── Makefile               # Linux/macOS/MSYS2构建脚本
 ├── run.bat                # Windows双击运行脚本
@@ -81,26 +81,32 @@ tools/
 | 2 | 确定性 | 相同输入→相同输出 |
 | 3 | 区分性 | 不同输入→不同输出 |
 | 4 | 非零输出 | 非空数据CRC不为0 |
-| 5 | CRC extra byte | HEARTBEAT(50)、GPS_RAW_INT(24)、ATTITUDE(39)等7个已知值 |
+| 5 | CRC extra byte | HEARTBEAT(50)、GPS_RAW_INT(24)、ATTITUDE(39)、HIGHRES_IMU(93)、HOME_POSITION(242→104)、SYSTEM_TIME(137)等9个已知值 |
 | 6 | 往返验证 | 合成HEARTBEAT帧，CRC计算→CRC_EXTRA累积，结果非平凡且确定 |
 
 ### test_parser.cpp — MAVLink解析正确性
 
+测试数据 `test_data.h` 由真实飞控 .DAT 日志抽取，expected 值由 pymavlink 独立解码（非 C 代码转写），共 1899 帧。
+
 | 编号 | 测试项 | 说明 |
 |------|--------|------|
-| 1 | HEARTBEAT解析 | armed标志、systemStatus提取 |
-| 2 | GLOBAL_POSITION_INT | lat/lon/alt/vel/hdg全部浮点精度验证 |
-| 3 | GPS fix过滤 | fix<2时仍输出数据，标记为FRESH_STALE+validationFlags bit0 |
-| 4 | CRC错误检测 | 篡改CRC→crcErrors递增，frame不计入 |
-| 5 | 连续错误复位 | 合法帧后consecutiveCrcErrors归零 |
-| 6 | 数据超时 | 超过阈值时isDataStale返回true |
-| 7 | v1帧兼容 | MAVLink v1 (0xFE)帧正常解析 |
+| 1 | 全量帧CRC | 1899帧全部CRC通过，crcErrors=0 |
+| 2 | HEARTBEAT解析 | armed标志、systemStatus提取 |
+| 3 | GLOBAL_POSITION_INT | lat/lon/alt/vel/hdg全部浮点精度验证 |
+| 4 | GPS_RAW_INT | gpsFixType、gpsSats提取 |
+| 5 | 完整fillFlightData | 真实v2帧组合，全部字段正确填充，validMask=FLD_ALL（不含BARO_ALT） |
+| 6 | CRC错误检测 | 篡改CRC→crcErrors递增，frame不计入 |
+| 7 | 连续错误复位 | 合法帧后consecutiveCrcErrors归零 |
 | 8 | 无效STX | 随机字节不触发解析 |
-| 9 | HOME_POSITION | home坐标提取验证 |
-| 10 | 完整fillFlightData | 全部字段正确填充，validMask=FLD_ALL（不含BARO_ALT，无气压计源） |
-| 11 | 地面状态 | Armed=false+STANDBY→STATUS_GROUND |
-| 12 | 未知msgid帧 | 无CRC extra的未知msgid不计入CRC错误，避免假恢复风暴 |
-| 13 | 签名帧 | MAVLink v2签名帧（13字节签名块）正常解析，CRC验证正确 |
+| 9 | 数据超时 | 超过阈值时isDataStale返回true |
+| 10 | 恢复判断 | 无有效帧不触发恢复；连续CRC错误超阈值才触发 |
+| 11 | 状态摘要 | mavlink_getStatus输出非空 |
+| 12 | GPS fix过滤 | fix<2时仍输出数据，标记为FRESH_STALE+validationFlags bit0 |
+| 13 | VFR_HUD短帧 | 真实帧16-20B全覆盖；16-17B截断帧解码groundspeed/climb且heading保持NAN（不越界读CRC字节）；≥18B帧heading验证 |
+| 14 | HOME_POSITION | msgid=242帧home坐标提取验证（105是HIGHRES_IMU，不是HOME_POSITION） |
+| 15 | 未知msgid帧 | 无CRC extra的未知msgid不计入CRC错误，避免假恢复风暴 |
+| 16 | 签名帧 | MAVLink v2签名帧（13字节签名块）正常解析，CRC验证正确 |
+| 17 | SYSTEM_TIME | 真实11B变体（boot_ms低3字节）与标准12B均正确解码unixUsec/bootMs |
 
 ### test_rid_messages.cpp — GB 46750-2025合规性
 

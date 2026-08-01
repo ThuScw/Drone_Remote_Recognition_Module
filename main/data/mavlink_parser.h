@@ -25,7 +25,8 @@
 #define MAVLINK_MSG_GLOBAL_POSITION_INT   33
 #define MAVLINK_MSG_VFR_HUD               74
 #define MAVLINK_MSG_SYSTEM_TIME            2
-#define MAVLINK_MSG_HOME_POSITION        105
+#define MAVLINK_MSG_HIGHRES_IMU          105
+#define MAVLINK_MSG_HOME_POSITION        242
 
 // ================= 解析状态 =================
 

@@ -246,43 +246,44 @@ void test_mavlink_parser() {
     }
 
     // ==== 13. VFR_HUD decoding from real flight data ----
+    // 真实帧 payload 长度 16-20B 都有: 16-17B 截断帧无 heading,
+    // 必须不越界 (读到 CRC 字节) 且不得把垃圾字节当航向
     {
-        // Pick first VFR_HUD frame (msgid=74) from test data
-        const TestFrame* hud = nullptr;
+        int lenShort = 0, lenFull = 0;
         for (int i = 0; i < kNumTestFrames; i++) {
-            if (kTestFrames[i].msgid == 74) {
-                hud = &kTestFrames[i];
-                break;
-            }
-        }
-        if (hud) {
+            const TestFrame& tf = kTestFrames[i];
+            if (tf.msgid != 74) continue;
+
+            uint8_t plen = tf.raw[1];
             MavlinkParser p;
             mavlink_init(p);
-            feed_frame(p, hud->raw, hud->rawLen, 5000);
+            bool got = feed_frame(p, tf.raw, tf.rawLen, 5000);
+            CHECK(got);
 
-            // Decode expected values from raw payload bytes
-            // VFR_HUD payload: airspeed(4) groundspeed(4) alt(4) climb(4) heading(2) throttle(2)
-            uint8_t payOff = (hud->ver == 2) ? 10 : 6;
-            const uint8_t* payload = hud->raw + payOff;
-            float expGs, expClimb;
-            memcpy(&expGs, payload + 4, 4);
-            memcpy(&expClimb, payload + 12, 4);
-            int16_t expHdg = (int16_t)(payload[16] | (payload[17] << 8));
+            // groundspeed/climb 在 >=16B 帧中有效 (pymavlink ground truth)
+            CHECK_CLOSE(p.groundspeed, tf.expected.groundspeed, 0.01);
+            CHECK_CLOSE(p.climbRate,   tf.expected.climb,     0.01);
 
-            CHECK_CLOSE(p.groundspeed, expGs, 0.01);
-            CHECK_CLOSE(p.climbRate, expClimb, 0.01);
-            if (expHdg >= 0) {
-                CHECK_CLOSE(p.heading, (float)expHdg, 0.1);
+            // 短帧 (<18B): heading 保持 NAN, 不被 CRC/垃圾字节污染
+            if (plen < 18) {
+                lenShort++;
+                CHECK(std::isnan(p.heading));
+            } else if (tf.expected.vfrHdgValid) {
+                lenFull++;
+                CHECK_CLOSE(p.heading, tf.expected.vfrHdg, 0.1);
             }
         }
+        printf("  VFR_HUD: short(<18B)=%d full(>=18B)=%d\n", lenShort, lenFull);
+        CHECK(lenShort > 0);  // 短帧回归必须有真实样本
+        CHECK(lenFull > 0);
     }
 
     // ==== 14. HOME_POSITION decoding from real flight data ----
     {
-        // Pick first HOME_POSITION frame (msgid=105) with valid home from test data
+        // Pick first HOME_POSITION frame (msgid=242) with valid home from test data
         const TestFrame* home = nullptr;
         for (int i = 0; i < kNumTestFrames; i++) {
-            if (kTestFrames[i].msgid == 105 && kTestFrames[i].expected.homeValid) {
+            if (kTestFrames[i].msgid == 242 && kTestFrames[i].expected.homeValid) {
                 home = &kTestFrames[i];
                 break;
             }
@@ -363,5 +364,32 @@ void test_mavlink_parser() {
         CHECK_EQ(p.crcErrors, 0u);
         CHECK(p.armed);  // 签名帧的 HEARTBEAT 正常解码
         CHECK_EQ((int)p.systemStatus, 4);
+    }
+
+    // ==== 17. SYSTEM_TIME decoding (incl. 11-byte truncated variant) ----
+    // 真实飞控发送 11B 变体 (unix_usec 8B + boot_ms 低 3 字节) 和标准 12B
+    {
+        int n11 = 0, n12 = 0;
+        for (int i = 0; i < kNumTestFrames; i++) {
+            const TestFrame& tf = kTestFrames[i];
+            if (tf.msgid != 2) continue;
+
+            MavlinkParser p;
+            mavlink_init(p);
+            bool got = feed_frame(p, tf.raw, tf.rawLen, 5000);
+            CHECK(got);
+
+            CHECK(p.unixTimeValid);
+            int64_t expOffset = (int64_t)(tf.expected.unixUsec / 1000ULL)
+                                - (int64_t)tf.expected.bootMs;
+            CHECK_EQ(p.unixBootOffsetMs, expOffset);
+            CHECK_EQ(p.lastSystemTimeMs, 5000u);
+
+            if (tf.raw[1] == 11) n11++;
+            else if (tf.raw[1] == 12) n12++;
+        }
+        printf("  SYSTEM_TIME: 11B=%d 12B=%d\n", n11, n12);
+        CHECK(n11 > 0);  // 真实 11B 截断变体必须被解码
+        CHECK(n12 > 0);  // 标准 12B 也必须被解码
     }
 }

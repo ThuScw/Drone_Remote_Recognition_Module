@@ -102,15 +102,20 @@ static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload,
     #endif
 }
 
-static void decode_vfr_hud(MavlinkParser& p, const uint8_t* payload) {
+static void decode_vfr_hud(MavlinkParser& p, const uint8_t* payload, uint8_t payloadLen) {
     // VFR_HUD: airspeed(4) + groundspeed(4) + alt(4) + climb(4) + heading(2) + throttle(2) = 20 bytes
+    // 真实飞控发送 16-19 字节截断帧: groundspeed/climb 在 16 字节内均有效
     memcpy(&p.groundspeed, payload + 4, 4);
     memcpy(&p.climbRate, payload + 12, 4);
 
     // heading 是 int16, 如果为 -1 表示未知
-    int16_t hdg = (int16_t)(payload[16] | (payload[17] << 8));
-    if (hdg >= 0) {
-        p.heading = (float)hdg;
+    // 短帧 (<18B) 不含 heading 字节, 跳过避免越界读到 CRC 字节
+    int16_t hdg = -1;
+    if (payloadLen >= 18) {
+        hdg = (int16_t)(payload[16] | (payload[17] << 8));
+        if (hdg >= 0) {
+            p.heading = (float)hdg;
+        }
     }
     // 如果 GLOBAL_POSITION_INT 已有航向, 不覆盖
 
@@ -132,11 +137,16 @@ static void decode_home_position(MavlinkParser& p, const uint8_t* payload) {
     #endif
 }
 
-static void decode_system_time(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
+static void decode_system_time(MavlinkParser& p, const uint8_t* payload, uint8_t payloadLen, uint64_t nowMs) {
     uint64_t unixUsec;
     memcpy(&unixUsec, payload, 8);
     uint32_t bootMs;
-    memcpy(&bootMs, payload + 8, 4);
+    if (payloadLen >= 12) {
+        memcpy(&bootMs, payload + 8, 4);
+    } else {
+        // 11-byte variant (真实飞控): unix_usec(8) + boot_ms 仅保留低 3 字节
+        bootMs = (uint32_t)payload[8] | ((uint32_t)payload[9] << 8) | ((uint32_t)payload[10] << 16);
+    }
 
     p.unixBootOffsetMs = (int64_t)(unixUsec / 1000ULL) - (int64_t)bootMs;
     p.unixTimeValid = true;
@@ -176,13 +186,13 @@ static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
             if (p.payloadLen >= 26) decode_global_position_int(p, payload, nowMs);
             break;
         case MAVLINK_MSG_VFR_HUD:
-            if (p.payloadLen >= 20) decode_vfr_hud(p, payload);
+            if (p.payloadLen >= 16) decode_vfr_hud(p, payload, p.payloadLen);
             break;
         case MAVLINK_MSG_HOME_POSITION:
             if (p.payloadLen >= 12) decode_home_position(p, payload);
             break;
         case MAVLINK_MSG_SYSTEM_TIME:
-            if (p.payloadLen >= 12) decode_system_time(p, payload, nowMs);
+            if (p.payloadLen >= 11) decode_system_time(p, payload, p.payloadLen, nowMs);
             break;
         default:
             #if CONFIG_RID_VERBOSE_LOG
