@@ -135,7 +135,7 @@ I (1236) FLIGHT_DATA: USB device configured (DTR/RTS cleared for FC safety) — 
 
 **本固件的防护措施**：
 1. **显式清除 DTR/RTS**：`cdc_acm_host_set_control_line_state(dev, false, false)` 在打开设备后立即执行
-2. **只读模式**：`MAVLINK_TX_ENABLED=0` 时 `out_buffer_size=0`，USB CDC 以只读模式打开，不向飞控发送任何数据
+2. **只读模式**：USB CDC 固定以只读模式打开（`out_buffer_size=0`，驱动层禁止 TX），不向飞控发送任何数据
 3. **首次接入飞控务必先不装桨叶测试**，确认飞控灯正常、QGC 能正常控制后再飞行
 
 ### Q1: 即插即用模式会连接错误的设备吗？
@@ -276,4 +276,4 @@ for (size_t i = 0; i < num_devices; i++) {
 ## 相关功能
 
 - **飞行日志导出**：通过 UART0 的 `DUMP` 命令导出飞行日志，详见 [`tools/flight_log_dump.py`](../tools/flight_log_dump.py)
-- **MAVLink TX 安全开关**：`config.h` 中 `MAVLINK_TX_ENABLED=0` 时 USB CDC 只读模式，`out_buffer_size=0`，且打开后显式清除 DTR/RTS
+- **USB 只读安全设计**：USB CDC 固定只读模式（`out_buffer_size=0`），打开后显式清除 DTR/RTS，模块不会向飞控发送任何数据

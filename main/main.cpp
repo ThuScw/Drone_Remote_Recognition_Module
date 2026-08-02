@@ -9,7 +9,7 @@
 //   protocol/          — GB 46750-2025 packet encoding
 //   broadcaster/       — BLE transport (NimBLE)
 //   data/              — flight data source (USB Host CDC-ACM → MAVLink)
-//   indicators/        — LED + flight controller interlock
+//   indicators/        — status LED
 //   logging/           — persistent flight data recorder
 
 #include <freertos/FreeRTOS.h>
@@ -31,7 +31,6 @@ static const char* TAG = "SYS";
 
 static BleRidBroadcaster    broadcaster;
 static FlightLog            flightLog;
-static RIDInterlock         interlock;
 static StatusLed            statusLed;
 static RIDBroadcastManager* manager = nullptr;
 
@@ -72,15 +71,6 @@ extern "C" void app_main(void) {
     if (!statusLed.init()) {
         ESP_LOGW(TAG, "Status LED init failed — continuing without visual indicator");
     }
-    if (!interlock.init()) {
-        ESP_LOGW(TAG, "Interlock init failed — continuing without FC interlock");
-    }
-#if MAVLINK_TX_ENABLED
-    interlock.setSendCallback(flightData_sendArmDisarm);
-    ESP_LOGI(TAG, "MAVLink TX enabled — arm/disarm commands will be sent over USB");
-#else
-    ESP_LOGI(TAG, "MAVLink TX disabled — interlock is passive (no arm/disarm commands sent to FC)");
-#endif
 
     if (!flightLog.init()) {
         ESP_LOGW(TAG, "Flight log init failed — continuing without persistent storage");
@@ -89,7 +79,7 @@ extern "C" void app_main(void) {
     ConsoleCmd::init(flightLog);
 
     // --- Broadcast Manager (all safety + orchestration logic) ---
-    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, interlock);
+    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed);
     if (!manager->init()) {
         ESP_LOGE(TAG, "FATAL: Broadcast manager init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }

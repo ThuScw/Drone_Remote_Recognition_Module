@@ -1,0 +1,9 @@
+# RID 模块检测工具依赖
+# Python 3.9+ 可用；Windows 上建议 Python 3.11/3.12（PyInstaller 打包最稳）
+
+PySide6>=6.5          # GUI
+bleak>=0.21           # BLE 扫描/接收（Windows 使用 WinRT 后端）
+pyserial>=3.5         # 串口 DUMP 飞行日志提取
+
+# 打包成 exe 时使用（可选）:
+# pyinstaller>=6.0

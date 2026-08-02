@@ -14,7 +14,6 @@
 | **连接方式** | 飞控 TELEM TX → GPIO4 | 飞控 USB → USB OTG 口 |
 | **调试接口** | USB Serial/JTAG | COM 口 (UART0) |
 | **状态 LED** | GPIO27 | GPIO48 |
-| **联锁** | GPIO6 | MAVLink 联锁（无专用引脚） |
 
 ### 2. 软件变更
 
@@ -26,7 +25,6 @@
 **新增**:
 - USB Host CDC-ACM 配置 (`FC_USB_VID`, `FC_USB_PID`, `FC_USB_BAUD_RATE` 等)
 - USB Host 任务配置 (`USB_HOST_TASK_STACK`, `USB_HOST_TASK_PRIO`)
-- MAVLink TX 安全开关 (`MAVLINK_TX_ENABLED`, 默认 0=只读模式)
 - 更新 GPIO 引脚定义 (LED 从 GPIO27 → GPIO48)
 - 飞行日志存储配置 (GB 46750-2025 5.1.8)：Flash 分区、记录间隔、环形缓冲区
 - BLE TX 功率配置 (`BLE_TX_POWER_LEVEL`)，ESP32-S3 使用 ESP_PWR_LVL_P9 (+9 dBm)
@@ -76,8 +74,8 @@ if (ret == ESP_OK) {
     xSemaphoreGive(_devMutex);
 }
 
-// MAVLINK_TX_ENABLED=0 时 out_buffer_size=0，只读模式
-dev_config.out_buffer_size = MAVLINK_TX_ENABLED ? 512 : 0;
+// 只读模式: out_buffer_size=0，USB 驱动层禁止 TX，不向飞控发送任何数据
+dev_config.out_buffer_size = 0;
 
 // USB 数据回调 — 在 _parserMux 临界区内喂字节
 static bool usbDataCb(const uint8_t* data, size_t data_len, void* arg) {
@@ -234,7 +232,7 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
 
 **防护措施**：
 1. 本固件已在 `tryOpenUsbDevice()` 中显式清除 DTR/RTS
-2. `MAVLINK_TX_ENABLED=0` 时 USB CDC 以只读模式打开（`out_buffer_size=0`）
+2. USB CDC 固定以只读模式打开（`out_buffer_size=0`，驱动层禁止 TX）
 3. **首次接入必须不装桨叶测试**：监听串口确认 `DTR/RTS cleared for FC safety` 日志
 
 ### Q4: USB 设备连接了但收不到 MAVLink 数据

@@ -19,12 +19,10 @@ static const char* TAG = "BCAST";
 RIDBroadcastManager::RIDBroadcastManager(
     BleRidBroadcaster& broadcaster,
     FlightLog& flightLog,
-    StatusLed& statusLed,
-    RIDInterlock& interlock)
+    StatusLed& statusLed)
     : _broadcaster(broadcaster)
     , _flightLog(flightLog)
     , _statusLed(statusLed)
-    , _interlock(interlock)
     , _broadcastActive(false)
     , _prevStatus(0xFF)
     , _debounceTarget(0xFF)
@@ -80,8 +78,7 @@ bool RIDBroadcastManager::init() {
         return false;
     }
 
-    // 3. 联锁就绪 — 模块自检通过，允许飞控起飞 (GB 46750-2025 5.1.7)
-    _interlock.arm();
+    // 3. 待机指示 (GB 46750-2025 5.1.5)
     _statusLed.setState(LedState::STANDBY);
 
     uint64_t nowMs = (uint64_t)(esp_timer_get_time() / 1000);
@@ -180,6 +177,13 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
     FlightData broadcastFd = fd;
     gb46750_expireStaleFields(broadcastFd, nowMs, DATA_FRESH_THRESHOLD_MS);
 
+    // 范围校验失败的字段: 清除 validMask, 让 buildPacket 走"缺失"分支编码表3哨兵值。
+    // 若不清除, 编码函数会对越界值做钳位广播 (如 400° 航向→359.9°, 越界速度→6553.5),
+    // 接收方得到伪造的精确值而非"未知/不可用", 与哨兵语义不一致 (GB 46750-2025 表3)。
+    if (validationFlags) {
+        broadcastFd.validMask &= ~validationFlags;
+    }
+
     // 始终构建新包 (P0: 不再 "keeping previous packet")
     // 精度: 直接用 GPS eph/epv 映射结果; eph/epv 不可用 (≤0) 时映射为 0 (unknown),
     // 如实上报 unknown, 不做 fallback 伪造 (表3-017/018 unknown=0)
@@ -215,23 +219,12 @@ void RIDBroadcastManager::triggerSelfHeal() {
             _broadcastActive = false;
             _broadcaster.stopBroadcast();
             _statusLed.setState(degraded ? LedState::DEGRADED : LedState::STANDBY);
-            ESP_LOGI(TAG, "On ground — broadcast stopped, interlock ready");
+            ESP_LOGI(TAG, "On ground — broadcast stopped");
         }
     } else {
         ESP_LOGE(TAG, "Self-heal FAILED — all 3 tiers exhausted");
         _statusLed.setState(LedState::FAULT);
         _broadcastActive = false;
-
-        if (isAirborne()) {
-            // 空中: 只告警不拉闸，飞控继续自主飞行 (GB 46750-2025 5.1.7b)
-            ESP_LOGW(TAG, "AIRBORNE: keeping interlock armed — drone flies on");
-        } else {
-            // 地面: 拉闸禁止起飞 (GB 46750-2025 5.1.7a)
-            if (_interlock.isArmed()) {
-                _interlock.disarm();
-                ESP_LOGW(TAG, "GROUND: interlock DISARMED — takeoff blocked");
-            }
-        }
     }
 }
 

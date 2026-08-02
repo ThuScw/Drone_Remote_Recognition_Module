@@ -26,10 +26,9 @@ public:
     RIDBroadcastManager(
         BleRidBroadcaster& broadcaster,
         FlightLog& flightLog,
-        StatusLed& statusLed,
-        RIDInterlock& interlock);
+        StatusLed& statusLed);
 
-    // 配置校验、BLE 自检、联锁就绪
+    // 配置校验、BLE 自检
     bool init();
 
     // 主循环每次迭代调用 (~10ms 间隔)
@@ -57,7 +56,6 @@ private:
     BleRidBroadcaster& _broadcaster;
     FlightLog&         _flightLog;
     StatusLed&         _statusLed;
-    RIDInterlock&      _interlock;
 
     // --- 内部状态 ---
     GB46750Packet _currentPacket;

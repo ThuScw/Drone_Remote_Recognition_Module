@@ -14,23 +14,6 @@ enum class LedState {
     FAULT           // 红色常亮 — 模块故障
 };
 
-// GB 46750-2025 5.1.7: 起飞前联锁 — 模块失效时禁止飞控起飞
-// 通过 MAVLink COMMAND_LONG(400) 经 USB CDC-ACM 向飞控发送 arm/disarm 命令
-class RIDInterlock {
-public:
-    using SendCmdCb = bool (*)(bool arm);  // true=arm, false=disarm
-
-    bool init() { return true; }
-    void setSendCallback(SendCmdCb cb) { _sendCb = cb; }
-    void arm();
-    void disarm();
-    bool isArmed() const { return _armed; }
-
-private:
-    bool      _armed   = false;
-    SendCmdCb _sendCb  = nullptr;
-};
-
 // ESP32-S3-DevKitC-1 板载 WS2812B (GPIO48, RMT 驱动)
 class StatusLed {
 public:

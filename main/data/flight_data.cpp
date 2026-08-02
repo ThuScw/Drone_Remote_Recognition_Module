@@ -1,6 +1,5 @@
 #include "flight_data.h"
 #include "mavlink_parser.h"
-#include "mavlink_tx.h"
 #include "config.h"
 #include <inttypes.h>
 #include "esp_timer.h"
@@ -23,8 +22,6 @@ class FlightDataSource {
 public:
     FlightDataSource();
     void getFlightData(FlightData& fd, uint64_t nowMs);
-    bool sendToFC(const uint8_t* data, size_t len);
-    bool sendArmDisarm(bool arm);
 
 private:
     // --- USB callback trampolines (C ABI → member functions) ---
@@ -55,9 +52,8 @@ private:
 
     // 设备生命周期互斥锁: 串行化 _cdcDev 句柄的取用/关闭。
     // 竞态来源: tryUsbRecovery (主循环任务) 与 DISCONNECT 事件回调 (USB host 任务)
-    // 可能同时 close 同一句柄 → 双重 close / use-after-free; sendToFC 检查后使用
-    // 句柄期间若被并发 close → use-after-free。加锁后同一句柄只被关闭一次,
-    // TX 期间句柄不被释放。
+    // 可能同时 close 同一句柄 → 双重 close / use-after-free。
+    // 加锁后同一句柄只被关闭一次, 取用/关闭期间句柄不被释放。
     SemaphoreHandle_t  _devMutex = nullptr;
 };
 
@@ -74,14 +70,6 @@ FlightDataSource::FlightDataSource() {
 
 void getFlightData(FlightData& fd, uint64_t nowMs) {
     s_source.getFlightData(fd, nowMs);
-}
-
-bool flightData_sendToFC(const uint8_t* data, size_t len) {
-    return s_source.sendToFC(data, len);
-}
-
-bool flightData_sendArmDisarm(bool arm) {
-    return s_source.sendArmDisarm(arm);
 }
 
 // ======================== USB callback trampolines ========================
@@ -228,11 +216,9 @@ esp_err_t FlightDataSource::tryOpenUsbDevice() {
 
     cdc_acm_host_device_config_t dev_config = {};
     dev_config.connection_timeout_ms = 1000;
-#if MAVLINK_TX_ENABLED
-    dev_config.out_buffer_size = 512;
-#else
-    dev_config.out_buffer_size = 0;    // 只读模式 — 不从 USB 向飞控发送任何数据
-#endif
+    // 只读模式 — 不从 USB 向飞控发送任何数据。out_buffer_size=0 在 CDC-ACM
+    // 驱动层禁止 TX, 从物理层面杜绝任何数据反向注入飞控 (联锁移除后无 TX 需求)。
+    dev_config.out_buffer_size = 0;
     dev_config.in_buffer_size = 512;
     dev_config.user_arg = this;
     dev_config.event_cb = usbEventCb;
@@ -452,38 +438,4 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
                  statusBuf, (unsigned long)crcErrs,
                  (unsigned long)_recoveryCount);
     }
-}
-
-bool FlightDataSource::sendToFC(const uint8_t* data, size_t len) {
-    if (!data || len == 0) return false;
-
-    // 加锁跨越检查+TX: 防止检查 _cdcDev 后、TX 进行中被 DISCONNECT/recovery 并发 close
-    // 释放句柄 (use-after-free)。TX 阻塞 ≤100ms, 锁持有期间 close 等待, 无死锁 (TX 有超时)。
-    if (_devMutex) xSemaphoreTake(_devMutex, portMAX_DELAY);
-    cdc_acm_dev_hdl_t dev = _cdcDev;
-    if (dev == nullptr || !_deviceReady) {
-        if (_devMutex) xSemaphoreGive(_devMutex);
-        ESP_LOGE(TAG, "TX: CDC device not ready");
-        return false;
-    }
-
-    esp_err_t ret = cdc_acm_host_data_tx_blocking(dev, data, len, 100);
-    if (_devMutex) xSemaphoreGive(_devMutex);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "TX to FC failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-    ESP_LOGI(TAG, "TX: %u bytes sent to FC", (unsigned)len);
-    return true;
-}
-
-bool FlightDataSource::sendArmDisarm(bool arm) {
-    uint8_t frame[64];
-    uint16_t frameLen = mavlink_build_arm_disarm(frame, sizeof(frame), 255, 190, arm, false);
-    if (frameLen == 0) {
-        ESP_LOGE(TAG, "Failed to build arm/disarm frame");
-        return false;
-    }
-    ESP_LOGI(TAG, "Sending MAVLink %s command to FC", arm ? "ARM" : "DISARM");
-    return sendToFC(frame, frameLen);
 }

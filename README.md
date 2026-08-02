@@ -33,11 +33,10 @@ main/
 │   ├── mavlink_parser.h/cpp        # MAVLink v1/v2 解析器（帧解析、消息解码、CRC校验）
 │   │                               # 支持 7 种消息：HEARTBEAT / GPS_RAW_INT / ATTITUDE /
 │   │                               # GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME
-│   ├── mavlink_crc.h/cpp           # CRC-16/MCRF4XX 校验
-│   └── mavlink_tx.h/cpp            # MAVLink TX 联锁命令（ARM/DISARM）
+│   └── mavlink_crc.h/cpp           # CRC-16/MCRF4XX 校验
 │
 ├── indicators/
-│   └── indicators.h/cpp            # 状态指示灯 + 飞控联锁 (GB 46750-2025 5.1.5, 5.1.7)
+│   └── indicators.h/cpp            # 状态指示灯 (GB 46750-2025 5.1.5)
 │
 ├── logging/
 │   └── flight_log.h/cpp            # 飞行数据持久化存储 (GB 46750-2025 5.1.8)
@@ -75,9 +74,8 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **状态机消抖**：地面↔空中切换需连续确认（空中→地面 500ms，地面→空中 300ms），防止 HEARTBEAT 短暂波动误触发；紧急/失效状态绕过消抖立即生效
 - **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
-- **USB 只读模式**：`MAVLINK_TX_ENABLED=0` 时 `out_buffer_size=0`，USB CDC 以只读模式打开，从物理层面杜绝任何数据反向注入飞控
+- **USB 只读模式**：USB CDC 以只读模式打开（`out_buffer_size=0`），从物理层面杜绝任何数据反向注入飞控
 - **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
-- **空中不拉闸、地面拉闸**：空中故障只告警不拉闸（飞控自主飞行），地面故障拉闸禁止起飞 (GB 46750-2025 5.1.7)
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
@@ -181,11 +179,8 @@ idf.py -p <COM口> flash monitor
 #define FC_USB_DATA_BITS    8
 #define FC_USB_PARITY       0       // 0=None, 1=Odd, 2=Even
 #define FC_USB_STOP_BITS    1
-
-// MAVLink TX 安全开关（通过 USB 向飞控发送命令）
-#define MAVLINK_TX_ENABLED  0       // 0=禁用(只读模式，推荐) 1=启用(MAVLink联锁)
 ```
-**⚠️ 安全警告**：`MAVLINK_TX_ENABLED=0` 时 USB CDC 以只读模式打开（`out_buffer_size=0`），且打开后显式清除 DTR/RTS，防止飞控被 USB 控制线信号复位。**首次接入飞控务必设为 0**，确认飞行稳定后再评估是否需要启用 MAVLink TX 联锁。
+**⚠️ 安全设计**：USB CDC 固定以只读模式打开（`out_buffer_size=0`，USB 驱动层禁止 TX），且打开后显式清除 DTR/RTS，防止飞控被 USB 控制线信号复位。模块不会向飞控发送任何数据。
 
 ### 精度取值
 

@@ -21,6 +21,15 @@ dependencies.lock
 .claude/
 log/
 
+# ===== Python app (app/) =====
+.venv/
+__pycache__/
+.pytest_cache/
+*.csv
+app/build/
+app/dist/
+app/*.spec
+
 # ===== OS Files =====
 .DS_Store
 Thumbs.db

@@ -146,13 +146,6 @@
 // 如果超过此时间未收到有效位置数据, 标记为 STALE
 #define FC_DATA_TIMEOUT_MS     2000
 
-// MAVLink TX (USB 发送) — 通过 USB 向飞控发送 MAVLink 命令
-// 当前仅用于发送 ARM/DISARM 联锁命令 (MAV_CMD_COMPONENT_ARM_DISARM)
-// 警告: 如果飞控 USB 口也是烧录口，MAVLink TX 可能干扰飞控正常工作
-// 设为 0 禁用 MAVLink TX（推荐先禁用测试；此时联锁仅维护内部 armed 状态，不主动向飞控发命令）
-// 设为 1 启用 MAVLink TX（需要确认飞控兼容后再开启）
-#define MAVLINK_TX_ENABLED 0
-
 // MAVLink 连续 CRC 失败阈值 — 超过此值触发 USB 恢复
 // 正常运行时约 47% 的帧通过 CRC，但有效帧间最多几十个未知帧
 // 200 个连续失败 ≈ 约 1 秒无任何已知消息类型通过，表明数据流损坏

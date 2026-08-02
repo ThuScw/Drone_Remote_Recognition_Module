@@ -110,10 +110,11 @@ void ConsoleCmd::dumpAllRecords() {
     // 刷掉已在缓冲区的日志
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    printf("+OK %lu\r\n", (unsigned long)available);
-    fflush(stdout);
-
+    // 预扫描统计有效记录数: 损坏记录 (readRecord==0) 直接跳过, 不导出。
+    // 旧的实现把损坏记录填 0 后当作有效块导出 — 接收方会把它解析成一条
+    // "全部字段 unknown" 的合法广播, 污染还原出的飞行轨迹。
     uint8_t buf[96];
+    uint32_t validCount = 0;
     for (uint32_t i = 0; i < available; i++) {
         // 逐条喂狗: 全量导出可能远超看门狗超时(96B/条 @115200≈120条/s,
         // 5s 仅能传 ~600 条), 不在循环内喂狗会被 TWDT 误复位。
@@ -121,12 +122,33 @@ void ConsoleCmd::dumpAllRecords() {
 
         uint16_t outLen = 0;
         uint64_t ts = 0;
-        uint16_t rd = _flightLog->readRecord(i, buf, &outLen, &ts);
-        if (rd == 0) {
-            // 记录损坏？发送空块以保持索引对齐
-            memset(buf, 0, sizeof(buf));
+        if (_flightLog->readRecord(i, buf, &outLen, &ts) != 0) {
+            validCount++;
+        }
+    }
+
+    if (validCount == 0) {
+        printf("+EMPTY\r\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_log_level_set("*", ESP_LOG_INFO);
+        return;
+    }
+
+    printf("+OK %lu\r\n", (unsigned long)validCount);
+    fflush(stdout);
+
+    uint32_t sent = 0;
+    for (uint32_t i = 0; i < available && sent < validCount; i++) {
+        esp_task_wdt_reset();
+
+        uint16_t outLen = 0;
+        uint64_t ts = 0;
+        if (_flightLog->readRecord(i, buf, &outLen, &ts) == 0) {
+            continue;  // 损坏记录 — 跳过, 接收方按 +OK N 计数解析, 索引不丢失
         }
         fwrite(buf, 1, sizeof(buf), stdout);
+        sent++;
     }
     fflush(stdout);
     esp_task_wdt_reset();

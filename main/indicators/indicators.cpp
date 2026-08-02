@@ -4,32 +4,6 @@
 
 static const char* TAG = "IND";
 
-// ======================== RIDInterlock ========================
-
-void RIDInterlock::arm() {
-    _armed = true;
-
-    if (_sendCb) {
-        if (_sendCb(true)) {
-            ESP_LOGI(TAG, "Interlock: ARMED — MAVLink ARM sent to FC");
-        } else {
-            ESP_LOGW(TAG, "Interlock: MAVLink ARM send failed (USB not ready?)");
-        }
-    }
-}
-
-void RIDInterlock::disarm() {
-    _armed = false;
-
-    if (_sendCb) {
-        if (_sendCb(false)) {
-            ESP_LOGI(TAG, "Interlock: DISARMED — MAVLink DISARM sent to FC");
-        } else {
-            ESP_LOGW(TAG, "Interlock: MAVLink DISARM send failed (USB not ready?)");
-        }
-    }
-}
-
 // ======================== StatusLed (WS2812B via RMT) ========================
 
 bool StatusLed::init() {
