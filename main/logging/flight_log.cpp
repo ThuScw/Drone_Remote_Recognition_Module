@@ -230,8 +230,8 @@ float FlightLog::estimateRemainingHours() const {
 // 未绕回: 记录从 offset 0 线性排列，最旧=0，最新=offset-kRecordSize
 // 已绕回: 最旧在 _writeOffset（即将被覆盖的位置）→ 绕回分区末尾 → 最新在 (_writeOffset - kRecordSize)
 
-uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
-    if (_wlHandle == WL_INVALID_HANDLE || !outData || !outLen || !outTimestampMs) return 0;
+uint16_t FlightLog::readRecordRaw(uint32_t index, uint8_t* outBuf) {
+    if (_wlHandle == WL_INVALID_HANDLE || !outBuf) return 0;
 
     portENTER_CRITICAL_SAFE(&_spinlock);
     uint32_t capacity = _partitionSize / kRecordSize;
@@ -245,16 +245,25 @@ uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLe
     uint32_t oldestOffset = (total <= capacity) ? 0 : writeOff;
     uint32_t physicalOffset = (oldestOffset + index * kRecordSize) % _partitionSize;
 
-    uint8_t buf[kRecordSize];
-    esp_err_t rc = wl_read(_wlHandle, physicalOffset, buf, kRecordSize);
+    esp_err_t rc = wl_read(_wlHandle, physicalOffset, outBuf, kRecordSize);
     if (rc != ESP_OK) return 0;
 
-    uint32_t magic = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    uint32_t magic = (uint32_t)outBuf[0] | ((uint32_t)outBuf[1] << 8)
+                   | ((uint32_t)outBuf[2] << 16) | ((uint32_t)outBuf[3] << 24);
     if (magic != kMagic) return 0;
 
-    uint16_t storedCrc = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
-    uint16_t calcCrc  = crc16(buf + 6, kRecordSize - 6);
+    uint16_t storedCrc = (uint16_t)outBuf[4] | ((uint16_t)outBuf[5] << 8);
+    uint16_t calcCrc  = crc16(outBuf + 6, kRecordSize - 6);
     if (storedCrc != calcCrc) return 0;
+
+    return kRecordSize;
+}
+
+uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    if (!outData || !outLen || !outTimestampMs) return 0;
+
+    uint8_t buf[kRecordSize];
+    if (readRecordRaw(index, buf) == 0) return 0;
 
     *outTimestampMs = 0;
     for (int i = 0; i < 8; i++) *outTimestampMs |= ((uint64_t)buf[6 + i] << (i * 8));

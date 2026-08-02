@@ -36,6 +36,11 @@ public:
     // 返回读取字节数（96 成功, 0 失败/越界）
     uint16_t readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 
+    // 读取单条记录完整原始 96 字节（index: 0=最旧, N-1=最新）
+    // 校验 magic + CRC 后整体拷贝到 outBuf，供 DUMP 原样导出。
+    // 返回读取字节数（96 成功, 0 失败/越界/校验不通过）
+    uint16_t readRecordRaw(uint32_t index, uint8_t* outBuf);
+
     // 读取最新一条记录
     uint16_t readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 

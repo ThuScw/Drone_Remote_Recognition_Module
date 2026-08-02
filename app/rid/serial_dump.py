@@ -138,17 +138,21 @@ def dump_flight_log(
             buf = _read_exact(ser, RECORD_SIZE, timeout=timeout)
             if len(buf) < RECORD_SIZE:
                 raise RuntimeError(f"记录 {i} 读取超时：仅收到 {len(buf)}/{RECORD_SIZE} 字节")
-            ts_ms, _data_len, payload = parse_record(buf)
-            pkt = decode_gb_packet(payload, source="serial")
+            try:
+                _ts_ms, _data_len, payload = parse_record(buf)
+                pkt = decode_gb_packet(payload, source="serial")
+            except Exception:
+                continue  # 记录被污染/非本格式 — 跳过, 不中断整个导出
             pkt.raw = buf  # keep full record for CRC check in CSV
             records.append(pkt)
             if progress and (i % 100 == 0 or i == num_records - 1):
                 progress(f"接收记录 {i + 1}/{num_records}", i + 1, num_records)
 
-        # drain trailing log noise until +DONE
+        # drain trailing log noise until +DONE. 子串匹配容忍二进制记录流错位时
+        # +DONE 前残留的字节。
         for _ in range(10):
             done = ser.readline().decode("ascii", errors="replace").strip()
-            if done.startswith("+DONE"):
+            if "+DONE" in done:
                 break
 
     return records
@@ -164,13 +168,18 @@ def records_to_csv(records: list[DecodedPacket], output_path: str) -> int:
             flash_ts_ms = 0
             if len(pkt.raw) >= 14:
                 flash_ts_ms = struct.unpack_from("<Q", pkt.raw, 6)[0]
-            ts_utc = (
-                datetime.fromtimestamp(flash_ts_ms / 1000.0, tz=timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%M:%S.%f"
-                )[:-3] + "Z"
-                if flash_ts_ms
-                else ""
-            )
+            # 记录被污染 (CRC 失败) 时 flash_ts_ms 可能是巨大垃圾值, fromtimestamp
+            # 会抛 OverflowError/OSError — 捕获后该行时间戳留空, 不让单条坏记录中断导出。
+            try:
+                ts_utc = (
+                    datetime.fromtimestamp(flash_ts_ms / 1000.0, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%f"
+                    )[:-3] + "Z"
+                    if flash_ts_ms
+                    else ""
+                )
+            except (OverflowError, OSError, ValueError):
+                ts_utc = ""
             crc_ok = verify_record(pkt.raw)
             fld = pkt.fmt
             row = [

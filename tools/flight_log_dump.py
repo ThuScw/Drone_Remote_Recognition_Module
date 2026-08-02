@@ -287,10 +287,11 @@ def dump_flight_log(port: str, baudrate: int = 115200, timeout: float = 5.0):
 
         print(f"  Done: {len(all_records)} records received, {bad_crc} CRC mismatches")
 
-        # Read done marker (skip log noise)
+        # Read done marker (skip log noise). 用子串匹配容忍二进制记录流的
+        # 前导垃圾字节 (如记录错位时 +DONE 前残留的字节)。
         for _ in range(5):
             done = ser.readline().decode('ascii', errors='replace').strip()
-            if done.startswith("+DONE"):
+            if "+DONE" in done:
                 print(f"ESP32: {done}")
                 break
             elif done:
@@ -333,7 +334,12 @@ def records_to_csv(records, output_path):
                 print(f"  Warning: decode error at record {i}: {type(e).__name__}: {e}")
                 continue
 
-            ts_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            # 记录被污染 (CRC 失败) 时 ts 可能是巨大垃圾值, fromtimestamp 会抛
+            # OverflowError/OSError — 捕获后该行时间戳留空, 不让单条坏记录中断整个导出。
+            try:
+                ts_utc = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            except (OverflowError, OSError, ValueError):
+                ts_utc = ''
 
             writer.writerow([
                 i + 1,
