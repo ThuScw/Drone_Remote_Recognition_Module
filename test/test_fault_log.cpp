@@ -70,4 +70,13 @@ void test_fault_log() {
         faultLogFormat(tiny, sizeof(tiny));
         CHECK(tiny[sizeof(tiny) - 1] == '\0');
     }
+
+    // ==== 6. INTERLINK 事件 (GB 46750 5.1.7 飞控交联失效通知) ====
+    {
+        faultLogRecord(FAULT_INTERLINK_TRIGGERED, 5000);
+        char buf[384];
+        faultLogFormat(buf, sizeof(buf));
+        CHECK(strstr(buf, "INTERLINK=1") != nullptr);
+        CHECK(strstr(buf, "t5000:INTERLINK") != nullptr);
+    }
 }

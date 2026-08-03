@@ -26,12 +26,14 @@
 #include "indicators.h"
 #include "flight_log.h"
 #include "console_cmd.h"
+#include "interlink_stub.h"
 
 static const char* TAG = "SYS";
 
 static BleRidBroadcaster    broadcaster;
 static FlightLog            flightLog;
 static StatusLed            statusLed;
+static StubFcInterlink      fcInterlink;   // 测试阶段后端, 量产时替换为真实交联实现
 static RIDBroadcastManager* manager = nullptr;
 
 extern "C" void app_main(void) {
@@ -79,7 +81,7 @@ extern "C" void app_main(void) {
     ConsoleCmd::init(flightLog);
 
     // --- Broadcast Manager (all safety + orchestration logic) ---
-    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed);
+    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink);
     if (!manager->init()) {
         ESP_LOGE(TAG, "FATAL: Broadcast manager init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }

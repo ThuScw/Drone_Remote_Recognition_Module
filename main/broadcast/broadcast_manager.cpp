@@ -20,10 +20,12 @@ static const char* TAG = "BCAST";
 RIDBroadcastManager::RIDBroadcastManager(
     BleRidBroadcaster& broadcaster,
     FlightLog& flightLog,
-    StatusLed& statusLed)
+    StatusLed& statusLed,
+    IFcInterlink& interlink)
     : _broadcaster(broadcaster)
     , _flightLog(flightLog)
     , _statusLed(statusLed)
+    , _interlink(interlink)
     , _broadcastActive(false)
     , _nextBroadcastMs(0)
     , _lastBroadcastSuccessMs(0)
@@ -218,6 +220,7 @@ void RIDBroadcastManager::triggerSelfHeal() {
         faultLogRecord(degraded ? FAULT_BLE_HEAL_DEGRADED : FAULT_BLE_HEAL_OK,
                        (uint64_t)(esp_timer_get_time() / 1000));
         ESP_LOGI(TAG, "Self-heal OK (%s)", mode);
+        _interlink.notifyRecovered((uint64_t)(esp_timer_get_time() / 1000));
 
         if (isAirborne()) {
             _broadcastActive = true;
@@ -231,6 +234,9 @@ void RIDBroadcastManager::triggerSelfHeal() {
     } else {
         ESP_LOGE(TAG, "Self-heal FAILED — all 3 tiers exhausted");
         faultLogRecord(FAULT_BLE_HEAL_FAILED, (uint64_t)(esp_timer_get_time() / 1000));
+        // GB 46750-2025 5.1.7: 识别发送功能失效 → 通知飞控安全处置
+        _interlink.notifyFault(InterlinkReason::BLE_HEAL_FAILED, isAirborne(),
+                               (uint64_t)(esp_timer_get_time() / 1000));
         _statusLed.setState(LedState::FAULT);
         _broadcastActive = false;
     }

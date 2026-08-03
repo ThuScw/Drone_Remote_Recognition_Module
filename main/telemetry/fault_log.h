@@ -25,6 +25,7 @@ enum FaultEvent : uint8_t {
     FAULT_VALIDATION,        // 飞行数据范围校验失败 (构建哨兵包)
     FAULT_STALE_BROADCAST,   // 数据过期仍广播 (GB 要求持续发送, 记录告警)
     FAULT_LOW_HEAP,          // 堆低于告警阈值
+    FAULT_INTERLINK_TRIGGERED, // 飞控交联失效通知已发出 (GB 46750 5.1.7; stub 阶段仅记录)
     FAULT_EVENT_COUNT
 };
 

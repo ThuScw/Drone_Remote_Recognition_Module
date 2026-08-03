@@ -7,6 +7,7 @@
 #include "flight_log.h"
 #include "indicators.h"
 #include "status_machine.h"
+#include "fc_interlink.h"
 
 // ======================== RIDBroadcastManager ========================
 //
@@ -27,7 +28,8 @@ public:
     RIDBroadcastManager(
         BleRidBroadcaster& broadcaster,
         FlightLog& flightLog,
-        StatusLed& statusLed);
+        StatusLed& statusLed,
+        IFcInterlink& interlink);
 
     // 配置校验、BLE 自检
     bool init();
@@ -57,6 +59,7 @@ private:
     BleRidBroadcaster& _broadcaster;
     FlightLog&         _flightLog;
     StatusLed&         _statusLed;
+    IFcInterlink&      _interlink;   // 飞控交联 (GB 46750-2025 5.1.7)
 
     // --- 内部状态 ---
     GB46750Packet _currentPacket;

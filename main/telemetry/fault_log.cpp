@@ -11,7 +11,7 @@ static uint16_t s_ringLen = 0;    // 已记录事件数
 
 static const char* kNames[FAULT_EVENT_COUNT] = {
     "CRC_STORM", "BLE_OK", "BLE_DEG", "BLE_FAIL",
-    "VAL_FAIL", "STALE_TX", "LOW_HEAP"
+    "VAL_FAIL", "STALE_TX", "LOW_HEAP", "INTERLINK"
 };
 
 void faultLogRecord(FaultEvent ev, uint64_t nowMs) {
