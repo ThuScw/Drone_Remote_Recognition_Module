@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from packet_builder import build_packet
 
-from rid.ble_scanner import _match_uuid, extract_packet, is_target
+from rid.ble_scanner import _match_uuid, extract_gb_from_adv, extract_packet, is_target
 
 # firmware writes RID_SERVICE_UUID (0x0D50) little-endian:
 #   *p++ = RID_SERVICE_UUID & 0xFF      -> 0x50
@@ -87,3 +87,43 @@ def test_extract_returns_none_when_absent():
     adv = _fake_adv(sd={"0000aaaa-0000-1000-8000-00805f9b34fb": b"\x01\x02"})
     assert extract_packet(adv) is None
     assert extract_packet(_fake_adv(data=b"\x02\x01\x06")) is None
+
+
+# --- extract_gb_from_adv: normalize pasted hex for manual decode ---
+
+
+def test_extract_gb_from_bare_packet_passthrough():
+    raw = build_packet()
+    assert raw[0] == 0xFF
+    assert extract_gb_from_adv(raw) == raw
+
+
+def test_extract_gb_from_full_ad_frame():
+    """nRF Connect 'Raw' field: flags + name + service data wrapping the GB packet."""
+    raw = build_packet()
+    ad = (
+        _ad_struct(0x01, b"\x06")
+        + _ad_struct(0x09, b"ESP32C5_RIDQ")
+        + _ad_struct(0x16, UUID_LE + raw)
+    )
+    assert extract_gb_from_adv(ad) == raw
+
+
+def test_extract_gb_from_fragmented_ad():
+    raw = build_packet()
+    ad = (
+        _ad_struct(0x16, UUID_LE + raw[:40])
+        + _ad_struct(0x16, UUID_LE + raw[40:])
+    )
+    assert extract_gb_from_adv(ad) == raw
+
+
+def test_extract_gb_from_empty_and_unrelated_passthrough():
+    assert extract_gb_from_adv(b"") == b""
+    assert extract_gb_from_adv(b"\x02\x01\x06") == b"\x02\x01\x06"
+
+
+def test_extract_gb_from_non_ff_service_data_passthrough():
+    # service data present but payload doesn't start with dataType 0xFF
+    ad = _ad_struct(0x16, b"\x34\x12" + b"\x01\x02\x03")
+    assert extract_gb_from_adv(ad) == ad

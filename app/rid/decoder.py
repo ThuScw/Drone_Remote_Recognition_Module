@@ -71,12 +71,29 @@ def parse_hex(text: str) -> bytes:
     Accepts forms like:
       "FF 20 46 ..."
       "ff20 46, 0x1B ..."
+    A continuous run of hex digits with no separators (as copied from
+    nRF Connect) is also accepted and chunked into bytes:
+      "FF2046..."
     """
     cleaned = text.replace("0x", "").replace("0X", "")
-    parts = [p for p in cleaned.replace(",", " ").replace(":", " ").split() if p]
+    cleaned = cleaned.replace(",", " ").replace(":", " ")
+    parts = [p for p in cleaned.split() if p]
     if not parts:
         return b""
-    return bytes(int(p, 16) for p in parts)
+
+    out = bytearray()
+    for p in parts:
+        if len(p) > 2 and len(p) % 2 == 0:
+            # Continuous hex run — chunk into 2-hex-digit bytes
+            if not all(c in "0123456789abcdefABCDEF" for c in p):
+                raise ValueError(f"invalid hex token: {p!r}")
+            out.extend(int(p[i:i + 2], 16) for i in range(0, len(p), 2))
+        else:
+            v = int(p, 16)
+            if v > 0xFF:
+                raise ValueError(f"byte out of range: {p!r}")
+            out.append(v)
+    return bytes(out)
 
 
 def decode_gb_packet(data: bytes, **meta: Any) -> DecodedPacket:

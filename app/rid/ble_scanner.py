@@ -93,5 +93,22 @@ def extract_packet(adv: Any) -> bytes | None:
     return None
 
 
+def extract_gb_from_adv(raw: bytes) -> bytes:
+    """Normalize pasted bytes into the raw GB 46750 packet.
+
+    Accepts either the bare packet (starts with dataType 0xFF, as produced by
+    the firmware serializer) or a full BLE advertising frame copied from a
+    sniffer (nRF Connect "Raw" field), pulling the packet out of the Service
+    Data AD. If no GB packet is found, returns `raw` unchanged so the caller's
+    error reporting still shows the actual header bytes.
+    """
+    if not raw or raw[0] == 0xFF:
+        return raw
+    for payload in _parse_ad_service_data(raw).values():
+        if payload.startswith(b"\xff"):
+            return payload
+    return raw
+
+
 def format_mac(mac: str) -> str:
     return mac.upper()

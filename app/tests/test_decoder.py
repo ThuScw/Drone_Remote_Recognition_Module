@@ -88,3 +88,19 @@ def test_parse_hex_accepts_common_formats():
     assert parse_hex("ff 20,40") == b"\xff\x20\x40"
     assert parse_hex("0xFF 0x20") == b"\xff\x20"
     assert parse_hex("") == b""
+    # Continuous run without separators (nRF Connect copy format)
+    assert parse_hex("FF2040") == b"\xff\x20\x40"
+    assert parse_hex("ff2040") == b"\xff\x20\x40"
+    assert parse_hex("0x0201060C09") == b"\x02\x01\x06\x0c\x09"
+    # Mixed separators + continuous token
+    assert parse_hex("FF20 46,0x1B") == b"\xff\x20\x46\x1b"
+
+
+def test_parse_hex_rejects_bad_input():
+    import pytest
+    # Odd-length continuous run is ambiguous
+    with pytest.raises(ValueError):
+        parse_hex("FF2")
+    # Non-hex characters
+    with pytest.raises(ValueError):
+        parse_hex("FF G0")

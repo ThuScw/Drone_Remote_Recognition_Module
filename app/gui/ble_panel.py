@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from rid.ble_scanner import extract_gb_from_adv
 from rid.decoder import decode_gb_packet, parse_hex
 from rid.health import StreamAssessor
 from rid.models import HealthLevel
@@ -165,8 +166,9 @@ class BlePanel(QWidget):
         text, ok = QInputDialog.getMultiLineText(
             self,
             "粘贴 HEX",
-            "粘贴从抓包工具复制的 Service Data 十六进制字节\n"
-            "（AD 类型 0x16 / UUID 0x0D50 中的原始 GB 数据包）：",
+            "粘贴抓包工具的 HEX 十六进制字节，支持两种格式：\n"
+            "  1) nRF Connect 的整个 Raw 广播帧（自动提取其中的 GB 包）\n"
+            "  2) 从 FF 开始的 Service Data 载荷（原 GB 数据包）",
         )
         if not ok or not text.strip():
             return
@@ -175,9 +177,13 @@ class BlePanel(QWidget):
         except ValueError as e:
             self._log(f"HEX 解析失败: {e}")
             return
+        before = raw
+        raw = extract_gb_from_adv(raw)
         if len(raw) < 6:
             self._log("HEX 过短，无法解析")
             return
+        if raw != before:
+            self._log(f"从广播帧中提取到 GB 包（{len(raw)} 字节）")
         pkt = decode_gb_packet(raw, address="手动", rssi=0,
                                received_at_ms=int(time.monotonic() * 1000),
                                source="manual")
