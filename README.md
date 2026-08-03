@@ -97,7 +97,6 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
 - **操作员位置**：优先使用飞控 Home 点，其次使用首次解锁时记录的起飞点，最后编码为表3未知哨兵值 0xFFFFFFFF
-- **看门狗**：任务看门狗覆盖 main / usb_host / flight_log / console_cmd 四任务，任一任务 5s 无响应 → 系统自动复位
 - **飞行日志导出**：PC 端 `python flight_log_dump.py COMx` → 通过 UART0 发送 `DUMP\r\n` → ESP32 回复二进制记录 → 解码为 GB 46750 全部 21 字段的 CSV 文件
 
 ### 硬件接口
@@ -152,64 +151,24 @@ idf.py -p <COM口> flash monitor
 
 首次使用需配置 NimBLE、USB Host 和自定义分区表（已在 `sdkconfig.defaults` 和 `partitions.csv` 中预设）。
 
-## 配置文件
+## 配置
 
-核心配置项在 `config.h`：
-
-### 识别信息
+核心配置集中在 `main/config.h`，关键项：
 
 ```c
-#define UAS_ID "CPNYMDL001234567890A"  // 唯一产品识别码（20字符，替换为 UOM 备案编码）
+#define UAS_ID "CPNYMDL001234567890A"  // 唯一产品识别码（20字符，量产替换为 UOM 备案编码）
 #define REALNAME_ID "00000000"         // 实名登记号后 8 位
-#define OP_CATEGORY 1                  // 运行类别：0=未定义, 1=开放类, 2=特定类, 3=审定类
-#define UA_CLASS 1                     // 无人机分类：0=微型, 1=轻型, 2=小型, 3=中型, 4=大型
-#define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点, 1=遥控站位置
-#define COORD_SYS 0                    // 坐标系：0=WGS-84, 1=CGCS2000
-```
-
-### USB Host 飞控数据接口
-
-```c
-// 指定设备模式
-#define FC_USB_VID          0x1B8C  // 飞控 VID
-#define FC_USB_PID          0x0036  // 飞控 PID
-
-// USB CDC-ACM 参数
-#define FC_USB_BAUD_RATE    115200  // 波特率（需与飞控一致）
-#define FC_USB_DATA_BITS    8
-#define FC_USB_PARITY       0       // 0=None, 1=Odd, 2=Even
-#define FC_USB_STOP_BITS    1
-```
-**⚠️ 安全设计**：USB CDC 固定以只读模式打开（`out_buffer_size=0`，USB 驱动层禁止 TX），且打开后显式清除 DTR/RTS，防止飞控被 USB 控制线信号复位。模块不会向飞控发送任何数据。
-
-### 精度取值
-
-广播时的精度字段由 GPS eph/epv 实时映射（不可用时如实上报 unknown=0），以下常量仅供 BLE 自检包使用：
-
-```c
-#define HORIZ_ACC 10  // 水平精度：<10m
-#define VERT_ACC  5   // 垂直精度：<3m
-#define SPEED_ACC 3   // 速度精度：<1m/s
-#define TS_ACC    5   // 时间戳精度：≤0.1s
-```
-
-### 定时参数
-
-```c
+#define OP_CATEGORY 1                  // 运行类别：0=未定义,1=开放类,2=特定类,3=审定类
+#define UA_CLASS 1                     // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
+#define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点,1=遥控站位置
+#define COORD_SYS 0                    // 坐标系：0=WGS-84,1=CGCS2000
 #define BROADCAST_INTERVAL_MS 800      // 数据包广播间隔（GB 46750 要求 ≤1s）
-#define BLE_ADV_INTERVAL_MS 100        // BLE 底层广播间隔（影响功耗与发现延迟）
-#define DATA_UPDATE_INTERVAL_MS 1000   // 飞行数据刷新间隔
-#define DATA_FRESH_THRESHOLD_MS 2000   // 数据过期阈值（超时未更新标记为 STALE）
-#define SELF_TEST_INTERVAL_MS 5000     // 运行时自检间隔
-#define WATCHDOG_TIMEOUT_MS 5000       // 任务看门狗超时
+#define FLIGHT_LOG_INTERVAL_S 10       // 飞行日志记录间隔（GB 46750 要求 ≤10s）
+#define FLIGHT_LOG_PARTITION "flight_log"  // Flash 分区（见 partitions.csv）
+#define STATUS_LED_GPIO GPIO_NUM_48    // WS2812B RGB LED（RMT 驱动）
 ```
 
-### GPIO 引脚
-
-```c
-#define STATUS_LED_GPIO        GPIO_NUM_48  // WS2812B RGB LED（RMT 驱动）
-#define STATUS_LED_NUM_LEDS    1
-```
+完整参数（USB Host VID/PID、精度映射、定时、看门狗、CRC 风暴阈值、日志级别等）见 `main/config.h` 内注释。
 
 LED 状态指示 (GB 46750-2025, 5.1.5)：
 
@@ -283,17 +242,6 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 
 **CSV 输出**包含 27 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
 
-### 串口监控输出示例
-
-```
-I (1234) SYS: === ESP32-S3 RID Broadcaster — GB 46750-2025 ===
-I (1235) SYS: USB Host CDC-ACM | BLE5 Extended Advertising
-I (2345) FLIGHT_DATA: USB Host initialized. Waiting for flight controller...
-I (3456) FLIGHT_DATA: ✓ USB device opened (VID=0x1B8C, PID=0x0036)
-I (4567) FLIGHT_DATA: frames=10049(v1=10049,v2=0) crc_err=11317 armed=0 fix=3 sats=14 ...
-I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
-```
-
 ### 自检与告警
 
 系统每 5 秒执行一次运行时自检（符合 GB 42590-2023 A.2.3.5.5），检测项：
@@ -339,23 +287,10 @@ I (5678) BCAST: Init OK — Packet=0 bytes, broadcast=800ms, update=1000ms
 
 ### Secure Boot V2
 
-防止恶意固件刷入：
-
-```bash
-# 1. 生成签名密钥 (仅一次, 私钥妥善保管)
-espsecure.py generate_signing_key secure_boot_signing_key.pem
-
-# 2. 在 sdkconfig.defaults 中取消注释:
-#    CONFIG_SECURE_BOOT=y
-#    CONFIG_SECURE_SIGNED_ON_BOOT=y
-#    CONFIG_SECURE_BOOT_SIGNING_KEY="secure_boot_signing_key.pem"
-
-# 3. 重新配置并构建
-idf.py reconfigure
-idf.py build
-```
-
-首次启用需烧录 bootloader 并将芯片设置为安全模式（一次性操作）。
+防止恶意固件刷入（一次性启用）：
+1. `espsecure.py generate_signing_key secure_boot_signing_key.pem` 生成签名密钥（私钥妥善保管）
+2. `sdkconfig.defaults` 启用 `CONFIG_SECURE_BOOT=y` / `CONFIG_SECURE_SIGNED_ON_BOOT=y` 并指向签名密钥
+3. `idf.py reconfigure && idf.py build`，首次烧录 bootloader 并设为安全模式
 
 ### Flash 加密
 
@@ -385,9 +320,31 @@ idf.py build
 
 5.2.2 规定数据包扩展内容应使用民用航空行业主管部门**统一发布的协议**。自行在包内添加消息计数器 / HMAC 字段不合规，故**不实现**。当前防篡改防线为模块级 Secure Boot + Flash 加密（见上文"安全配置"），待主管部门发布官方扩展协议后再跟进。
 
+## 同类产品对比
+
+| 项目 | 本模块 | CUAV C-RID | Walkera W-RID |
+|------|--------|------------|---------------|
+| 主控 | ESP32-S3 | ESP32 | 未公开 |
+| 广播链路 | BLE 5 扩展广播 | WiFi + BLE 5 双链路 | 未公开（宣称 3km） |
+| 与飞控接口 | USB（自带 USB Host） | DroneCAN / UART | DroneCAN / USRT |
+| 天线 | 板载 PCB 天线 | MMCX 外接天线（20dBm，>300m） | 未公开 |
+| 参考价 | — | 约 ¥299 | 约 ¥199 |
+
+> 以上两款均基于 ArduPilot 开源固件 ArduRemoteID 开发。经核实，**尚不能确认其符合 GB 46750-2025**：
+>
+> 1. **资料自相矛盾**：C-RID 英文页称支持 GB 46750-2025，但中文产品页 / 2025-06 手册仅引用 GB/T 41300-2022 与 GB 42590-2023，未提及新国标。
+> 2. **上游固件未支持**：ArduRemoteID 仓库存在未关闭的 issue [#158 "Add support for China's RemoteID requirements GB 46750-2025"](https://github.com/ArduPilot/ArduRemoteID/issues/158)，说明该数据格式在新固件中尚未落地。
+> 3. **无监管认证**：属厂商设计声明，未见 CAAC 认证记录。
+>
+> **本模块差异**：GB 46750 数据包为**自行实现**（版本字节 `0x20`），并配套 PC 端检测软件（`app/`）做 BLE 接收 / 逐字段解码 / 内置判断器自检与串口飞行日志导出，可作为合规性验证工具。
+
+### 广播链路选择（为何保持纯 BLE 扩展广播）
+
+无人机编队控制常用 WiFi，若再加 WiFi 广播会直接抢占 2.4GHz 信道。BLE 广播只占用 37/38/39 三个信道、占空比极低，与 WiFi 共存友好；且 ESP32-S3 为单射频，WiFi 与 BLE 需时分复用，同时承载两条 2.4GHz 链路会互相挤压。故保持**纯 BLE 5 扩展广播**为主链路，不做 WLAN 广播。
+
 ## 相关文档
 
 - [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
 - [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用
 
-**最后更新**: 2026-08-01
+**最后更新**: 2026-08-03
