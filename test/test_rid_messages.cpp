@@ -914,5 +914,54 @@ void test_rid_messages() {
         CHECK_CLOSE((double)d.uaLat / 1e7, 34.5, 0.00001);
     }
 
+    // ==== 24. 位置过期 → 时间戳一并置未知(0); 仅速度/航向过期 → 时间戳保留 ----
+    // 时间戳(表3-020)与位置帧同源 (unix = SYSTEM_TIME 偏移 + 位置帧 boot_ms)。
+    // 位置过期后若仍广播旧 unixTimestampMs, 接收方得到"新包旧时间戳"的误导;
+    // 与 boot_ms 回绕同哲学, 位置过期即置未知(0), tsAcc 由调用方同步归 0。
+    {
+        FlightData fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 3000; fd.ts_geoAlt = 5000; fd.ts_speed = 5000; fd.ts_heading = 5000;
+        fd.unixTimestampMs = 1700000000000ULL;
+        gb46750_expireStaleFields(fd, 6000, 2000);   // 位置 age=3000 > 2000
+        CHECK(!(fd.validMask & FLD_POS));
+        CHECK_EQ(fd.unixTimestampMs, 0ULL);          // 位置过期 → 时间戳置未知
+
+        // 位置新鲜, 仅速度/航向过期 → 时间戳保留 (时间戳与位置同源)
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 5000; fd.ts_geoAlt = 5000; fd.ts_speed = 3000; fd.ts_heading = 3000;
+        fd.unixTimestampMs = 1700000000000ULL;
+        gb46750_expireStaleFields(fd, 6000, 2000);
+        CHECK(fd.validMask & FLD_POS);
+        CHECK_EQ(fd.unixTimestampMs, 1700000000000ULL);
+
+        // 位置过期 + 时间戳已为 0 → 保持 0
+        fd = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        fd.ts_pos = 1000; fd.ts_geoAlt = 1000; fd.ts_speed = 1000; fd.ts_heading = 1000;
+        fd.unixTimestampMs = 0;
+        gb46750_expireStaleFields(fd, 60000, 2000);
+        CHECK(!(fd.validMask & FLD_POS));
+        CHECK_EQ(fd.unixTimestampMs, 0ULL);
+
+        // 端到端: 过期后的 FlightData 走 buildPacket → 时间戳字段编码为 0
+        FlightData stale = makeFd(34.5f, 110.25f, 100.0f, 5.0f, 90.0f, STATUS_AIRBORNE);
+        stale.ts_pos = 1000; stale.ts_geoAlt = 1000; stale.ts_speed = 1000; stale.ts_heading = 1000;
+        stale.unixTimestampMs = 1700000000000ULL;
+        gb46750_expireStaleFields(stale, 60000, 2000);
+
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, stale, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, stale.unixTimestampMs);
+        uint8_t buf[GB46750_MAX_PACKET];
+        uint16_t len = gb46750_serialize(pkt, buf, sizeof(buf));
+        CHECK(len > 0);
+        DecodedFields d;
+        CHECK(decodePacket(buf, len, d));
+        CHECK_EQ(d.timestamp, 0ULL);               // 表3-020 未知 = 0
+        CHECK_EQ(d.uaLat, (int32_t)0xFFFFFFFF);    // 位置同步置未知
+        CHECK_EQ(d.uaLon, (int32_t)0xFFFFFFFF);
+        CHECK_EQ(d.heading, 0xFFFF);
+        CHECK_EQ(d.speed, 0xFFFF);
+    }
+
     printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");
 }

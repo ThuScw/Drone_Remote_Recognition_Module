@@ -6,6 +6,7 @@
 #include "ble_rid_broadcaster.h"
 #include "flight_log.h"
 #include "indicators.h"
+#include "status_machine.h"
 
 // ======================== RIDBroadcastManager ========================
 //
@@ -61,17 +62,9 @@ private:
     GB46750Packet _currentPacket;
     FlightData    _lastValidData;
     bool          _broadcastActive;
-    uint8_t       _prevStatus;
 
-    // 状态消抖: 要求新状态持续确认达到指定时长才切换
-    // 紧急状态绕过消抖立即生效
-    // 时间戳驱动 (P1-4): 用墙钟时间而非 update() 调用次数计时 —
-    // 主循环负载波动会改变调用频率, 计数消抖的时长随之漂移 (如循环变慢到 20ms,
-    // 30 次就变成 600ms 而非预期的 ~300ms); 时间戳驱动使消抖时长恒定。
-    uint8_t  _debounceTarget;   // 候选目标状态
-    uint64_t _debounceStartMs;  // 候选目标状态首次出现的时刻 (消抖计时起点)
-    static const uint32_t DEBOUNCE_MS_GND_AIR = 300;  // 地面→空中
-    static const uint32_t DEBOUNCE_MS_AIR_GND = 500;  // 空中→地面 (更严格, 防飞行中误停广播)
+    // 状态消抖状态机 (决策逻辑在 status_machine.h 的 statusStep(), 可宿主测试)
+    DebounceState _debounce;
 
     // --- 定时器 ---
     uint64_t _nextBroadcastMs;        // 下一次广播时刻 (绝对时隙, 相位累加防漂移)
@@ -84,6 +77,10 @@ private:
     // --- 计数器 ---
     uint32_t _broadcastCount;
     uint32_t _validationFailCount;
+
+    // --- 故障记录节流 (同型持续故障只在"进入故障"时记一次, 防环形缓冲被淹没) ---
+    bool _rangeBad = false;      // 上一周期范围校验是否失败
+    bool _staleReported = false; // 当前广播周期是否已记录过期事件
 };
 
 #endif // BROADCAST_MANAGER_H

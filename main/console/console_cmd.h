@@ -16,6 +16,7 @@ private:
     static void taskFunc(void* param);
     void handleCommand(const char* cmd);
     void dumpAllRecords();
+    void printStatus();
 
     FlightLog* _flightLog = nullptr;
     TaskHandle_t _taskHandle = nullptr;

@@ -1,6 +1,7 @@
 #include "flight_data.h"
 #include "mavlink_parser.h"
 #include "config.h"
+#include "fault_log.h"
 #include <inttypes.h>
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -318,6 +319,7 @@ bool FlightDataSource::tryUsbRecovery(uint64_t nowMs) {
     }
     _lastRecoveryMs = nowMs;
     _recoveryCount++;
+    faultLogRecord(FAULT_CRC_STORM, nowMs);
 
     ESP_LOGW(TAG, "USB recovery #%lu triggered — %lu consecutive CRC errors",
              (unsigned long)_recoveryCount,

@@ -1,5 +1,6 @@
 #include "console_cmd.h"
 #include "config.h"
+#include "fault_log.h"
 #include <cstdio>
 #include <cstring>
 #include <esp_log.h>
@@ -56,13 +57,22 @@ void ConsoleCmd::taskFunc(void* param) {
 void ConsoleCmd::handleCommand(const char* cmd) {
     if (strcmp(cmd, "DUMP") == 0) {
         dumpAllRecords();
+    } else if (strcmp(cmd, "STATUS") == 0) {
+        printStatus();
     } else if (strcmp(cmd, "HELP") == 0 || strcmp(cmd, "help") == 0) {
-        printf("Commands: DUMP (export flight log), HELP\r\n");
+        printf("Commands: DUMP (export flight log), STATUS (fault counters), HELP\r\n");
         fflush(stdout);
     } else {
         printf("? Unknown: %s (type HELP)\r\n", cmd);
         fflush(stdout);
     }
+}
+
+void ConsoleCmd::printStatus() {
+    char buf[384];
+    faultLogFormat(buf, sizeof(buf));
+    printf("%s\r\n", buf);
+    fflush(stdout);
 }
 
 void ConsoleCmd::dumpAllRecords() {

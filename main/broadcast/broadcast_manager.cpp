@@ -11,6 +11,7 @@
 #include <freertos/task.h>
 #include "broadcast_manager.h"
 #include "config.h"
+#include "fault_log.h"
 
 static const char* TAG = "BCAST";
 
@@ -24,9 +25,6 @@ RIDBroadcastManager::RIDBroadcastManager(
     , _flightLog(flightLog)
     , _statusLed(statusLed)
     , _broadcastActive(false)
-    , _prevStatus(0xFF)
-    , _debounceTarget(0xFF)
-    , _debounceStartMs(0)
     , _nextBroadcastMs(0)
     , _lastBroadcastSuccessMs(0)
     , _lastDataUpdateMs(0)
@@ -165,10 +163,17 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
 
     if (!rangeValid) {
         _validationFailCount++;
+        // 只在"进入故障"时记录, 防持续越界数据每更新周期刷环形缓冲
+        if (!_rangeBad) {
+            _rangeBad = true;
+            faultLogRecord(FAULT_VALIDATION, nowMs);
+        }
         ESP_LOGW(TAG, "Data range validation failed (flags=0x%08lx, count=%lu), "
                  "building with unknown values for invalid fields",
                  (unsigned long)validationFlags, (unsigned long)_validationFailCount);
         // 不阻止包构建 — 无效字段在 buildPacket 中编码为表3未知哨兵值
+    } else {
+        _rangeBad = false;
     }
 
     // 位置老化 (GB 46750-2025 表3-008/009/010/013): 超过阈值未更新的
@@ -210,6 +215,8 @@ void RIDBroadcastManager::triggerSelfHeal() {
         // DEGRADED (PHY 切换/NimBLE 重初始化后) → LED 橙色降级提示 (旧7)
         const bool degraded = (result == BleRidBroadcaster::RecoveryResult::DEGRADED);
         const char* mode = degraded ? "degraded" : "recovered";
+        faultLogRecord(degraded ? FAULT_BLE_HEAL_DEGRADED : FAULT_BLE_HEAL_OK,
+                       (uint64_t)(esp_timer_get_time() / 1000));
         ESP_LOGI(TAG, "Self-heal OK (%s)", mode);
 
         if (isAirborne()) {
@@ -223,6 +230,7 @@ void RIDBroadcastManager::triggerSelfHeal() {
         }
     } else {
         ESP_LOGE(TAG, "Self-heal FAILED — all 3 tiers exhausted");
+        faultLogRecord(FAULT_BLE_HEAL_FAILED, (uint64_t)(esp_timer_get_time() / 1000));
         _statusLed.setState(LedState::FAULT);
         _broadcastActive = false;
     }
@@ -254,43 +262,27 @@ bool RIDBroadcastManager::isAirborne() const {
 
 void RIDBroadcastManager::handleStatusTransition(uint64_t nowMs) {
     uint8_t newStatus = _lastValidData.opStatus;
-    if (newStatus == _prevStatus) {
-        // 状态一致 — 重置消抖
-        _debounceTarget = 0xFF;
-        _debounceStartMs = 0;
-        return;
-    }
+    uint8_t oldConfirmed = _debounce.confirmed;
+    uint64_t oldStartMs  = _debounce.startMs;
 
-    // 紧急/失效状态绕过消抖，立即切换
-    if (newStatus == STATUS_EMERGENCY || newStatus == STATUS_FAIL_SAFE ||
-        newStatus == STATUS_FAIL_EMERG) {
+    // 决策逻辑为纯函数 (status_machine.h)，这里只做日志与副作用执行
+    StatusStepResult r = statusStep(_debounce, newStatus, nowMs);
+
+    switch (r) {
+    case StatusStepResult::UNCHANGED:
+        // 状态一致 — 消抖已重置
+        break;
+    case StatusStepResult::EMERGENCY:
         ESP_LOGW(TAG, "Status EMERGENCY/FAIL-SAFE — immediate transition (status=%d)", newStatus);
-        _debounceTarget = 0xFF;
-        _debounceStartMs = 0;
-        _prevStatus = newStatus;
-        applyStatusChange(newStatus);
-        return;
-    }
-
-    // 消抖: 目标状态首次出现时记录起点, 持续确认到指定时长才切换。
-    // 用墙钟时间计时 (而非 update() 调用次数), 消抖时长与主循环负载解耦。
-    if (newStatus != _debounceTarget) {
-        _debounceTarget = newStatus;
-        _debounceStartMs = nowMs;
-        return;
-    }
-
-    uint32_t debounceMs = (_debounceTarget == STATUS_GROUND)
-        ? DEBOUNCE_MS_AIR_GND   // 空中→地面: 更严格，防止飞行中误停广播
-        : DEBOUNCE_MS_GND_AIR;  // 地面→空中: 标准阈值
-
-    if (nowMs - _debounceStartMs >= debounceMs) {
+        applyStatusChange(_debounce.confirmed);
+        break;
+    case StatusStepResult::DEBOUNCED:
         ESP_LOGI(TAG, "Status transition %d→%d (debounced, %lums)",
-                 _prevStatus, newStatus, (unsigned long)(nowMs - _debounceStartMs));
-        _prevStatus = newStatus;
-        _debounceTarget = 0xFF;
-        _debounceStartMs = 0;
-        applyStatusChange(newStatus);
+                 oldConfirmed, newStatus, (unsigned long)(nowMs - oldStartMs));
+        applyStatusChange(_debounce.confirmed);
+        break;
+    case StatusStepResult::PENDING:
+        break;
     }
 }
 
@@ -347,8 +339,12 @@ void RIDBroadcastManager::handleBroadcast(uint64_t nowMs) {
     if (freshness == FRESH_STALE) {
         ESP_LOGW(TAG, "Data STALE (> %d ms), broadcasting anyway",
                  DATA_FRESH_THRESHOLD_MS);
+        if (!_staleReported) { _staleReported = true; faultLogRecord(FAULT_STALE_BROADCAST, nowMs); }
     } else if (freshness == FRESH_INVALID) {
         ESP_LOGW(TAG, "Data INVALID (M-fields missing), broadcasting with unknown values");
+        if (!_staleReported) { _staleReported = true; faultLogRecord(FAULT_STALE_BROADCAST, nowMs); }
+    } else {
+        _staleReported = false;
     }
 
     // 序列化并发送
@@ -424,6 +420,7 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
 
     if (freeHeap < 10000) {
         ESP_LOGW(TAG, "LOW HEAP WARNING: only %u bytes remaining", (unsigned)freeHeap);
+        faultLogRecord(FAULT_LOW_HEAP, nowMs);
     }
 
     // 主任务 (app_main) 栈高水位 — update() 在主循环上下文执行

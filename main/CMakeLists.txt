@@ -3,6 +3,6 @@ file(GLOB_RECURSE MAIN_SRCS "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
 
 idf_component_register(
     SRCS ${MAIN_SRCS}
-    INCLUDE_DIRS "." "broadcast" "protocol" "broadcaster" "data" "indicators" "logging" "console"
+    INCLUDE_DIRS "." "broadcast" "protocol" "broadcaster" "data" "indicators" "logging" "console" "telemetry"
     REQUIRES bt nvs_flash freertos esp_timer driver spi_flash wear_levelling usb
 )

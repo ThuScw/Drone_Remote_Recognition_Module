@@ -384,6 +384,9 @@ DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint6
 // 应编码为对应哨兵值 (0xFFFFFFFF / 0xFFFF / 0)，而非广播过期坐标。这避免监管设备
 // 依据过期位置做禁飞区/冲突判断时产生安全事故。
 // opStatus/opPos 不老化: 运行状态由状态机消抖驱动，起飞点/Home 位置是静态语义。
+// 时间戳 (表3-020) 与位置帧同源 (unix = SYSTEM_TIME 偏移 + 位置帧 boot_ms):
+// 位置过期后时间戳同步过期 — 置未知(0)，避免接收方得到"新包旧时间戳"的误导
+// (与 boot_ms 回绕输出未知同哲学)。tsAcc 由调用方按 unixTimestampMs==0 归 0。
 
 void gb46750_expireStaleFields(FlightData& fd, uint64_t nowMs, uint64_t thresholdMs) {
     struct { uint32_t flag; uint64_t ts; } checks[] = {
@@ -395,6 +398,7 @@ void gb46750_expireStaleFields(FlightData& fd, uint64_t nowMs, uint64_t threshol
     for (auto& ch : checks) {
         if ((fd.validMask & ch.flag) && nowMs > ch.ts && nowMs - ch.ts > thresholdMs) {
             fd.validMask &= ~ch.flag;
+            if (ch.flag == FLD_POS) fd.unixTimestampMs = 0;
         }
     }
 }

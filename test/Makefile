@@ -7,13 +7,16 @@ CXX      ?= g++
 CXXFLAGS  = -std=c++14 -Wall -Wextra -g -D_USE_MATH_DEFINES
 
 # Include paths: production code + stub replacements
-INCLUDES  = -I./stubs -I./stubs/driver -I../main -I../main/data -I../main/protocol
+INCLUDES  = -I./stubs -I./stubs/driver -I../main -I../main/data -I../main/protocol \
+            -I../main/telemetry -I../main/broadcast
 
 # Test sources + production modules under test
 SRCS      = test_main.cpp test_crc.cpp test_parser.cpp test_rid_messages.cpp \
+            test_fault_log.cpp test_status_machine.cpp \
             ../main/data/mavlink_crc.cpp \
             ../main/data/mavlink_parser.cpp \
-            ../main/protocol/rid_messages.cpp
+            ../main/protocol/rid_messages.cpp \
+            ../main/telemetry/fault_log.cpp
 
 BUILD_DIR = build
 OBJS      = $(addprefix $(BUILD_DIR)/, $(notdir $(SRCS:.cpp=.o)))
