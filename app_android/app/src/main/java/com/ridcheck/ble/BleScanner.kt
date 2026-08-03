@@ -1,7 +1,6 @@
 package com.ridcheck.ble
 
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanRecord
@@ -31,13 +30,13 @@ class BleScanner(private val listener: Listener) {
 
     companion object {
         const val SERVICE_UUID_16BIT = 0x0D50
-        const val EXPECTED_NAME = "ESP32S3_RID"
         val SERVICE_UUID_128: ParcelUuid =
             ParcelUuid.fromString("00000d50-0000-1000-8000-00805f9b34fb")
     }
 
     private var adapter: BluetoothAdapter? = null
     private var lastRaw: ByteArray? = null
+    private val seenDevices = HashSet<String>()
 
     var isScanning: Boolean = false
         private set
@@ -45,7 +44,7 @@ class BleScanner(private val listener: Listener) {
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val rec = result.scanRecord ?: return
-            if (!isTarget(rec, result.device)) return
+            if (!isTarget(rec)) return
             val raw = extractPacket(rec) ?: return
             if (lastRaw != null && raw.contentEquals(lastRaw)) return
             lastRaw = raw.copyOf()
@@ -53,6 +52,14 @@ class BleScanner(private val listener: Listener) {
                 result.device.address
             } catch (e: SecurityException) {
                 return
+            }
+            if (seenDevices.add(address)) {
+                val name = try {
+                    result.device.name
+                } catch (e: SecurityException) {
+                    null
+                }
+                listener.onLog("首次发现模块: $address  RSSI=${result.rssi}  名称=${name ?: "(无)"}")
             }
             listener.onDistinctPacket(address, result.rssi, raw)
         }
@@ -72,8 +79,10 @@ class BleScanner(private val listener: Listener) {
         if (!a.isEnabled) return false
         adapter = a
         lastRaw = null
+        // setLegacy(false)：接收 BLE5 扩展广播。默认只上报传统广播，扩展广播包根本到不了回调。
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setLegacy(false)
             .build()
         try {
             scanner.startScan(null, settings, callback)
@@ -83,7 +92,7 @@ class BleScanner(private val listener: Listener) {
         }
         isScanning = true
         listener.onScanState(true)
-        listener.onLog("蓝牙扫描已开始，等待模块广播（UUID 0x0D50 / 名称 $EXPECTED_NAME）...")
+        listener.onLog("蓝牙扫描已开始，等待模块广播（UUID 0x0D50）...")
         return true
     }
 
@@ -99,15 +108,8 @@ class BleScanner(private val listener: Listener) {
         listener.onLog("扫描已停止")
     }
 
-    /** 是否来自 RID 模块（名称匹配或含 UUID 0x0D50 的 Service Data）。 */
-    private fun isTarget(rec: ScanRecord, device: BluetoothDevice): Boolean {
-        val name = try {
-            device.name
-        } catch (e: SecurityException) {
-            null
-        }
-        if (name == EXPECTED_NAME) return true
-
+    /** 是否来自 RID 模块：含 UUID 0x0D50 的 Service Data（或原始 AD 字节可解析出 0x0D50）。 */
+    private fun isTarget(rec: ScanRecord): Boolean {
         val sd = rec.getServiceData()
         if (sd != null && sd.containsKey(SERVICE_UUID_128)) return true
 
@@ -115,12 +117,8 @@ class BleScanner(private val listener: Listener) {
         if (uuids != null && uuids.contains(SERVICE_UUID_128)) return true
 
         val raw = rec.getBytes()
-        if (raw.isNotEmpty() &&
+        return raw.isNotEmpty() &&
             Decoder.parseAdServiceData(raw).containsKey(SERVICE_UUID_16BIT)
-        ) {
-            return true
-        }
-        return false
     }
 
     /** 提取原始 GB 包：优先归一化 Service Data，兜底解析原始 AD 字节。 */
