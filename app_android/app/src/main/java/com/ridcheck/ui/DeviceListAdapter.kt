@@ -3,6 +3,7 @@ package com.ridcheck.ui
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
@@ -66,7 +67,16 @@ class DeviceListAdapter(
 
     private fun buildRow(): LinearLayout = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(12), dp(8), dp(12), dp(8))
+        background = GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setColor(Color.rgb(245, 246, 248))
+        }
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        lp.bottomMargin = dp(6)
+        layoutParams = lp
+        setPadding(dp(14), dp(10), dp(14), dp(10))
     }
 
     private fun colorOf(level: HealthLevel): Int = when (level) {

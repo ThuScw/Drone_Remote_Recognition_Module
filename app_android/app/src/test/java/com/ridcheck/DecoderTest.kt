@@ -101,9 +101,10 @@ class DecoderTest {
     }
 
     @Test
-    fun versionWrongIsFlagged() {
+    fun versionWrongIsNotStructureError() {
         val pkt = Decoder.decodeGbPacket(PacketBuilder.buildPacket(version = 0x01))
-        assertTrue(pkt.structureError.contains("版本错误"))
+        assertEquals("", pkt.structureError)
+        assertEquals(0x01, pkt.version)
     }
 
     @Test

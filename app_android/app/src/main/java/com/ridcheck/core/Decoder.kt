@@ -153,12 +153,12 @@ object Decoder {
         val content = data.copyOfRange(6, data.size)
         pkt.contentLen = content.size
 
+        // 版本不匹配不再计入结构错误：非 0x20 按兼容警告处理（Health 判 WARN），
+        // 否则 structureError 会触发 Health 的 STRUCT_LEN(FAIL)，版本降级就失效了。
+        // 注意：PC 版 decoder.py 仍把版本写入 structure_error，这里是 Android 版的有意偏离。
         when {
             pkt.dataType != GB46750_DATA_TYPE ->
                 pkt.structureError = String.format("dataType 错误: 0x%02X (应为 0xFF)", pkt.dataType)
-            pkt.version != GB46750_VERSION ->
-                pkt.structureError =
-                    String.format("版本错误: 0x%02X (应为 0x20=V1.0，收到的可能是旧版或错包)", pkt.version)
             pkt.declaredLen != pkt.contentLen ->
                 pkt.structureError =
                     "dataLength 不匹配: 声明 ${pkt.declaredLen}B, 实际 ${pkt.contentLen}B"

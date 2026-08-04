@@ -21,11 +21,12 @@ enum class HealthLevel {
     }
 }
 
-/** 单个健康问题。 */
+/** 单个健康问题。clause = GB 46750-2025 条款/表3字段编号（如 "表3-001"、"5.1.3"）。 */
 data class HealthIssue(
     val level: HealthLevel,
     val code: String,
-    val message: String
+    val message: String,
+    val clause: String = ""
 ) {
     val label: String get() = level.label()
 }

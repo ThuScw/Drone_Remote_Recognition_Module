@@ -61,7 +61,7 @@ class BleScanner(private val listener: Listener) {
                 } catch (e: SecurityException) {
                     null
                 }
-                listener.onLog("首次发现模块: $address  RSSI=${result.rssi}  名称=${name ?: "(无)"}")
+                listener.onLog("首次发现设备: $address  RSSI=${result.rssi}  名称=${name ?: "(无)"}")
             }
             listener.onDistinctPacket(address, result.rssi, raw)
         }
@@ -94,7 +94,7 @@ class BleScanner(private val listener: Listener) {
         }
         isScanning = true
         listener.onScanState(true)
-        listener.onLog("蓝牙扫描已开始，等待模块广播（UUID 0x0D50）...")
+        listener.onLog("蓝牙扫描已开始，等待设备广播（UUID 0x0D50）...")
         return true
     }
 

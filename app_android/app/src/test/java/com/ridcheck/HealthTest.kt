@@ -69,13 +69,16 @@ class HealthTest {
     }
 
     @Test
-    fun wrongVersionFails() {
+    fun wrongVersionWarnsWithClause() {
         val issues = Health.assessPacket(
             Decoder.decodeGbPacket(
                 PacketBuilder.buildPacket(version = 0x01, timestampMs = System.currentTimeMillis())
             )
         )
-        assertTrue(issues.any { it.code == "STRUCT_VER" })
+        val ver = issues.firstOrNull { it.code == "STRUCT_VER" }
+        assertTrue("STRUCT_VER 应存在: $issues", ver != null)
+        assertEquals(HealthLevel.WARN, ver!!.level)
+        assertEquals("5.2.3 表3 数据格式", ver.clause)
     }
 
     @Test

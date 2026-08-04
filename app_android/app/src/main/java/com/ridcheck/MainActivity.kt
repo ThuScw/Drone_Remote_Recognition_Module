@@ -5,11 +5,14 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -32,6 +35,7 @@ import com.ridcheck.core.DeviceRegistry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
+import com.ridcheck.core.ReportBuilder
 import com.ridcheck.ui.DeviceListAdapter
 import java.util.Locale
 
@@ -126,7 +130,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        log("就绪。点击“开始扫描”收集所有 RID 模块，点设备进详情；或粘贴 nRF Connect 抓到的 HEX。")
+        log("就绪。点击“开始扫描”收集所有 RID 广播设备，点设备进详情；或粘贴 nRF Connect 抓到的 HEX。")
     }
 
     override fun onResume() {
@@ -195,6 +199,10 @@ class MainActivity : Activity() {
         val btnPaste = button("粘贴HEX")
         btnPaste.setOnClickListener { showPasteDialog() }
         btnRow.addView(btnPaste, lpWeight(1f))
+
+        val btnReport = button("生成报告")
+        btnReport.setOnClickListener { shareReport() }
+        btnRow.addView(btnReport, lpWeight(1f))
 
         val statusRow = LinearLayout(this)
         statusRow.orientation = LinearLayout.HORIZONTAL
@@ -280,10 +288,23 @@ class MainActivity : Activity() {
         col.addView(txtFields, lpMatch())
 
         col.addView(sectionLabel("原始数据"))
+        val rawRow = LinearLayout(this)
+        rawRow.orientation = LinearLayout.HORIZONTAL
+        col.addView(rawRow)
+        val btnCopy = button("复制")
+        btnCopy.setOnClickListener { copyCurrentRaw() }
+        rawRow.addView(btnCopy)
+        val btnShare = button("分享")
+        btnShare.setOnClickListener { shareCurrentRaw() }
+        rawRow.addView(btnShare)
         txtRaw = TextView(this)
         txtRaw.textSize = 12f
         txtRaw.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
         txtRaw.setTextColor(Color.BLACK)
+        txtRaw.setOnLongClickListener {
+            copyCurrentRaw()
+            true
+        }
         col.addView(txtRaw, lpMatch())
 
         return scroll
@@ -317,6 +338,12 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    private fun roundedRect(color: Int): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(color)
+        }
+
     // ------------------------------------------------------------ view switch
     private fun showList() {
         currentDetailAddress = null
@@ -345,9 +372,7 @@ class MainActivity : Activity() {
             if (rssi != 0) append("  ($rssi dBm)")
         }
 
-        txtRaw.text = "${pkt.address}\n" + pkt.raw.joinToString(" ") {
-            String.format("%02X", it.toInt() and 0xFF)
-        }
+        txtRaw.text = buildRawText(pkt)
 
         val sb = StringBuilder()
         if (pkt.structureError.isNotEmpty()) {
@@ -365,14 +390,15 @@ class MainActivity : Activity() {
             ""
         }
         txtVerdict.text = "${report.level.verdictLabel()}  ${report.note}$extra"
-        txtVerdict.setBackgroundColor(C_VERDICT_BG[report.level] ?: Color.WHITE)
+        txtVerdict.background = roundedRect(C_VERDICT_BG[report.level] ?: Color.WHITE)
         txtVerdict.setTextColor(C_VERDICT_FG[report.level] ?: Color.BLACK)
 
         txtIssues.text = if (report.issues.isEmpty()) {
             "未发现问题"
         } else {
             report.issues.joinToString("\n") { i ->
-                "[${i.level.label()}] ${i.code}: ${i.message}"
+                val clause = if (i.clause.isEmpty()) "" else " (${i.clause})"
+                "[${i.level.label()}] ${i.code}$clause: ${i.message}"
             }
         }
         txtIssues.setTextColor(
@@ -391,11 +417,42 @@ class MainActivity : Activity() {
         for (i in rep.issues) if (i.level.ordinal > worst.ordinal) worst = i.level
         rep.level = worst
         rep.note = when (rep.level) {
-            HealthLevel.PASS -> "模块工作正常，广播符合 GB 46750-2025 要求"
+            HealthLevel.PASS -> "设备工作正常，广播符合 GB 46750-2025 要求"
             HealthLevel.WARN -> "存在可改善项，不影响基本广播"
             else -> "存在故障，请根据下方问题清单排查"
         }
         return rep
+    }
+
+    // ------------------------------------------------------- copy / share
+    private fun buildRawText(pkt: DecodedPacket): String =
+        "${pkt.address}\n" + pkt.raw.joinToString(" ") {
+            String.format("%02X", it.toInt() and 0xFF)
+        }
+
+    private fun copyCurrentRaw() {
+        val pkt = currentDetailPkt ?: return
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("RID 原始数据", buildRawText(pkt)))
+        log("已复制原始数据")
+    }
+
+    private fun shareCurrentRaw() {
+        val pkt = currentDetailPkt ?: return
+        shareText("RID 原始数据", buildRawText(pkt))
+    }
+
+    private fun shareReport() {
+        shareText("RID 合规测试报告", ReportBuilder.build(registry.list))
+    }
+
+    private fun shareText(title: String, text: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, title)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(send, title))
     }
 
     // ------------------------------------------------------------ permissions
