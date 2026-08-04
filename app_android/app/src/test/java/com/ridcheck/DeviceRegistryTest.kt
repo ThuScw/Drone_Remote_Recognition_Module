@@ -1,0 +1,78 @@
+package com.ridcheck
+
+import com.ridcheck.core.Decoder
+import com.ridcheck.core.DeviceRegistry
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** 设备注册表测试：多设备分离、字段更新、有序、每设备独立健康判定。 */
+class DeviceRegistryTest {
+
+    private fun pkt(address: String, rssi: Int, atMs: Long) =
+        Decoder.decodeGbPacket(
+            PacketBuilder.buildPacket(),
+            address = address,
+            rssi = rssi,
+            receivedAtMs = atMs
+        )
+
+    @Test
+    fun multipleDevicesKeptSeparately() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:02", -70, 2000), nowMs = 2000)
+
+        assertEquals(2, reg.size)
+        assertEquals(
+            listOf("AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"),
+            reg.list.map { it.address }
+        )
+    }
+
+    @Test
+    fun fieldsUpdatedOnEachPacket() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -60, 2000), nowMs = 2000)
+
+        assertEquals(1, reg.size)
+        assertEquals(2, a.packetCount)
+        assertEquals(-60, a.rssi)
+        assertEquals(2000, a.lastSeenMs)
+        assertEquals(1000, a.firstSeenMs)
+        assertTrue(a.lastPkt != null)
+        assertTrue(a.lastRaw.isNotEmpty())
+    }
+
+    @Test
+    fun assessorIndependentPerDevice() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        val b = reg.onPacket(pkt("AA:BB:CC:DD:EE:02", -70, 1000), nowMs = 1000)
+
+        // 两个 assessor 各累计 1 包，互不影响
+        assertEquals(1, a.assessor.report().packetsSeen)
+        assertEquals(1, b.assessor.report().packetsSeen)
+    }
+
+    @Test
+    fun repeatedPacketsFromSameDeviceReuseEntry() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1500), nowMs = 1500)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:02", -70, 2000), nowMs = 2000)
+
+        assertEquals(2, reg.size)
+        assertEquals(2, reg.list[0].packetCount)
+        assertEquals(1, reg.list[1].packetCount)
+    }
+
+    @Test
+    fun clearEmptiesList() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.clear()
+        assertEquals(0, reg.size)
+    }
+}

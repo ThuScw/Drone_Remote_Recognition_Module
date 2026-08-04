@@ -35,7 +35,8 @@ class BleScanner(private val listener: Listener) {
     }
 
     private var adapter: BluetoothAdapter? = null
-    private var lastRaw: ByteArray? = null
+    // 每台设备独立的最后原始包（用于去重：固件每事件在 3 个信道重发同包）
+    private val perDeviceLastRaw = HashMap<String, ByteArray>()
     private val seenDevices = HashSet<String>()
 
     var isScanning: Boolean = false
@@ -46,13 +47,14 @@ class BleScanner(private val listener: Listener) {
             val rec = result.scanRecord ?: return
             if (!isTarget(rec)) return
             val raw = extractPacket(rec) ?: return
-            if (lastRaw != null && raw.contentEquals(lastRaw)) return
-            lastRaw = raw.copyOf()
             val address = try {
                 result.device.address
             } catch (e: SecurityException) {
                 return
             }
+            val prev = perDeviceLastRaw[address]
+            if (prev != null && raw.contentEquals(prev)) return
+            perDeviceLastRaw[address] = raw.copyOf()
             if (seenDevices.add(address)) {
                 val name = try {
                     result.device.name
@@ -78,7 +80,7 @@ class BleScanner(private val listener: Listener) {
         val scanner = a.bluetoothLeScanner ?: return false
         if (!a.isEnabled) return false
         adapter = a
-        lastRaw = null
+        perDeviceLastRaw.clear()
         // setLegacy(false)：接收 BLE5 扩展广播。默认只上报传统广播，扩展广播包根本到不了回调。
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
