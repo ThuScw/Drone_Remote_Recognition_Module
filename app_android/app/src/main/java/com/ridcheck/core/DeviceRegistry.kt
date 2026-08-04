@@ -12,6 +12,12 @@ class DeviceEntry(val address: String) {
 
     /** 历史采样（环形，仅保留最近 DeviceRegistry.SAMPLE_CAP 条）。 */
     val samples = ArrayDeque<SamplePoint>()
+
+    /** 逐帧接收记录（环形，仅保留最近 DeviceRegistry.FRAME_CAP 条）。 */
+    val frames = ArrayDeque<FrameRecord>()
+
+    /** 表3 序号 1..21 → 该字段被携带过的帧数（会话全程累计，不随 frames 截断）。 */
+    val fieldSeen = IntArray(22)
 }
 
 /**
@@ -22,6 +28,9 @@ class DeviceRegistry {
     companion object {
         /** 采样上限：10 分钟 @ 1Hz。 */
         const val SAMPLE_CAP = 600
+
+        /** 逐帧存档上限（约 50 分钟 @ 10Hz；超出截断最旧）。 */
+        const val FRAME_CAP = 30000
     }
 
     private val devices = LinkedHashMap<String, DeviceEntry>()
@@ -36,6 +45,12 @@ class DeviceRegistry {
         entry.lastRaw = pkt.raw.copyOf()
         entry.lastPkt = pkt
         entry.assessor.push(pkt)
+        for (k in pkt.fieldHex.keys) {
+            val idx = k.toIntOrNull()
+            if (idx != null && idx in 1..21) entry.fieldSeen[idx]++
+        }
+        entry.frames.addLast(FrameRecord(nowMs, pkt.rssi, pkt.raw.copyOf()))
+        while (entry.frames.size > FRAME_CAP) entry.frames.removeFirst()
         return entry
     }
 

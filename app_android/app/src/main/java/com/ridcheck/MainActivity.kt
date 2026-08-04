@@ -37,11 +37,11 @@ import com.ridcheck.core.DeviceRegistry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
-import com.ridcheck.core.ReportBuilder
 import com.ridcheck.ui.DeviceListAdapter
 import com.ridcheck.ui.ExplainPage
 import com.ridcheck.ui.RidChartView
 import com.ridcheck.ui.ShareUtil
+import com.ridcheck.ui.Theme
 import java.util.Locale
 
 /**
@@ -57,19 +57,19 @@ class MainActivity : Activity() {
         private const val MANUAL_ADDRESS = "手动"
 
         private val C_VERDICT_BG = mapOf(
-            HealthLevel.PASS to Color.rgb(232, 245, 233),
-            HealthLevel.WARN to Color.rgb(255, 248, 225),
-            HealthLevel.FAIL to Color.rgb(255, 235, 238)
+            HealthLevel.PASS to Theme.PASS_BG,
+            HealthLevel.WARN to Theme.WARN_BG,
+            HealthLevel.FAIL to Theme.FAIL_BG
         )
         private val C_VERDICT_FG = mapOf(
-            HealthLevel.PASS to Color.rgb(27, 94, 32),
-            HealthLevel.WARN to Color.rgb(178, 106, 0),
-            HealthLevel.FAIL to Color.rgb(183, 28, 28)
+            HealthLevel.PASS to Theme.PASS,
+            HealthLevel.WARN to Theme.WARN,
+            HealthLevel.FAIL to Theme.FAIL
         )
         private val C_ISSUE = mapOf(
-            HealthLevel.PASS to Color.rgb(27, 94, 32),
-            HealthLevel.WARN to Color.rgb(178, 106, 0),
-            HealthLevel.FAIL to Color.rgb(183, 28, 28)
+            HealthLevel.PASS to Theme.PASS,
+            HealthLevel.WARN to Theme.WARN,
+            HealthLevel.FAIL to Theme.FAIL
         )
     }
 
@@ -136,7 +136,7 @@ class MainActivity : Activity() {
             btnStop.isEnabled = scanning
             txtScanState.text = if (scanning) "● 扫描中" else "● 已停止"
             txtScanState.setTextColor(
-                if (scanning) Color.rgb(27, 94, 32) else Color.rgb(102, 102, 102)
+                if (scanning) Theme.PRIMARY else Theme.TEXT_MUTED
             )
         }
 
@@ -210,7 +210,7 @@ class MainActivity : Activity() {
         title.text = "RID 检测（GB 46750-2025）"
         title.textSize = 18f
         title.setTypeface(null, Typeface.BOLD)
-        title.setTextColor(Color.rgb(27, 94, 32))
+        title.setTextColor(Theme.PRIMARY)
         col.addView(title)
 
         val btnRow = LinearLayout(this)
@@ -291,7 +291,7 @@ class MainActivity : Activity() {
         txtDetailTitle = TextView(this)
         txtDetailTitle.textSize = 16f
         txtDetailTitle.setTypeface(null, Typeface.BOLD)
-        txtDetailTitle.setTextColor(Color.rgb(27, 94, 32))
+        txtDetailTitle.setTextColor(Theme.PRIMARY)
         txtDetailTitle.setPadding(dp(10), 0, 0, 0)
         txtDetailTitle.gravity = Gravity.CENTER_VERTICAL
         topRow.addView(txtDetailTitle, lpWeight(1f))
@@ -377,7 +377,7 @@ class MainActivity : Activity() {
         tv.text = text
         tv.textSize = 14f
         tv.setTypeface(null, Typeface.BOLD)
-        tv.setTextColor(Color.rgb(27, 94, 32))
+        tv.setTextColor(Theme.PRIMARY)
         tv.setPadding(0, dp(10), 0, dp(2))
         return tv
     }
@@ -419,7 +419,7 @@ class MainActivity : Activity() {
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
         val stripe = View(this)
-        stripe.setBackgroundColor(Color.rgb(27, 94, 32))
+        stripe.setBackgroundColor(Theme.PRIMARY)
         container.addView(stripe, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
         ))
@@ -446,9 +446,9 @@ class MainActivity : Activity() {
     private fun setTabActive(main: Boolean) {
         tabMainStripe.visibility = if (main) View.VISIBLE else View.GONE
         tabExplainStripe.visibility = if (main) View.GONE else View.VISIBLE
-        tabMainText.setTextColor(if (main) Color.rgb(27, 94, 32) else Color.rgb(120, 120, 120))
+        tabMainText.setTextColor(if (main) Theme.PRIMARY else Color.rgb(120, 120, 120))
         tabMainText.setTypeface(null, if (main) Typeface.BOLD else Typeface.NORMAL)
-        tabExplainText.setTextColor(if (main) Color.rgb(120, 120, 120) else Color.rgb(27, 94, 32))
+        tabExplainText.setTextColor(if (main) Color.rgb(120, 120, 120) else Theme.PRIMARY)
         tabExplainText.setTypeface(null, if (main) Typeface.NORMAL else Typeface.BOLD)
     }
 
@@ -529,7 +529,7 @@ class MainActivity : Activity() {
             }
         }
         txtIssues.setTextColor(
-            if (report.issues.isEmpty()) Color.rgb(27, 94, 32)
+            if (report.issues.isEmpty()) Theme.PASS
             else C_ISSUE[report.issues.maxOfOrNull { it.level }] ?: Color.DKGRAY
         )
 
@@ -579,11 +579,7 @@ class MainActivity : Activity() {
 
     private fun shareDeviceReport() {
         val entry = currentEntry() ?: return
-        ShareUtil.shareText(
-            this,
-            "RID 合规测试报告",
-            ReportBuilder.buildDevice(entry, System.currentTimeMillis())
-        )
+        ShareUtil.shareReport(this, entry)
     }
 
     private fun exportCsv() {

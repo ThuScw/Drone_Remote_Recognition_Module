@@ -184,17 +184,37 @@ object Decoder {
 
         fun need(size: Int): Boolean = pos + size <= n
 
+        /** 记录 [from, pos) 这段内容字节的 HEX 到 fieldHex[表3序号]。 */
+        fun recordHex(num: String, from: Int) {
+            if (from in 0..pos && from < pos) {
+                pkt.fieldHex[num] = c.copyOfRange(from, pos).joinToString(" ") {
+                    String.format("%02X", it.toInt() and 0xFF)
+                }
+            }
+        }
+
         // 001 唯一产品识别码 (20 ASCII)
+        var f0 = pos
         pkt.uasId = asciiNoNull(take(20))
+        recordHex("001", f0)
         // 002 实名登记标志 (8 ASCII)
+        f0 = pos
         pkt.realname = asciiNoNull(take(8))
+        recordHex("002", f0)
 
         // 003-005 单字节枚举
+        f0 = pos
         if (need(1)) { pkt.opCategory = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("003", f0)
+        f0 = pos
         if (need(1)) { pkt.uaClass = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("004", f0)
+        f0 = pos
         if (need(1)) { pkt.opLocType = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("005", f0)
 
         // 006 遥控站位置 (int32 LE x2, deg*1e7)
+        f0 = pos
         if (need(8)) {
             val latI = leInt32(c, pos)
             val lonI = leInt32(c, pos + 4)
@@ -207,15 +227,19 @@ object Decoder {
                 pkt.opLon = lonI / 1e7
             }
         }
+        recordHex("006", f0)
 
         // 007 遥控站高度 (uint16 LE, (val+1000)*2)
+        f0 = pos
         if (need(2)) {
             val v = leUint16(c, pos)
             pos += 2
             pkt.opAlt = if (v != 0) v / 2.0 - 1000.0 else Double.NaN
         }
+        recordHex("007", f0)
 
         // 008 无人机位置
+        f0 = pos
         if (need(8)) {
             val latI = leInt32(c, pos)
             val lonI = leInt32(c, pos + 4)
@@ -228,31 +252,39 @@ object Decoder {
                 pkt.uaLon = lonI / 1e7
             }
         }
+        recordHex("008", f0)
 
         // 009 航迹角 (uint16 LE, *0.1 deg), 010 地速 (uint16 LE, *0.1 m/s)
+        f0 = pos
         if (need(2)) {
             val v = leUint16(c, pos)
             pos += 2
             pkt.heading = if (v != SENT_SPEED_HEADING) v / 10.0 else Double.NaN
         }
+        recordHex("009", f0)
+        f0 = pos
         if (need(2)) {
             val v = leUint16(c, pos)
             pos += 2
             pkt.speed = if (v != SENT_SPEED_HEADING) v / 10.0 else Double.NaN
         }
+        recordHex("010", f0)
 
         // 011 相对高度 (O, uint16 LE, (val+9000)*2)
         if (dataId1 and DID_REL_HEIGHT != 0) {
+            f0 = pos
             if (need(2)) {
                 val v = leUint16(c, pos)
                 pos += 2
                 pkt.relHeight = v / 2.0 - 9000.0
                 pkt.hasRelHeight = true
             }
+            recordHex("011", f0)
         }
 
         // 012 垂直速度 (O, 1 byte, bit7=dir, bits6-0=*0.5 m/s)
         if (dataId1 and DID_VERT_SPEED != 0) {
+            f0 = pos
             if (need(1)) {
                 val b = c[pos].toInt() and 0xFF
                 pos += 1
@@ -264,42 +296,61 @@ object Decoder {
                     pkt.vspeed = if ((b and 0x80) != 0) -value / 2.0 else value / 2.0
                 }
             }
+            recordHex("012", f0)
         }
 
         // 013 大地高度 (uint16 LE, (val+1000)*2)
+        f0 = pos
         if (need(2)) {
             val v = leUint16(c, pos)
             pos += 2
             pkt.geoAlt = if (v != 0) v / 2.0 - 1000.0 else Double.NaN
         }
+        recordHex("013", f0)
 
         // 014 气压高度 (O, uint16 LE, (val+1000)*2)
         if (dataId1 and DID_BARO_ALT != 0) {
+            f0 = pos
             if (need(2)) {
                 val v = leUint16(c, pos)
                 pos += 2
                 pkt.baroAlt = if (v != 0) v / 2.0 - 1000.0 else Double.NaN
                 pkt.hasBaroAlt = true
             }
+            recordHex("014", f0)
         }
 
         // 015 运行状态, 016 坐标系
+        f0 = pos
         if (need(1)) { pkt.opStatus = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("015", f0)
+        f0 = pos
         if (need(1)) { pkt.coordSys = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("016", f0)
 
         // 017-019 精度
+        f0 = pos
         if (need(1)) { pkt.horizAcc = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("017", f0)
+        f0 = pos
         if (need(1)) { pkt.vertAcc = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("018", f0)
+        f0 = pos
         if (need(1)) { pkt.speedAcc = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("019", f0)
 
         // 020 时间戳 (uint48 LE, ms)
+        f0 = pos
         if (need(6)) {
             pkt.timestampMs = leUint48(c, pos)
             pos += 6
         }
+        recordHex("020", f0)
 
         // 021 时间戳精度
+        f0 = pos
         if (need(1)) { pkt.tsAcc = c[pos].toInt() and 0xFF; pos += 1 }
+        recordHex("021", f0)
 
         pkt.contentLen = pos
 

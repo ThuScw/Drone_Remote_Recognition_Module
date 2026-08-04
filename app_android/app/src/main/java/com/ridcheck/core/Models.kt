@@ -4,6 +4,34 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
+/** GB 46750-2025 表3 数据项：序号、名称、必选性、DecodedPacket.fmt 的取值键。 */
+data class GbField(val num: String, val name: String, val optional: Boolean, val fmtKey: String)
+
+/** 表3 全部 21 项数据项（顺序与标准一致，M 必选 / O 可选）。 */
+val GB_FIELD_TABLE: List<GbField> = listOf(
+    GbField("001", "唯一产品识别码", false, "唯一产品识别码"),
+    GbField("002", "实名登记号", false, "实名登记号"),
+    GbField("003", "运行类别", false, "运行类别"),
+    GbField("004", "无人机分类", false, "无人机分类"),
+    GbField("005", "遥控站位置类型", false, "遥控站位置类型"),
+    GbField("006", "遥控站位置", false, "遥控站位置"),
+    GbField("007", "遥控站高度", false, "遥控站高度_m"),
+    GbField("008", "无人机位置", false, "无人机位置"),
+    GbField("009", "航迹角", false, "航迹角_deg"),
+    GbField("010", "地速", false, "地速_mps"),
+    GbField("011", "相对高度", true, "相对高度_m"),
+    GbField("012", "垂直速度", true, "垂直速度_mps"),
+    GbField("013", "大地高度", false, "大地高度_m"),
+    GbField("014", "气压高度", true, "气压高度_m"),
+    GbField("015", "运行状态", false, "运行状态"),
+    GbField("016", "坐标系", false, "坐标系"),
+    GbField("017", "水平精度", false, "水平精度"),
+    GbField("018", "垂直精度", false, "垂直精度"),
+    GbField("019", "速度精度", false, "速度精度"),
+    GbField("020", "时间戳", false, "时间戳"),
+    GbField("021", "时间戳精度", false, "时间戳精度")
+)
+
 /** 整体健康判定等级，与 PC 版 models.py 的 HealthLevel IntEnum 对应。 */
 enum class HealthLevel {
     PASS, WARN, FAIL;
@@ -84,6 +112,9 @@ class DecodedPacket {
     // --- 人类可读格式化（保持插入顺序） ---
     val fmt: LinkedHashMap<String, String> = LinkedHashMap()
 
+    /** 表3 序号 → 该字段原始字节（HEX 空格分隔），供解析对照表/报告使用。 */
+    val fieldHex: LinkedHashMap<String, String> = LinkedHashMap()
+
     val timestampUtc: String
         get() {
             if (timestampMs <= 0) return "未授时"
@@ -104,6 +135,13 @@ data class SamplePoint(
     val rssi: Int,
     val rateHz: Double,
     val level: HealthLevel
+)
+
+/** 一帧接收记录：仅保留 GB 包原始字节，导出/报告时按需重解码，避免逐帧存完整解码对象占内存。 */
+data class FrameRecord(
+    val timeMs: Long,
+    val rssi: Int,
+    val raw: ByteArray
 )
 
 /** 一次流式判定结果。 */

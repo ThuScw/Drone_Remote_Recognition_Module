@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.ridcheck.core.GB_FIELD_TABLE
 
 /** 静态说明页：GB 46750-2025 远程识别简介、表3 字段、判定标准与使用方法。 */
 object ExplainPage {
@@ -82,7 +83,7 @@ object ExplainPage {
         this.text = text
         textSize = 18f
         setTypeface(null, Typeface.BOLD)
-        setTextColor(Color.rgb(27, 94, 32))
+        setTextColor(Theme.PRIMARY)
         setPadding(0, 0, 0, dp(context, 6))
     }
 
@@ -90,7 +91,7 @@ object ExplainPage {
         this.text = text
         textSize = 14f
         setTypeface(null, Typeface.BOLD)
-        setTextColor(Color.rgb(27, 94, 32))
+        setTextColor(Theme.PRIMARY)
         setPadding(0, dp(context, 12), 0, dp(context, 2))
     }
 
@@ -103,29 +104,9 @@ object ExplainPage {
     }
 
     private fun fields(context: Context): TextView = TextView(context).apply {
-        text = listOf(
-            "001 唯一产品识别码 UAS_ID  M",
-            "002 实名登记号            M",
-            "003 运行类别              M",
-            "004 无人机分类            M",
-            "005 遥控站位置类型        M",
-            "006 遥控站位置(经纬度)    M",
-            "007 遥控站高度            M",
-            "008 无人机位置(经纬度)    M",
-            "009 航迹角                M",
-            "010 地速                  M",
-            "011 相对高度              O",
-            "012 垂直速度              O",
-            "013 大地高度              M",
-            "014 气压高度              O",
-            "015 运行状态              M",
-            "016 坐标系                M",
-            "017 水平精度              M",
-            "018 垂直精度              M",
-            "019 速度精度              M",
-            "020 时间戳                M",
-            "021 时间戳精度            M"
-        ).joinToString("\n")
+        text = GB_FIELD_TABLE.joinToString("\n") { f ->
+            "${f.num} ${f.name.padEnd(10, '　')} ${if (f.optional) "O" else "M"}"
+        }
         textSize = 12f
         setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
         setTextColor(Color.rgb(90, 90, 90))

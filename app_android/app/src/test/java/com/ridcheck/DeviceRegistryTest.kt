@@ -101,4 +101,33 @@ class DeviceRegistryTest {
         reg.sampleAll(3000) // 距上次 1000ms → 再采
         assertEquals(2, reg.list.single().samples.size)
     }
+
+    @Test
+    fun framesArchivedWithFieldSeenCounts() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -60, 2000), nowMs = 2000)
+
+        assertEquals(2, a.frames.size)
+        assertEquals(2000, a.frames.last().timeMs)
+        assertEquals(-60, a.frames.last().rssi)
+        assertTrue(a.frames.last().raw.isNotEmpty())
+        // 表3 字段携带计数：默认包携带全部 21 字段
+        assertEquals(2, a.fieldSeen[1])
+        assertEquals(2, a.fieldSeen[21])
+        assertEquals(0, a.fieldSeen[0])
+    }
+
+    @Test
+    fun framesCappedAtLimit() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        val e = reg.list.single()
+        repeat(DeviceRegistry.FRAME_CAP + 100) { i ->
+            reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 2000L + i), nowMs = 2000L + i)
+        }
+        assertEquals(DeviceRegistry.FRAME_CAP, e.frames.size)
+        // 最旧被裁：首帧 timeMs=1000 应已移出
+        assertTrue(e.frames.none { it.timeMs == 1000L })
+    }
 }

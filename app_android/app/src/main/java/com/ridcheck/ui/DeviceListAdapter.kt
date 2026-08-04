@@ -69,7 +69,7 @@ class DeviceListAdapter(
         orientation = LinearLayout.VERTICAL
         background = GradientDrawable().apply {
             cornerRadius = dp(12).toFloat()
-            setColor(Color.rgb(245, 246, 248))
+            setColor(Theme.CARD_BG)
         }
         val lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
@@ -80,9 +80,9 @@ class DeviceListAdapter(
     }
 
     private fun colorOf(level: HealthLevel): Int = when (level) {
-        HealthLevel.PASS -> Color.rgb(27, 94, 32)
-        HealthLevel.WARN -> Color.rgb(178, 106, 0)
-        HealthLevel.FAIL -> Color.rgb(183, 28, 28)
+        HealthLevel.PASS -> Theme.PASS
+        HealthLevel.WARN -> Theme.WARN
+        HealthLevel.FAIL -> Theme.FAIL
     }
 
     private fun agoText(diffMs: Long): String = when {

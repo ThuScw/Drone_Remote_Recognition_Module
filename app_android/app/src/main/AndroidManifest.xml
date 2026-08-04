@@ -35,7 +35,7 @@
             </intent-filter>
         </activity>
 
-        <!-- CSV 导出：自建只读文件分享 Provider（零 AndroidX，替代 FileProvider） -->
+        <!-- 文件分享（CSV/DOCX）：自建只读 Provider（零 AndroidX，替代 FileProvider） -->
         <provider
             android:name=".core.RidFileProvider"
             android:authorities="com.ridcheck.files"

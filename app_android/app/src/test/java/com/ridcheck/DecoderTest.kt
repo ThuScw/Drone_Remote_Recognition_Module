@@ -173,4 +173,25 @@ class DecoderTest {
         // 裸包原样返回
         assertArrayEquals(gb, Decoder.extractGbFromAdv(gb))
     }
+
+    /** fieldHex：逐字段原始字节应记录到表3 序号下，可选字段未广播时不记录。 */
+    @Test
+    fun fieldHexCapturedPerTableField() {
+        val pkt = Decoder.decodeGbPacket(PacketBuilder.buildPacket())
+
+        val hex001 = pkt.fieldHex["001"]
+        assertTrue(hex001 != null && hex001.isNotEmpty())
+        val uasBytes = hex001!!.split(" ").map { it.toInt(16).toByte() }.toByteArray()
+        assertEquals("CPNYMDL001234567890A", String(uasBytes, Charsets.US_ASCII))
+
+        assertTrue(pkt.fieldHex.containsKey("020"))
+        assertTrue(pkt.fieldHex.containsKey("021"))
+
+        val pkt2 = Decoder.decodeGbPacket(
+            PacketBuilder.buildPacket(relHeight = null, vspeed = null, baroAlt = null)
+        )
+        assertTrue(!pkt2.fieldHex.containsKey("011"))
+        assertTrue(!pkt2.fieldHex.containsKey("012"))
+        assertTrue(!pkt2.fieldHex.containsKey("014"))
+    }
 }
