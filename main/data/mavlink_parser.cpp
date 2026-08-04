@@ -397,12 +397,13 @@ bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t now
     }
 
     // 填充运行状态
+    // MAV_STATE_CRITICAL(5)/EMERGENCY(6) 统一归为 GB 状态 3「紧急状态」;
+    // GB 状态 4/5「识别发送功能失效」仅指模块自身广播功能失效, 不由飞控状态推断
+    // (旧实现把 CRITICAL 错标为 4, 导致飞控链路保护被误报成 RID 失效)
     if (!p.armed) {
         fd.opStatus = STATUS_GROUND;
-    } else if (p.systemStatus == 6) {
+    } else if (p.systemStatus >= 5) {
         fd.opStatus = STATUS_EMERGENCY;
-    } else if (p.systemStatus == 5) {
-        fd.opStatus = STATUS_FAIL_SAFE;
     } else {
         fd.opStatus = STATUS_AIRBORNE;
     }

@@ -29,11 +29,11 @@ import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import com.ridcheck.ble.BleScanner
+import com.ridcheck.ble.RidScanService
+import com.ridcheck.core.AppState
 import com.ridcheck.core.DecodedPacket
 import com.ridcheck.core.Decoder
 import com.ridcheck.core.DeviceEntry
-import com.ridcheck.core.DeviceRegistry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
@@ -53,7 +53,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_PERMISSIONS = 1001
         private const val REQ_BT_ENABLE = 1002
-        private const val MAX_LOG_LINES = 200
         private const val MANUAL_ADDRESS = "手动"
 
         private val C_VERDICT_BG = mapOf(
@@ -73,8 +72,6 @@ class MainActivity : Activity() {
         )
     }
 
-    private val registry = DeviceRegistry()
-    private var scanner: BleScanner? = null
     private var pendingStart = false
 
     /** 当前详情页关联的设备；null = 停留在列表。手动粘贴时为 MANUAL_ADDRESS。 */
@@ -108,40 +105,19 @@ class MainActivity : Activity() {
     private lateinit var tabMainText: TextView
     private lateinit var tabExplainText: TextView
 
-    /** 每秒刷新列表行与详情（更新时间、STALE 判定随时间变化）。 */
+    /**
+     * 每秒刷新 UI（扫描状态、列表、日志、详情）。
+     * 数据采样由 RidScanService 负责（1Hz），这里只读 AppState 展示，避免双份采样。
+     */
     private val ticker = Handler(Looper.getMainLooper())
     private val tickRunnable = object : Runnable {
         override fun run() {
-            registry.sampleAll(System.currentTimeMillis())
+            renderScanState()
             adapter.notifyDataSetChanged()
+            txtCount.text = "已发现 ${AppState.registry.size} 台设备"
+            renderLog()
             if (currentDetailAddress != null) renderDetail()
             ticker.postDelayed(this, 1000)
-        }
-    }
-
-    private val bleListener = object : BleScanner.Listener {
-        override fun onDistinctPacket(address: String, rssi: Int, raw: ByteArray) {
-            val pkt = Decoder.decodeGbPacket(
-                raw,
-                address = address,
-                rssi = rssi,
-                receivedAtMs = System.nanoTime() / 1_000_000,
-                source = "ble"
-            )
-            onPacket(pkt)
-        }
-
-        override fun onScanState(scanning: Boolean) {
-            btnStart.isEnabled = !scanning
-            btnStop.isEnabled = scanning
-            txtScanState.text = if (scanning) "● 扫描中" else "● 已停止"
-            txtScanState.setTextColor(
-                if (scanning) Theme.PRIMARY else Theme.TEXT_MUTED
-            )
-        }
-
-        override fun onLog(text: String) {
-            log(text)
         }
     }
 
@@ -153,18 +129,15 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        renderScanState()
+        renderLog()
         ticker.post(tickRunnable)
     }
 
     override fun onPause() {
         super.onPause()
+        // 只暂停 UI 刷新；扫描/记录由前台服务持有，退到后台（QGC 在前台）不中断
         ticker.removeCallbacks(tickRunnable)
-        scanner?.stop()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        scanner?.stop()
     }
 
     override fun onBackPressed() {
@@ -224,7 +197,11 @@ class MainActivity : Activity() {
 
         btnStop = button("停止扫描")
         btnStop.isEnabled = false
-        btnStop.setOnClickListener { scanner?.stop() }
+        btnStop.setOnClickListener {
+            RidScanService.stop(this)
+            AppState.scanning = false
+            renderScanState()
+        }
         btnRow.addView(btnStop, lpWeight(1f))
 
         val btnPaste = button("粘贴解码")
@@ -249,7 +226,7 @@ class MainActivity : Activity() {
 
         col.addView(sectionLabel("信号源（点击查看详情）"))
 
-        adapter = DeviceListAdapter(this) { registry.list }
+        adapter = DeviceListAdapter(this) { AppState.registry.list }
         val listView = ListView(this)
         listView.adapter = adapter
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -479,7 +456,7 @@ class MainActivity : Activity() {
 
     private fun showDetail(address: String) {
         currentDetailAddress = address
-        currentDetailPkt = registry.list.firstOrNull { it.address == address }?.lastPkt
+        currentDetailPkt = null // BLE 实时数据在 renderDetail 里从 entry 读取
         listRoot.visibility = View.GONE
         detailRoot.visibility = View.VISIBLE
         explainRoot.visibility = View.GONE
@@ -488,9 +465,11 @@ class MainActivity : Activity() {
     }
 
     private fun renderDetail() {
-        val pkt = currentDetailPkt ?: return
         val manual = currentDetailAddress == MANUAL_ADDRESS
-        val entry = if (manual) null else registry.list.firstOrNull { it.address == currentDetailAddress }
+        val entry = if (manual) null else AppState.registry.list.firstOrNull { it.address == currentDetailAddress }
+        // 手动粘贴用静态包；BLE 设备实时读 entry.lastPkt（服务在后台持续更新）
+        val pkt = if (manual) currentDetailPkt else entry?.lastPkt
+        if (pkt == null) return
 
         txtDetailTitle.text = buildString {
             append(if (manual) "粘贴解码" else currentDetailAddress ?: "")
@@ -590,7 +569,7 @@ class MainActivity : Activity() {
     private fun currentEntry(): DeviceEntry? {
         val addr = currentDetailAddress ?: return null
         if (addr == MANUAL_ADDRESS) return null
-        return registry.list.firstOrNull { it.address == addr }
+        return AppState.registry.list.firstOrNull { it.address == addr }
     }
 
     // ------------------------------------------------------------ permissions
@@ -604,7 +583,21 @@ class MainActivity : Activity() {
     }
 
     private fun neededPermissions(): Array<String> =
-        if (Build.VERSION.SDK_INT >= 31) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Android 14：connectedDevice 前台服务权限 + 通知权限均为运行时权限
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else if (Build.VERSION.SDK_INT >= 33) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else if (Build.VERSION.SDK_INT >= 31) {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -659,23 +652,13 @@ class MainActivity : Activity() {
             log("提示：Android 12 以下需要打开系统定位开关才能扫描")
         }
         pendingStart = false
-        val sc = BleScanner(bleListener)
-        if (sc.start(this)) {
-            scanner = sc
-        }
+        log("启动后台扫描：前台服务常驻，切到 QGC 等前台应用也不中断记录")
+        RidScanService.start(this)
+        AppState.scanning = true
+        renderScanState()
     }
 
     // ------------------------------------------------------------------ data
-    private fun onPacket(pkt: DecodedPacket) {
-        registry.onPacket(pkt, System.currentTimeMillis())
-        adapter.notifyDataSetChanged()
-        txtCount.text = "已发现 ${registry.size} 台设备"
-        if (pkt.address == currentDetailAddress) {
-            currentDetailPkt = pkt
-            renderDetail()
-        }
-    }
-
     private fun showPasteDialog() {
         val edit = EditText(this)
         edit.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -735,12 +718,22 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ log
     private fun log(msg: String) {
+        AppState.addLog(msg)
+        renderLog()
+    }
+
+    /** 把共享日志缓冲渲染到界面；服务在后台产生的日志由每秒 ticker 拾取。 */
+    private fun renderLog() {
         if (!::txtLog.isInitialized) return
-        val base = if (txtLog.text.isEmpty()) "" else txtLog.text.toString() + "\n"
-        txtLog.text = base + msg
-        val lines = txtLog.text.split("\n")
-        if (lines.size > MAX_LOG_LINES) {
-            txtLog.text = lines.takeLast(MAX_LOG_LINES).joinToString("\n")
-        }
+        txtLog.text = AppState.logText
+    }
+
+    /** 从 AppState.scanning 同步按钮与状态行（服务状态变更经每秒 ticker 反映）。 */
+    private fun renderScanState() {
+        val scanning = AppState.scanning
+        btnStart.isEnabled = !scanning
+        btnStop.isEnabled = scanning
+        txtScanState.text = if (scanning) "● 扫描中" else "● 已停止"
+        txtScanState.setTextColor(if (scanning) Theme.PRIMARY else Theme.TEXT_MUTED)
     }
 }

@@ -71,7 +71,7 @@ class ReportBuilderTest {
 
         // 逐帧广播数据块：表头 + 每帧原始字节 + 解码值
         assertTrue(csv.contains("GB 46750-2025 逐帧广播数据（共 1 帧）"))
-        assertTrue(csv.contains("帧序号,时间(UTC),RSSI(dBm),原始字节(HEX)"))
+        assertTrue(csv.contains("帧序号,时间(北京时间),RSSI(dBm),原始字节(HEX)"))
         assertTrue(csv.contains("001-唯一产品识别码"))
         assertTrue(csv.contains("CPNYMDL001234567890A")) // UAS_ID 解码值
         val lines = csv.trim().split("\n")
@@ -181,5 +181,51 @@ class ReportBuilderTest {
         val csv = ReportBuilder.buildCsv(reg.list.single())
         // 逐帧数据行中 UAS_ID 解码值以 = 开头，必须被前导单引号防护强制按文本读
         assertTrue("公式注入应被前导单引号防护", csv.contains("'=SUM(A1:A2)"))
+    }
+
+    /** 表3 字段表改为「序号|数据项|必选|携带帧数|会话统计」，删除「最新解析值」列。 */
+    @Test
+    fun docxFieldTableUsesSessionStatsAndDropsLatest() {
+        val entry = regWithOneDevice().list.single()
+        val docXml = zipDocXml(ReportBuilder.buildDeviceDocx(entry, nowMs = atMs))
+        assertTrue(docXml.contains("会话统计"))
+        assertFalse(docXml.contains("最新解析值"))
+        assertTrue(docXml.contains("恒定：CPNYMDL001234567890A")) // 001 会话统计（身份恒定）
+    }
+
+    /** Word 报告含异常事件时间轴、整改建议与运行状态时间线。 */
+    @Test
+    fun docxIncludesAdviceAndTimeline() {
+        val reg = regWithOneDevice(version = 0x01) // STRUCT_VER → 问题时段被开启
+        val entry = reg.list.single()
+        reg.sampleAll(atMs + 1000)
+        val docXml = zipDocXml(ReportBuilder.buildDeviceDocx(entry, nowMs = atMs + 2000))
+        assertTrue(docXml.contains("异常事件记录"))
+        assertTrue(docXml.contains("运行状态时间线"))
+        assertTrue(docXml.contains("升级固件")) // STRUCT_VER 的整改建议
+    }
+
+    /** 文本报告包含会话统计、运行状态时间线与建议。 */
+    @Test
+    fun textReportIncludesSessionStatsAdvice() {
+        val reg = regWithOneDevice(version = 0x01)
+        val entry = reg.list.single()
+        reg.sampleAll(atMs + 1000)
+        val text = ReportBuilder.buildDevice(entry, nowMs = atMs + 2000)
+        assertTrue(text.contains("会话统计（表3 21 项）"))
+        assertTrue(text.contains("运行状态: 空中")) // statusTimeline 来自 statusLog
+        assertTrue(text.contains("恒定：CPNYMDL001234567890A"))
+        assertTrue(text.contains("建议:"))
+    }
+
+    private fun zipDocXml(bytes: ByteArray): String {
+        val zip = ZipInputStream(ByteArrayInputStream(bytes))
+        var docXml = ""
+        var e = zip.nextEntry
+        while (e != null) {
+            if (e.name == "word/document.xml") docXml = zip.readBytes().toString(Charsets.UTF_8)
+            e = zip.nextEntry
+        }
+        return docXml
     }
 }

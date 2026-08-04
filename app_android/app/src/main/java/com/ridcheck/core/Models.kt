@@ -144,6 +144,18 @@ data class FrameRecord(
     val raw: ByteArray
 )
 
+/** 相对轨迹点（米，相对首点/起飞点），由每秒采样追加。relN/relE 由 DeviceRegistry 用等距圆柱投影预计算。 */
+data class TrackPoint(
+    val timeMs: Long,
+    val lat: Double,
+    val lon: Double,
+    val relN: Double,
+    val relE: Double
+)
+
+/** 运行状态变化记录：opStatus 变化时追加一条。 */
+data class StatusLogEntry(val timeMs: Long, val opStatus: Int)
+
 /** 一次流式判定结果。 */
 class HealthReport {
     var level: HealthLevel = HealthLevel.PASS

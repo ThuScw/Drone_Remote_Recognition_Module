@@ -11,7 +11,7 @@ class DeviceRegistryTest {
 
     private fun pkt(address: String, rssi: Int, atMs: Long) =
         Decoder.decodeGbPacket(
-            PacketBuilder.buildPacket(),
+            PacketBuilder.buildPacket(timestampMs = System.currentTimeMillis()),
             address = address,
             rssi = rssi,
             receivedAtMs = atMs
@@ -129,5 +129,76 @@ class DeviceRegistryTest {
         assertEquals(DeviceRegistry.FRAME_CAP, e.frames.size)
         // 最旧被裁：首帧 timeMs=1000 应已移出
         assertTrue(e.frames.none { it.timeMs == 1000L })
+    }
+
+    @Test
+    fun statusLogAndStructErrTracked() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000) // opStatus 2（默认）
+        assertEquals(1, a.statusLog.size)
+        assertEquals(2, a.statusLog.last().opStatus)
+
+        reg.onPacket(
+            Decoder.decodeGbPacket(
+                PacketBuilder.buildPacket(opStatus = 4),
+                address = "AA:BB:CC:DD:EE:01", rssi = -55, receivedAtMs = 2000
+            ),
+            nowMs = 2000
+        )
+        assertEquals(2, a.statusLog.size)
+        assertEquals(4, a.statusLog.last().opStatus)
+
+        // 结构错误包 → structErrCount 累计
+        reg.onPacket(
+            Decoder.decodeGbPacket(
+                byteArrayOf(0xFE.toByte(), 0x20, 5),
+                address = "AA:BB:CC:DD:EE:01", rssi = -55, receivedAtMs = 3000
+            ),
+            nowMs = 3000
+        )
+        assertEquals(1, a.structErrCount)
+    }
+
+    @Test
+    fun sessionStatsRecordedPerPacket() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        assertEquals(1, a.sessionStats.accums[10].seen) // 地速
+        assertTrue(a.sessionStats.fieldSummary(10).contains("3.5 m/s"))
+    }
+
+    @Test
+    fun trackSampledFromValidPosition() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.sampleAll(2000)
+        assertEquals(1, a.track.size)
+        assertEquals(0.0, a.track.first().relN, 1e-6) // 首点为原点
+        assertEquals(0.0, a.track.first().relE, 1e-6)
+        reg.sampleAll(3000)
+        assertEquals(2, a.track.size)
+    }
+
+    @Test
+    fun trackSkippedWhenPositionUnknown() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(
+            Decoder.decodeGbPacket(
+                PacketBuilder.buildPacket(uaPosUnknown = true),
+                address = "AA:BB:CC:DD:EE:01", rssi = -55, receivedAtMs = 1000
+            ),
+            nowMs = 1000
+        )
+        reg.sampleAll(2000)
+        assertEquals(0, a.track.size)
+    }
+
+    @Test
+    fun issueTimelineFedBySampling() {
+        val reg = DeviceRegistry()
+        val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.sampleAll(2000)
+        // 健康包无问题 → 时段为空
+        assertEquals(0, a.issueTimeline.size)
     }
 }

@@ -34,10 +34,12 @@ object ShareUtil {
         shareFile(context, "导出数据", name, csv.toByteArray(Charsets.UTF_8))
     }
 
-    /** Word 合规检测报告（.docx），内嵌 RSSI/速率采样曲线图。 */
+    /** Word 合规检测报告（.docx），内嵌 RSSI/速率采样曲线图 + 相对轨迹图。 */
     fun shareReport(context: Context, entry: DeviceEntry) {
+        val nowMs = System.currentTimeMillis()
         val chart = if (entry.samples.isEmpty()) null else ChartPng.render(entry.samples)
-        val bytes = ReportBuilder.buildDeviceDocx(entry, System.currentTimeMillis(), chart)
+        val track = if (entry.track.isEmpty()) null else ChartPng.renderTrack(entry.track.toList())
+        val bytes = ReportBuilder.buildDeviceDocx(entry, nowMs, chart, track)
         val name = "RID检测报告_${safeAddr(entry.address)}_${stamp()}.docx"
         shareFile(context, "分享报告", name, bytes)
     }

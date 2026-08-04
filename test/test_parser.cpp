@@ -191,6 +191,38 @@ void test_mavlink_parser() {
         }
     }
 
+    // ==== 4b. GPS_RAW_INT eph/epv 精度解析 — 合成帧非零精度 ====
+    // 真实 .DAT 帧 eph/epv 恒为 0, 无法证明精度解析偏移正确;
+    // 用非零合成帧锁定 ArduPilot 布局 (eph@20, epv@22, fix_type@28), 防止精度字段回归
+    {
+        // ArduPilot GPS_RAW_INT payload (30B):
+        //   time_usec(8) + lat(4) + lon(4) + alt(4) + eph(2) + epv(2)
+        //   + vel(2) + cog(2) + fix_type(1) + satellites_visible(1)
+        const uint8_t payload[30] = {
+            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,   // time_usec
+            0x80,0x3B,0xF1,0x11,                        // lat = 301000000 (30.1°)
+            0xD6,0x92,0xD4,0x47,                        // lon = 1202992854 (120.2992854°)
+            0x10,0x27,0x00,0x00,                        // alt = 10000 mm
+            0x96,0x00,                                  // eph = 150 cm = 1.50 m
+            0x64,0x00,                                  // epv = 100 cm = 1.00 m
+            0x00,0x00,                                  // vel
+            0x00,0x00,                                  // cog
+            0x06,                                       // fix_type = RTK
+            0x16,                                       // satellites_visible = 22
+        };
+        uint8_t frame[64];
+        uint16_t len = build_v2_frame(24, payload, sizeof(payload), 0, frame);
+
+        MavlinkParser p;
+        mavlink_init(p);
+        feed_frame(p, frame, len, 5000);
+
+        CHECK_EQ((int)p.gpsFixType, 6);
+        CHECK_EQ((int)p.gpsSats,    22);
+        CHECK_CLOSE(p.gpsEph, 1.50, 0.001);
+        CHECK_CLOSE(p.gpsEpv, 1.00, 0.001);
+    }
+
     // ==== 5. fillFlightData with real v2 armed HEARTBEAT + GPS + Position ====
     {
         // Find frames: v2 armed HB, GPS with fix>=3, and GLOBAL_POSITION_INT
