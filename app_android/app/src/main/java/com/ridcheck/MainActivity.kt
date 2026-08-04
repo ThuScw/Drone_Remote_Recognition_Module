@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -104,6 +105,7 @@ class MainActivity : Activity() {
     private lateinit var tabExplainStripe: View
     private lateinit var tabMainText: TextView
     private lateinit var tabExplainText: TextView
+    private lateinit var btnQuit: TextView
 
     /**
      * 每秒刷新 UI（扫描状态、列表、日志、详情）。
@@ -385,10 +387,42 @@ class MainActivity : Activity() {
 
         tabMain = buildTab("主界面", isMain = true) { showMainTab() }
         tabExplain = buildTab("说明", isMain = false) { showExplainTab() }
+        btnQuit = buildQuitButton()
         bar.addView(tabMain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         bar.addView(tabExplain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        bar.addView(btnQuit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         setTabActive(true)
         return bar
+    }
+
+    /** 底部栏「退出」键：红色加粗，与导航 tab 区分；点击弹出确认后彻底关闭程序。 */
+    private fun buildQuitButton(): TextView {
+        val text = TextView(this)
+        text.text = "退出"
+        text.textSize = 13f
+        text.setTextColor(Theme.FAIL)
+        text.setTypeface(null, Typeface.BOLD)
+        text.gravity = Gravity.CENTER
+        text.setOnClickListener { confirmQuit() }
+        return text
+    }
+
+    private fun confirmQuit() {
+        AlertDialog.Builder(this)
+            .setTitle("退出程序")
+            .setMessage("确定要完全关闭吗？将停止后台扫描、结束本次记录并退出程序。")
+            .setPositiveButton("退出") { _, _ -> quitApp() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 先同步停掉前台服务（onDestroy 内会停扫描并关闭问题时段），再关掉全部界面并结束进程，
+     *  保证彻底退出，START_STICKY 服务不会复活。 */
+    private fun quitApp() {
+        stopService(Intent(this, RidScanService::class.java))
+        AppState.scanning = false
+        finishAffinity()
+        Process.killProcess(Process.myPid())
     }
 
     /** 每个 tab = 顶部 3dp 色条 + 居中文字，点击切换。 */

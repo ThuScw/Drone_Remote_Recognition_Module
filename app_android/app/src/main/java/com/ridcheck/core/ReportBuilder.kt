@@ -155,7 +155,7 @@ object ReportBuilder {
             doc.keyValue(listOf(
                 "报告编号" to reportNo(id, nowMs),
                 "检测依据" to "GB 46750-2025（5.1.2 连续广播 / 5.1.3 广播间隔 / 表3 数据项）",
-                "检测工具" to "RID 检测 APP v1.6（Android 蓝牙接收）",
+                "检测工具" to "RID 检测 APP v1.7（Android 蓝牙接收）",
                 "检测日期" to (TS_BJ.format(Instant.ofEpochMilli(nowMs)) + "（北京时间）"),
                 "检测方式" to "现场接收广播式远程识别（BLE 5.0 扩展广播）",
                 "检测时长" to durationText(entry, nowMs)
@@ -255,7 +255,7 @@ object ReportBuilder {
 
             // 八、声明
             doc.heading("八、声明")
-            doc.small("1. 本报告由 RID 检测 APP（v1.6）自动生成，检测数据为现场实时接收的广播式运行识别信息，仅供合规自查参考，不构成官方检测结论。")
+            doc.small("1. 本报告由 RID 检测 APP（v1.7）自动生成，检测数据为现场实时接收的广播式运行识别信息，仅供合规自查参考，不构成官方检测结论。")
             doc.small("2. 检测结果仅对本次检测会话及受检设备负责，具体合规判定以 GB 46750-2025 标准原文及具备资质的检测机构为准。")
             doc.small("3. 逐帧原始字节与对应字段解码请见同一会话导出的 CSV 数据。")
         }
