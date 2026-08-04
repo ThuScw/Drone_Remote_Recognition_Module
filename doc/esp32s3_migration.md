@@ -264,7 +264,7 @@ CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=256
 1. 确认飞控 VID/PID，修改 `config.h`
 2. 编译烧录
 3. 连接飞控测试
-4. 用 nRF Connect 验证 BLE 广播
+4. 用 nRF Connect 或本仓库安卓检测 APP（`app_android/`）验证 BLE 广播（见仓库根 README「验证方法」）
 
 ## 回退到 ESP32-C5
 

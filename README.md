@@ -241,11 +241,16 @@ GB 46750-2025 5.1.7 要求运行识别发送模块与飞行控制功能模块互
 
 ### 验证方法
 
-用手机安装 **nRF Connect**（Nordic Semiconductor），扫描 BLE 设备：
+推荐使用本仓库自带的**安卓检测 APP**（`app_android/`）现场抓包验证，安装与使用见 [`app_android/README.md`](app_android/README.md)：
+
+- 安装 APK（`app_android/app/build/outputs/apk/debug/app-debug.apk`）→ 点 **开始扫描**；
+- App 实时列出所有广播 UUID `0x0D50` 的设备，点进详情可查看逐字段解码、合规判定、RSSI / 速率曲线，并生成 Word 报告 / 导出 CSV。
+
+也可用通用抓包工具 **nRF Connect**（Nordic Semiconductor）手动查看：
 
 - 设备名：`ESP32S3_RID`
 - Service UUID：`0x0D50`（ASTM F3411 RID Service）
-- Service Data 中为 GB 46750-2025 编码的数据包
+- Service Data 中为 GB 46750-2025 编码的数据包（可复制完整 Raw 广播帧，贴进 RID 检测 APP 的「粘贴解码」做单包解析）
 
 ### 导出飞行日志
 
@@ -302,7 +307,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 橙色慢闪=降级 / 红色常亮=故障）
 - [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
-- [ ] 场地实地验证：手机端 App 扫描距离、数据正确性
+- [ ] 场地实地验证：RID 检测安卓 APP（`app_android/`，见[验证方法](#验证方法)）扫描距离、数据正确性
 - [ ] 实现量产飞控交联后端（UART MAVLink / DroneCAN 或飞控内部调用），替换 `StubFcInterlink`（GB 46750-2025 5.1.7）
 - [ ] 向整机厂确认量产机网络报送功能（4 问，见「已知限制 → 网络式 RID」），确定本模块是否需实现网络式
 
@@ -376,7 +381,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 > 2. **上游固件未支持**：ArduRemoteID 仓库存在未关闭的 issue [#158 "Add support for China's RemoteID requirements GB 46750-2025"](https://github.com/ArduPilot/ArduRemoteID/issues/158)，说明该数据格式在新固件中尚未落地。
 > 3. **无监管认证**：属厂商设计声明，未见 CAAC 认证记录。
 >
-> **本模块差异**：GB 46750 数据包为**自行实现**（版本字节 `0x20`），并配套 PC 端检测软件（`app/`）做 BLE 接收 / 逐字段解码 / 内置判断器自检与串口飞行日志导出，可作为合规性验证工具。
+> **本模块差异**：GB 46750 数据包为**自行实现**（版本字节 `0x20`），并配套两套检测工具作为合规性验证手段——PC 端软件（`app/`，BLE 接收 / 逐字段解码 / 内置判断器自检 / 串口飞行日志导出）与**安卓手机 APP**（`app_android/`，现场 BLE 抓包 / 逐字段解码 / 合规判定 / Word 报告与 CSV 导出）。
 
 ### 广播链路选择（为何保持纯 BLE 扩展广播）
 
@@ -386,5 +391,6 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 
 - [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
 - [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用
+- [安卓检测 APP](app_android/README.md) — 手机端 BLE 抓包 / 解码 / 合规判定 / 报告导出
 
-**最后更新**: 2026-08-03
+**最后更新**: 2026-08-04

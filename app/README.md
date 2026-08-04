@@ -101,3 +101,4 @@ app/
 - 解码与字段顺序与固件 `main/protocol/rid_messages.cpp` 一致（版本字节 `0x20` = V1.0）
 - 数据包在广播中的位置：AD Service Data（类型 `0x16`）→ UUID `0x0D50` → 原始 GB 数据包
 - 命令行版串口导出工具见 `../tools/flight_log_dump.py`
+- 手机端检测 APP（`../app_android/`）与本软件共用同一套解码器 / 判定器（逐行移植），现场 BLE 抓包 + 报告导出，见 [app_android/README.md](../app_android/README.md)
