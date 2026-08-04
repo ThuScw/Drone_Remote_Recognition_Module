@@ -34,5 +34,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- CSV 导出：自建只读文件分享 Provider（零 AndroidX，替代 FileProvider） -->
+        <provider
+            android:name=".core.RidFileProvider"
+            android:authorities="com.ridcheck.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

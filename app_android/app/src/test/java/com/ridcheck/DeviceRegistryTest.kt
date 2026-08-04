@@ -75,4 +75,30 @@ class DeviceRegistryTest {
         reg.clear()
         assertEquals(0, reg.size)
     }
+
+    @Test
+    fun sampleAllAppendsOnePerSecondAndCaps() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+
+        // 每秒一步，共 700 步 → 只保留最近 600 条
+        repeat(700) { reg.sampleAll(1000 + (it + 1) * 1000L) }
+
+        val e = reg.list.single()
+        assertEquals(600, e.samples.size)
+        assertEquals(701000, e.samples.last().timeMs) // 最后一步 nowMs = 1000+700*1000
+        assertEquals(102000, e.samples.first().timeMs) // 裁掉最旧 100 条后
+        assertEquals(-55, e.samples.last().rssi)
+    }
+
+    @Test
+    fun sampleAllThrottlesWithinSameSecond() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+
+        reg.sampleAll(2000) // 首采
+        reg.sampleAll(2500) // 距上次 500ms → 跳过
+        reg.sampleAll(3000) // 距上次 1000ms → 再采
+        assertEquals(2, reg.list.single().samples.size)
+    }
 }

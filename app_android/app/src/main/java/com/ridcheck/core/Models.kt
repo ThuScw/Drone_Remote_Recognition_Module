@@ -98,6 +98,14 @@ class DecodedPacket {
         }
 }
 
+/** 一秒一次的历史采样点（用于曲线图与 CSV 导出）。 */
+data class SamplePoint(
+    val timeMs: Long,
+    val rssi: Int,
+    val rateHz: Double,
+    val level: HealthLevel
+)
+
 /** 一次流式判定结果。 */
 class HealthReport {
     var level: HealthLevel = HealthLevel.PASS

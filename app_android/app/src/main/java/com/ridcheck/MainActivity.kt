@@ -28,15 +28,20 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import com.ridcheck.ble.BleScanner
 import com.ridcheck.core.DecodedPacket
 import com.ridcheck.core.Decoder
+import com.ridcheck.core.DeviceEntry
 import com.ridcheck.core.DeviceRegistry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
 import com.ridcheck.core.ReportBuilder
 import com.ridcheck.ui.DeviceListAdapter
+import com.ridcheck.ui.ExplainPage
+import com.ridcheck.ui.RidChartView
+import com.ridcheck.ui.ShareUtil
 import java.util.Locale
 
 /**
@@ -79,6 +84,7 @@ class MainActivity : Activity() {
     // UI
     private lateinit var listRoot: LinearLayout
     private lateinit var detailRoot: ScrollView
+    private lateinit var explainRoot: ScrollView
     private lateinit var adapter: DeviceListAdapter
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
@@ -90,11 +96,23 @@ class MainActivity : Activity() {
     private lateinit var txtIssues: TextView
     private lateinit var txtFields: TextView
     private lateinit var txtRaw: TextView
+    private lateinit var txtManualBanner: TextView
+    private lateinit var recordSection: LinearLayout
+    private lateinit var chartView: RidChartView
+
+    // 底部导航
+    private lateinit var tabMain: LinearLayout
+    private lateinit var tabExplain: LinearLayout
+    private lateinit var tabMainStripe: View
+    private lateinit var tabExplainStripe: View
+    private lateinit var tabMainText: TextView
+    private lateinit var tabExplainText: TextView
 
     /** 每秒刷新列表行与详情（更新时间、STALE 判定随时间变化）。 */
     private val ticker = Handler(Looper.getMainLooper())
     private val tickRunnable = object : Runnable {
         override fun run() {
+            registry.sampleAll(System.currentTimeMillis())
             adapter.notifyDataSetChanged()
             if (currentDetailAddress != null) renderDetail()
             ticker.postDelayed(this, 1000)
@@ -150,22 +168,35 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
-        if (detailRoot.visibility == View.VISIBLE) {
-            showList()
-        } else {
-            super.onBackPressed()
+        when {
+            detailRoot.visibility == View.VISIBLE -> showList()
+            explainRoot.visibility == View.VISIBLE -> showMainTab()
+            else -> super.onBackPressed()
         }
     }
 
     // ------------------------------------------------------------------ UI
     private fun buildUi() {
-        val root = FrameLayout(this)
+        val root = LinearLayout(this)
+        root.orientation = LinearLayout.VERTICAL
 
+        val content = FrameLayout(this)
         listRoot = buildListPage()
         detailRoot = buildDetailPage()
-        root.addView(listRoot, lpFill())
-        root.addView(detailRoot, lpFill())
+        explainRoot = ExplainPage.build(this)
+        content.addView(listRoot, lpFill())
+        content.addView(detailRoot, lpFill())
+        content.addView(explainRoot, lpFill())
         detailRoot.visibility = View.GONE
+        explainRoot.visibility = View.GONE
+
+        // 内容区占满底部导航以上空间；宽 MATCH_PARENT + 高 0 + weight 1
+        root.addView(content, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        root.addView(buildBottomBar(), LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(56)
+        ))
 
         setContentView(root)
     }
@@ -196,13 +227,9 @@ class MainActivity : Activity() {
         btnStop.setOnClickListener { scanner?.stop() }
         btnRow.addView(btnStop, lpWeight(1f))
 
-        val btnPaste = button("粘贴HEX")
+        val btnPaste = button("粘贴解码")
         btnPaste.setOnClickListener { showPasteDialog() }
         btnRow.addView(btnPaste, lpWeight(1f))
-
-        val btnReport = button("生成报告")
-        btnReport.setOnClickListener { shareReport() }
-        btnRow.addView(btnReport, lpWeight(1f))
 
         val statusRow = LinearLayout(this)
         statusRow.orientation = LinearLayout.HORIZONTAL
@@ -269,6 +296,14 @@ class MainActivity : Activity() {
         txtDetailTitle.gravity = Gravity.CENTER_VERTICAL
         topRow.addView(txtDetailTitle, lpWeight(1f))
 
+        txtManualBanner = TextView(this)
+        txtManualBanner.text = "单包静态判定（不含流式统计）"
+        txtManualBanner.textSize = 12f
+        txtManualBanner.setTextColor(Color.rgb(178, 106, 0))
+        txtManualBanner.setPadding(dp(10), dp(6), dp(10), dp(6))
+        txtManualBanner.visibility = View.GONE
+        col.addView(txtManualBanner, lpMatch())
+
         txtVerdict = TextView(this)
         txtVerdict.setTextColor(Color.BLACK)
         txtVerdict.setPadding(dp(10), dp(10), dp(10), dp(10))
@@ -286,6 +321,26 @@ class MainActivity : Activity() {
         txtFields.textSize = 13f
         txtFields.setTextColor(Color.DKGRAY)
         col.addView(txtFields, lpMatch())
+
+        recordSection = LinearLayout(this)
+        recordSection.orientation = LinearLayout.VERTICAL
+        recordSection.addView(sectionLabel("记录与分析"))
+        chartView = RidChartView(this)
+        recordSection.addView(chartView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(180)
+        ))
+        val actRow = LinearLayout(this)
+        actRow.orientation = LinearLayout.HORIZONTAL
+        actRow.setPadding(0, dp(8), 0, 0)
+        val btnReport = button("生成报告")
+        btnReport.setOnClickListener { shareDeviceReport() }
+        actRow.addView(btnReport, lpWeight(1f))
+        val btnExport = button("导出数据")
+        btnExport.setOnClickListener { exportCsv() }
+        actRow.addView(btnExport, lpWeight(1f))
+        recordSection.addView(actRow)
+        recordSection.visibility = View.GONE
+        col.addView(recordSection, lpMatch())
 
         col.addView(sectionLabel("原始数据"))
         val rawRow = LinearLayout(this)
@@ -344,6 +399,75 @@ class MainActivity : Activity() {
             setColor(color)
         }
 
+    // ------------------------------------------------------------ bottom nav
+    private fun buildBottomBar(): LinearLayout {
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.setBackgroundColor(Color.rgb(250, 250, 250))
+        bar.setElevation(dp(8).toFloat())
+
+        tabMain = buildTab("主界面", isMain = true) { showMainTab() }
+        tabExplain = buildTab("说明", isMain = false) { showExplainTab() }
+        bar.addView(tabMain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        bar.addView(tabExplain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        setTabActive(true)
+        return bar
+    }
+
+    /** 每个 tab = 顶部 3dp 色条 + 居中文字，点击切换。 */
+    private fun buildTab(label: String, isMain: Boolean, onClick: () -> Unit): LinearLayout {
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        val stripe = View(this)
+        stripe.setBackgroundColor(Color.rgb(27, 94, 32))
+        container.addView(stripe, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
+        ))
+        val text = TextView(this)
+        text.text = label
+        text.textSize = 13f
+        text.gravity = Gravity.CENTER
+        container.addView(text, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        container.setOnClickListener { onClick() }
+        if (isMain) {
+            tabMain = container
+            tabMainStripe = stripe
+            tabMainText = text
+        } else {
+            tabExplain = container
+            tabExplainStripe = stripe
+            tabExplainText = text
+        }
+        return container
+    }
+
+    private fun setTabActive(main: Boolean) {
+        tabMainStripe.visibility = if (main) View.VISIBLE else View.GONE
+        tabExplainStripe.visibility = if (main) View.GONE else View.VISIBLE
+        tabMainText.setTextColor(if (main) Color.rgb(27, 94, 32) else Color.rgb(120, 120, 120))
+        tabMainText.setTypeface(null, if (main) Typeface.BOLD else Typeface.NORMAL)
+        tabExplainText.setTextColor(if (main) Color.rgb(120, 120, 120) else Color.rgb(27, 94, 32))
+        tabExplainText.setTypeface(null, if (main) Typeface.NORMAL else Typeface.BOLD)
+    }
+
+    private fun showMainTab() {
+        explainRoot.visibility = View.GONE
+        showList()
+        setTabActive(true)
+    }
+
+    private fun showExplainTab() {
+        currentDetailAddress = null
+        currentDetailPkt = null
+        detailRoot.visibility = View.GONE
+        listRoot.visibility = View.GONE
+        explainRoot.visibility = View.VISIBLE
+        setTabActive(false)
+        adapter.notifyDataSetChanged()
+    }
+
     // ------------------------------------------------------------ view switch
     private fun showList() {
         currentDetailAddress = null
@@ -358,6 +482,8 @@ class MainActivity : Activity() {
         currentDetailPkt = registry.list.firstOrNull { it.address == address }?.lastPkt
         listRoot.visibility = View.GONE
         detailRoot.visibility = View.VISIBLE
+        explainRoot.visibility = View.GONE
+        setTabActive(true)
         renderDetail()
     }
 
@@ -367,10 +493,11 @@ class MainActivity : Activity() {
         val entry = if (manual) null else registry.list.firstOrNull { it.address == currentDetailAddress }
 
         txtDetailTitle.text = buildString {
-            append(if (manual) "手动粘贴" else currentDetailAddress ?: "")
+            append(if (manual) "粘贴解码" else currentDetailAddress ?: "")
             val rssi = entry?.rssi ?: pkt.rssi
             if (rssi != 0) append("  ($rssi dBm)")
         }
+        txtManualBanner.visibility = if (manual) View.VISIBLE else View.GONE
 
         txtRaw.text = buildRawText(pkt)
 
@@ -405,6 +532,13 @@ class MainActivity : Activity() {
             if (report.issues.isEmpty()) Color.rgb(27, 94, 32)
             else C_ISSUE[report.issues.maxOfOrNull { it.level }] ?: Color.DKGRAY
         )
+
+        if (manual) {
+            recordSection.visibility = View.GONE
+        } else {
+            recordSection.visibility = View.VISIBLE
+            chartView.setData(entry?.samples ?: emptyList())
+        }
     }
 
     /** 手动粘贴包没有流式统计，退化为单包判定。 */
@@ -434,25 +568,33 @@ class MainActivity : Activity() {
         val pkt = currentDetailPkt ?: return
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("RID 原始数据", buildRawText(pkt)))
+        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
         log("已复制原始数据")
     }
 
     private fun shareCurrentRaw() {
         val pkt = currentDetailPkt ?: return
-        shareText("RID 原始数据", buildRawText(pkt))
+        ShareUtil.shareText(this, "RID 原始数据", buildRawText(pkt))
     }
 
-    private fun shareReport() {
-        shareText("RID 合规测试报告", ReportBuilder.build(registry.list))
+    private fun shareDeviceReport() {
+        val entry = currentEntry() ?: return
+        ShareUtil.shareText(
+            this,
+            "RID 合规测试报告",
+            ReportBuilder.buildDevice(entry, System.currentTimeMillis())
+        )
     }
 
-    private fun shareText(title: String, text: String) {
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, title)
-            putExtra(Intent.EXTRA_TEXT, text)
-        }
-        startActivity(Intent.createChooser(send, title))
+    private fun exportCsv() {
+        val entry = currentEntry() ?: return
+        ShareUtil.shareCsv(this, entry)
+    }
+
+    private fun currentEntry(): DeviceEntry? {
+        val addr = currentDetailAddress ?: return null
+        if (addr == MANUAL_ADDRESS) return null
+        return registry.list.firstOrNull { it.address == addr }
     }
 
     // ------------------------------------------------------------ permissions
@@ -542,13 +684,13 @@ class MainActivity : Activity() {
         val edit = EditText(this)
         edit.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         edit.gravity = Gravity.START or Gravity.TOP
-        edit.hint = "粘贴完整 Raw 广播帧，或从 FF 开始的 GB 数据包\n例如: FF20 48 FF FE 43 50 4E..."
+        edit.hint = "粘贴完整 Raw 广播帧，或从 FF 开始的 GB 数据包（单包静态判定）\n例如: FF20 48 FF FE 43 50 4E..."
         edit.minLines = 5
         val pad = dp(12)
         edit.setPadding(pad, pad, pad, pad)
 
         AlertDialog.Builder(this)
-            .setTitle("粘贴 HEX")
+            .setTitle("粘贴解码")
             .setView(edit)
             .setPositiveButton("解码") { _, _ ->
                 val text = edit.text.toString().trim()
@@ -590,6 +732,8 @@ class MainActivity : Activity() {
         currentDetailPkt = pkt
         listRoot.visibility = View.GONE
         detailRoot.visibility = View.VISIBLE
+        explainRoot.visibility = View.GONE
+        setTabActive(true)
         renderDetail()
     }
 
