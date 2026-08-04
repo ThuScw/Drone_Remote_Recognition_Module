@@ -382,6 +382,10 @@ void RIDBroadcastManager::handleFlightLog(uint64_t nowMs) {
     if (nowMs - _lastFlightLogMs < (uint64_t)(FLIGHT_LOG_INTERVAL_S * 1000)) return;
     _lastFlightLogMs = nowMs;
 
+    // 包未构建时 (FRESH_INVALID, 尚无有效飞行数据) 不落盘:
+    // gb46750_serialize 对全零包返回 3 (仅固定头), len>0 判据形同虚设, 会存空 stub。
+    if (_currentPacket.dataIdLen == 0 || _currentPacket.contentLen == 0) return;
+
     uint8_t serialized[GB46750_MAX_PACKET];
     uint16_t len = gb46750_serialize(_currentPacket, serialized, sizeof(serialized));
     if (len > 0) {

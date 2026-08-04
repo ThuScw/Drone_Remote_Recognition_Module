@@ -66,8 +66,11 @@ private:
 
     wl_handle_t   _wlHandle      = WL_INVALID_HANDLE;
     uint32_t      _partitionSize = 0;
+    uint32_t      _sectorSize    = 0;        // flash 扇区大小 (wear_levelling)
     uint32_t      _writeOffset   = 0;
     uint32_t      _recordCount   = 0;
+    uint32_t      _currentSector = 0xFFFFFFFF; // 已擦除的扇区号; 哨兵=尚未擦除
+    bool          _sectorDirty   = true;     // 写指针所在扇区含旧数据, 写入前需整扇区擦除
     uint64_t      _lastWriteMs   = 0;
 
     portMUX_TYPE  _spinlock      = portMUX_INITIALIZER_UNLOCKED;
