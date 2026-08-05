@@ -6,6 +6,8 @@
 #include "ble_rid_broadcaster.h"
 #include "flight_log.h"
 #include "indicators.h"
+#include "status_machine.h"
+#include "fc_interlink.h"
 
 // ======================== RIDBroadcastManager ========================
 //
@@ -27,9 +29,9 @@ public:
         BleRidBroadcaster& broadcaster,
         FlightLog& flightLog,
         StatusLed& statusLed,
-        RIDInterlock& interlock);
+        IFcInterlink& interlink);
 
-    // 配置校验、BLE 自检、联锁就绪
+    // 配置校验、BLE 自检
     bool init();
 
     // 主循环每次迭代调用 (~10ms 间隔)
@@ -43,7 +45,7 @@ private:
     // --- 内部方法 ---
     void handleBleRecovery();
     void validateAndBuildPacket(const FlightData& fd, uint64_t nowMs);
-    void handleStatusTransition();
+    void handleStatusTransition(uint64_t nowMs);
     void handleBroadcast(uint64_t nowMs);
     void handleFlightLog(uint64_t nowMs);
     void handleSelfTest();
@@ -51,21 +53,25 @@ private:
 
     bool isAirborne() const;
     void triggerSelfHeal();
+    void applyStatusChange(uint8_t newStatus);  // 执行广播启停 + LED 状态切换
 
     // --- 引用的外部模块 ---
     BleRidBroadcaster& _broadcaster;
     FlightLog&         _flightLog;
     StatusLed&         _statusLed;
-    RIDInterlock&      _interlock;
+    IFcInterlink&      _interlink;   // 飞控交联 (GB 46750-2025 5.1.7)
 
     // --- 内部状态 ---
     GB46750Packet _currentPacket;
     FlightData    _lastValidData;
     bool          _broadcastActive;
-    uint8_t       _prevStatus;
+
+    // 状态消抖状态机 (决策逻辑在 status_machine.h 的 statusStep(), 可宿主测试)
+    DebounceState _debounce;
 
     // --- 定时器 ---
-    uint64_t _lastBroadcastMs;
+    uint64_t _nextBroadcastMs;        // 下一次广播时刻 (绝对时隙, 相位累加防漂移)
+    uint64_t _lastBroadcastSuccessMs; // 最近一次广播数据实际更新成功时间 (合规监测)
     uint64_t _lastDataUpdateMs;
     uint64_t _lastSelfTestMs;
     uint64_t _lastFlightLogMs;
@@ -74,6 +80,10 @@ private:
     // --- 计数器 ---
     uint32_t _broadcastCount;
     uint32_t _validationFailCount;
+
+    // --- 故障记录节流 (同型持续故障只在"进入故障"时记一次, 防环形缓冲被淹没) ---
+    bool _rangeBad = false;      // 上一周期范围校验是否失败
+    bool _staleReported = false; // 当前广播周期是否已记录过期事件
 };
 
 #endif // BROADCAST_MANAGER_H

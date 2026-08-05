@@ -1,4 +1,4 @@
-// ======================== ESP32-C5 RID Broadcaster ========================
+// ======================== ESP32-S3 RID Broadcaster ========================
 //
 // GB 46750-2025 compliant remote identification module.
 // Light show drone class (35cm, Class 1), BLE5 extended advertising.
@@ -8,8 +8,8 @@
 //   broadcast/         — all safety/broadcast logic (RIDBroadcastManager)
 //   protocol/          — GB 46750-2025 packet encoding
 //   broadcaster/       — BLE transport (NimBLE)
-//   data/              — flight data source (mock or flight controller)
-//   indicators/        — LED + flight controller interlock
+//   data/              — flight data source (USB Host CDC-ACM → MAVLink)
+//   indicators/        — status LED
 //   logging/           — persistent flight data recorder
 
 #include <freertos/FreeRTOS.h>
@@ -25,13 +25,15 @@
 #include "flight_data.h"
 #include "indicators.h"
 #include "flight_log.h"
+#include "console_cmd.h"
+#include "interlink_stub.h"
 
 static const char* TAG = "SYS";
 
 static BleRidBroadcaster    broadcaster;
 static FlightLog            flightLog;
-static RIDInterlock         interlock;
 static StatusLed            statusLed;
+static StubFcInterlink      fcInterlink;   // 测试阶段后端, 量产时替换为真实交联实现
 static RIDBroadcastManager* manager = nullptr;
 
 extern "C" void app_main(void) {
@@ -59,11 +61,11 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "Task watchdog enabled (%ld ms timeout)", (long)WATCHDOG_TIMEOUT_MS);
     }
 
-    ESP_LOGI(TAG, "=== ESP32-C5 RID Broadcaster — GB 46750-2025 ===");
-    ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | Mock data");
+    ESP_LOGI(TAG, "=== ESP32-S3 RID Broadcaster — GB 46750-2025 ===");
+    ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM");
 
     // --- Subsystems ---
-    if (!broadcaster.begin("ESP32C5_RID")) {
+    if (!broadcaster.begin("GBI_RID_001")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
@@ -71,15 +73,15 @@ extern "C" void app_main(void) {
     if (!statusLed.init()) {
         ESP_LOGW(TAG, "Status LED init failed — continuing without visual indicator");
     }
-    if (!interlock.init()) {
-        ESP_LOGW(TAG, "Interlock init failed — continuing without FC interlock");
-    }
+
     if (!flightLog.init()) {
         ESP_LOGW(TAG, "Flight log init failed — continuing without persistent storage");
     }
 
+    ConsoleCmd::init(flightLog);
+
     // --- Broadcast Manager (all safety + orchestration logic) ---
-    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, interlock);
+    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink);
     if (!manager->init()) {
         ESP_LOGE(TAG, "FATAL: Broadcast manager init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -87,8 +89,12 @@ extern "C" void app_main(void) {
 
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");
 
+    // 主任务栈高水位 (启动基线; 运行期每 60s 在 handleHeapMonitor 中复查)
+    ESP_LOGI(TAG, "Main task stack high-water: %lu bytes",
+             (unsigned long)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+
     // --- Main Loop ---
-    FlightData fd;
+    FlightData fd = {};  // 零初始化: opStatus=STATUS_UNREPORTED(0), freshness=FRESH_INVALID
     while (1) {
         esp_task_wdt_reset();
 

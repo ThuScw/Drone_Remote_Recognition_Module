@@ -28,8 +28,21 @@ public:
     bool enqueueRecord(const uint8_t* data, uint16_t len, uint64_t timestampMs);
 
     uint32_t getRecordCount() const { return _recordCount; }
+    uint32_t getMaxRecords() const { return _partitionSize / kRecordSize; }
     uint32_t getWriteOffset() const { return _writeOffset; }
     float estimateRemainingHours() const;
+
+    // 读取单条记录（index: 0=最旧, N-1=最新）
+    // 返回读取字节数（96 成功, 0 失败/越界）
+    uint16_t readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
+
+    // 读取单条记录完整原始 96 字节（index: 0=最旧, N-1=最新）
+    // 校验 magic + CRC 后整体拷贝到 outBuf，供 DUMP 原样导出。
+    // 返回读取字节数（96 成功, 0 失败/越界/校验不通过）
+    uint16_t readRecordRaw(uint32_t index, uint8_t* outBuf);
+
+    // 读取最新一条记录
+    uint16_t readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 
 private:
     static constexpr uint32_t kMagic       = 0x5249444C;  // "RIDL"
@@ -53,9 +66,14 @@ private:
 
     wl_handle_t   _wlHandle      = WL_INVALID_HANDLE;
     uint32_t      _partitionSize = 0;
+    uint32_t      _sectorSize    = 0;        // flash 扇区大小 (wear_levelling)
     uint32_t      _writeOffset   = 0;
     uint32_t      _recordCount   = 0;
+    uint32_t      _currentSector = 0xFFFFFFFF; // 已擦除的扇区号; 哨兵=尚未擦除
+    bool          _sectorDirty   = true;     // 写指针所在扇区含旧数据, 写入前需整扇区擦除
     uint64_t      _lastWriteMs   = 0;
+
+    portMUX_TYPE  _spinlock      = portMUX_INITIALIZER_UNLOCKED;
 
     TaskHandle_t  _taskHandle    = nullptr;
     QueueHandle_t _queue         = nullptr;

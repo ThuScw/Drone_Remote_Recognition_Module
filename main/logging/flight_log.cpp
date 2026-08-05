@@ -4,6 +4,7 @@
 #include <esp_log.h>
 #include <esp_partition.h>
 #include <esp_timer.h>
+#include <esp_task_wdt.h>
 
 static const char* TAG = "FLOG";
 
@@ -23,6 +24,10 @@ FlightLog::~FlightLog() {
         vQueueDelete(_queue);
         _queue = nullptr;
     }
+    if (_wlHandle != WL_INVALID_HANDLE) {
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
+    }
 }
 
 bool FlightLog::init() {
@@ -41,11 +46,19 @@ bool FlightLog::init() {
     }
 
     _partitionSize = wl_size(_wlHandle);
+    _sectorSize    = wl_sector_size(_wlHandle);
+    if (_sectorSize == 0) {
+        ESP_LOGE(TAG, "Failed to get flash sector size");
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
+        return false;
+    }
 
     // 扫描分区找到最后一条有效记录，确定写入位置
     uint32_t offset = 0;
     uint32_t count  = 0;
     uint8_t  buf[kRecordSize];
+    bool     stoppedAtBlank = false;  // 扫描是否停在擦除态 (0xFF)
 
     while (offset + kRecordSize <= _partitionSize) {
         rc = wl_read(_wlHandle, offset, buf, kRecordSize);
@@ -56,7 +69,7 @@ bool FlightLog::init() {
                        | ((uint32_t)buf[2] << 16)
                        | ((uint32_t)buf[3] << 24);
 
-        if (magic == 0xFFFFFFFF) break;  // 擦除态
+        if (magic == 0xFFFFFFFF) { stoppedAtBlank = true; break; }  // 擦除态
 
         if (magic != kMagic) break;       // 未知数据
 
@@ -73,6 +86,16 @@ bool FlightLog::init() {
 
     _recordCount = count;
     _writeOffset = offset;
+
+    // 扇区状态: 写指针所在扇区若从写指针起已是空白(擦除态), 无需擦除直接续写;
+    // 若停在损坏/未知数据, 或已写满到分区末尾(待回卷), 则下次写入前必须整扇区擦除。
+    if (_writeOffset >= _partitionSize) {
+        _currentSector = _partitionSize / _sectorSize + 1;  // 哨兵: 回卷后强制擦除扇区0
+        _sectorDirty   = false;
+    } else {
+        _currentSector = _writeOffset / _sectorSize;
+        _sectorDirty   = !stoppedAtBlank;
+    }
 
     float maxHours = (float)(_partitionSize / kRecordSize)
                      * (float)FLIGHT_LOG_INTERVAL_S / 3600.0f;
@@ -93,6 +116,8 @@ bool FlightLog::init() {
     _queue = xQueueCreate(FLIGHT_LOG_QUEUE_DEPTH, sizeof(LogItem));
     if (!_queue) {
         ESP_LOGE(TAG, "Failed to create log queue");
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
         return false;
     }
 
@@ -103,6 +128,8 @@ bool FlightLog::init() {
         ESP_LOGE(TAG, "Failed to create log task");
         vQueueDelete(_queue);
         _queue = nullptr;
+        wl_unmount(_wlHandle);
+        _wlHandle = WL_INVALID_HANDLE;
         return false;
     }
 
@@ -111,7 +138,7 @@ bool FlightLog::init() {
 }
 
 bool FlightLog::enqueueRecord(const uint8_t* data, uint16_t len, uint64_t timestampMs) {
-    if (!_queue || len > kMaxDataLen) return false;
+    if (!_queue || !data || len > kMaxDataLen) return false;
 
     LogItem item;
     item.len = len;
@@ -137,11 +164,20 @@ void FlightLog::logTaskFunc(void* param) {
 }
 
 void FlightLog::logTaskLoop() {
+    // 注册任务看门狗: wl_write 在低电压等条件下可能无限等待,
+    // 死锁时系统复位而非静默丢失飞行记录 (GB 46750-2025 5.1.8 记录存储要求)
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "flight_log task not subscribed to TWDT");
+    }
+
     LogItem item;
     while (1) {
-        if (xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE) {
+        // 有限超时而非 portMAX_DELAY: 空闲时也要定期喂狗。
+        // 记录每 10s 一条, 100ms 轮询可及时排空队列, 不会堆积。
+        if (xQueueReceive(_queue, &item, pdMS_TO_TICKS(100)) == pdTRUE) {
             writeRecord(item.data, item.len, item.timestampMs);
         }
+        esp_task_wdt_reset();
 
         // P1: Stack watermark monitoring
         uint32_t watermark = uxTaskGetStackHighWaterMark(_taskHandle) * sizeof(StackType_t);
@@ -157,6 +193,22 @@ uint16_t FlightLog::writeRecord(const uint8_t* data, uint16_t len, uint64_t time
     if (_writeOffset + kRecordSize > _partitionSize) {
         _writeOffset = 0;
         ESP_LOGI(TAG, "Log wrap — overwriting oldest records");
+    }
+
+    // Flash 擦除是扇区粒度, 不能按 96 字节逐条擦除 (旧实现: 非扇区对齐时
+    // wl_erase_range 失败 / 或整扇区被抹掉, 导致日志区实际只保留第一条记录)。
+    // 正确做法: 仅在进入一个尚未擦除的扇区时整扇区擦除一次, 扇区内各条直接写入。
+    uint32_t sector = _writeOffset / _sectorSize;
+    if (_sectorDirty || sector != _currentSector) {
+        uint32_t sectorStart = sector * _sectorSize;
+        esp_err_t rc = wl_erase_range(_wlHandle, sectorStart, _sectorSize);
+        if (rc != ESP_OK) {
+            ESP_LOGE(TAG, "wl_erase_range failed at %lu: %d",
+                     (unsigned long)sectorStart, rc);
+            return 0;
+        }
+        _currentSector = sector;
+        _sectorDirty   = false;
     }
 
     uint8_t record[kRecordSize];
@@ -178,20 +230,16 @@ uint16_t FlightLog::writeRecord(const uint8_t* data, uint16_t len, uint64_t time
     record[4] = crc & 0xFF;
     record[5] = (crc >> 8) & 0xFF;
 
-    esp_err_t rc = wl_erase_range(_wlHandle, _writeOffset, kRecordSize);
-    if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "wl_erase_range failed at %lu: %d", (unsigned long)_writeOffset, rc);
-        return 0;
-    }
-
-    rc = wl_write(_wlHandle, _writeOffset, record, kRecordSize);
+    esp_err_t rc = wl_write(_wlHandle, _writeOffset, record, kRecordSize);
     if (rc != ESP_OK) {
         ESP_LOGE(TAG, "wl_write failed at %lu: %d", (unsigned long)_writeOffset, rc);
         return 0;
     }
 
+    portENTER_CRITICAL_SAFE(&_spinlock);
     _writeOffset += kRecordSize;
     _recordCount++;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
     _lastWriteMs = timestampMs;
 
     return kRecordSize;
@@ -203,6 +251,66 @@ float FlightLog::estimateRemainingHours() const {
     uint32_t remainingBytes = _partitionSize - _writeOffset;
     uint32_t remainingRecords = remainingBytes / kRecordSize;
     return (float)remainingRecords * (float)FLIGHT_LOG_INTERVAL_S / 3600.0f;
+}
+
+// --- 环形缓冲区逻辑地址 → 物理地址映射 ---
+// _recordCount 是累计写入数，_partitionSize/kRecordSize 是总容量
+// 未绕回: 记录从 offset 0 线性排列，最旧=0，最新=offset-kRecordSize
+// 已绕回: 最旧在 _writeOffset（即将被覆盖的位置）→ 绕回分区末尾 → 最新在 (_writeOffset - kRecordSize)
+
+uint16_t FlightLog::readRecordRaw(uint32_t index, uint8_t* outBuf) {
+    if (_wlHandle == WL_INVALID_HANDLE || !outBuf) return 0;
+
+    portENTER_CRITICAL_SAFE(&_spinlock);
+    uint32_t capacity = _partitionSize / kRecordSize;
+    uint32_t total = _recordCount;
+    uint32_t writeOff = _writeOffset;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
+
+    uint32_t available = (total < capacity) ? total : capacity;
+    if (available == 0 || index >= available) return 0;
+
+    uint32_t oldestOffset = (total <= capacity) ? 0 : writeOff;
+    uint32_t physicalOffset = (oldestOffset + index * kRecordSize) % _partitionSize;
+
+    esp_err_t rc = wl_read(_wlHandle, physicalOffset, outBuf, kRecordSize);
+    if (rc != ESP_OK) return 0;
+
+    uint32_t magic = (uint32_t)outBuf[0] | ((uint32_t)outBuf[1] << 8)
+                   | ((uint32_t)outBuf[2] << 16) | ((uint32_t)outBuf[3] << 24);
+    if (magic != kMagic) return 0;
+
+    uint16_t storedCrc = (uint16_t)outBuf[4] | ((uint16_t)outBuf[5] << 8);
+    uint16_t calcCrc  = crc16(outBuf + 6, kRecordSize - 6);
+    if (storedCrc != calcCrc) return 0;
+
+    return kRecordSize;
+}
+
+uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    if (!outData || !outLen || !outTimestampMs) return 0;
+
+    uint8_t buf[kRecordSize];
+    if (readRecordRaw(index, buf) == 0) return 0;
+
+    *outTimestampMs = 0;
+    for (int i = 0; i < 8; i++) *outTimestampMs |= ((uint64_t)buf[6 + i] << (i * 8));
+
+    *outLen = (uint16_t)buf[14] | ((uint16_t)buf[15] << 8);
+    if (*outLen > kMaxDataLen) *outLen = kMaxDataLen;
+
+    memcpy(outData, buf + 16, *outLen);
+    return kRecordSize;
+}
+
+uint16_t FlightLog::readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
+    portENTER_CRITICAL_SAFE(&_spinlock);
+    uint32_t capacity = _partitionSize / kRecordSize;
+    uint32_t total = _recordCount;
+    portEXIT_CRITICAL_SAFE(&_spinlock);
+    uint32_t available = (total < capacity) ? total : capacity;
+    if (available == 0) return 0;
+    return readRecord(available - 1, outData, outLen, outTimestampMs);
 }
 
 uint16_t FlightLog::crc16(const uint8_t* data, size_t len) {

@@ -10,22 +10,11 @@ enum class LedState {
     OFF,
     STANDBY,        // 绿色慢闪 — 地面待机
     BROADCASTING,   // 蓝色快闪 — 空中/紧急广播中
+    DEGRADED,       // 橙色快闪 — 自修复后降级运行 (PHY 切换 / NimBLE 重初始化)
     FAULT           // 红色常亮 — 模块故障
 };
 
-// GB 46750-2025 5.1.7: 起飞前联锁 — 模块失效时禁止飞控起飞
-class RIDInterlock {
-public:
-    bool init();
-    void arm();
-    void disarm();
-    bool isArmed() const { return _armed; }
-
-private:
-    bool _armed = false;
-};
-
-// ESP32-C5-DevKitC-1 板载 WS2812B (GPIO27, RMT 驱动)
+// ESP32-S3-DevKitC-1 板载 WS2812B (GPIO48, RMT 驱动)
 class StatusLed {
 public:
     bool init();

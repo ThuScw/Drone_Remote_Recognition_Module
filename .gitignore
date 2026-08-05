@@ -17,6 +17,19 @@ dependencies.lock
 \#*\#
 .dir-locals.el
 
+# ===== Project Config & Logs =====
+.claude/
+log/
+
+# ===== Python app (app/) =====
+.venv/
+__pycache__/
+.pytest_cache/
+*.csv
+app/build/
+app/dist/
+app/*.spec
+
 # ===== OS Files =====
 .DS_Store
 Thumbs.db
@@ -31,6 +44,12 @@ secure_boot_signing_key*
 encrypted_*.bin
 pre_encrypted_*.bin
 .flash_encryption_key.bin
+
+# ===== Compile Artifacts =====
+*.exe
+*.o
+*.elf
+*.bin
 
 # ===== Testing & Coverage =====
 TEST_LOGS/

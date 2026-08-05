@@ -1,4 +1,4 @@
-# ESP32-C5 RID Broadcaster 分区表
+# ESP32-S3 RID Broadcaster 分区表
 # 目标: 8 MB Flash (4MB Flash 需缩小 flight_log 分区)
 #
 # nvs:        存放蓝牙配置和系统参数

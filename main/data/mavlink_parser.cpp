@@ -1,53 +1,32 @@
 #include "mavlink_parser.h"
+#include "mavlink_crc.h"
 #include "config.h"
 #include <string.h>
 #include <math.h>
 #include "esp_log.h"
 
+#if CONFIG_RID_VERBOSE_LOG
 static const char* TAG = "MAVLINK";
-
-// ================= MAVLink CRC-16/MCRF4XX =================
-
-static uint16_t crc_accumulate(uint8_t data, uint16_t crcAcc) {
-    uint8_t tmp;
-    tmp = data ^ (uint8_t)(crcAcc & 0xFF);
-    tmp ^= (tmp << 4);
-    return ((uint16_t)(crcAcc >> 8) ^ (uint16_t)(tmp << 8) ^
-            (uint16_t)(tmp << 3) ^ (uint16_t)(tmp >> 4)) & 0xFFFF;
-}
-
-static uint16_t crc_calculate(const uint8_t* pBuffer, uint16_t length) {
-    uint16_t crcTmp = 0xFFFF;
-    for (uint16_t i = 0; i < length; i++) {
-        crcTmp = crc_accumulate(pBuffer[i], crcTmp);
-    }
-    return crcTmp;
-}
-
-// CRC extra byte per message type (MAVLink 1.0/2.0)
-static uint8_t get_crc_extra(uint16_t msgid) {
-    switch (msgid) {
-        case 0:   return 50;   // HEARTBEAT
-        case 1:   return 124;  // SYS_STATUS
-        case 11:  return 89;   // SET_MODE
-        case 24:  return 24;   // GPS_RAW_INT
-        case 30:  return 39;   // ATTITUDE
-        case 33:  return 104;  // GLOBAL_POSITION_INT
-        case 36:  return 220;  // SERVO_OUTPUT_RAW
-        case 74:  return 20;   // VFR_HUD
-        case 105: return 202;  // HOME_POSITION (verified)
-        case 253: return 83;   // STATUSTEXT
-        default:  return 0;    // 未知消息类型, CRC 检查将失败
-    }
-}
+#endif
 
 // ================= 消息解码 =================
 
-static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
+static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // HEARTBEAT: custom_mode(4) + type(1) + autopilot(1) + base_mode(1) + system_status(1) + mavlink_version(1) = 9 bytes
     // base_mode bit 7: armed flag
+    bool wasArmed = p.armed;
     p.armed = (payload[6] & 0x80) != 0;
     p.systemStatus = payload[7];
+    p.lastHeartbeatMs = nowMs;
+
+    // Record takeoff point on first armed heartbeat (if we have position data)
+    // This is used as operator position fallback when HOME_POSITION is unavailable
+    if (!wasArmed && p.armed && !p.takeoffValid && p.lastPositionMs > 0) {
+        p.takeoffLat = p.lat;
+        p.takeoffLon = p.lon;
+        p.takeoffAlt = p.altMsl;
+        p.takeoffValid = true;
+    }
 
     #if CONFIG_RID_VERBOSE_LOG
     ESP_LOGI(TAG, "HEARTBEAT: type=%d armed=%d status=%d",
@@ -56,37 +35,60 @@ static void decode_heartbeat(MavlinkParser& p, const uint8_t* payload) {
 }
 
 static void decode_gps_raw_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
-    // GPS_RAW_INT: time_usec(8) + fix_type(1) + lat(4) + lon(4) + alt(4) + eph(2) + epv(2) + vel(2) + cog(2) + sats(1) = 30 bytes
-    p.gpsFixType = payload[8];
-    p.lat = (int32_t)(payload[9] | (payload[10] << 8) | (payload[11] << 16) | (payload[12] << 24)) / 1e7f;
-    p.lon = (int32_t)(payload[13] | (payload[14] << 8) | (payload[15] << 16) | (payload[16] << 24)) / 1e7f;
-    p.altMsl = (int32_t)(payload[17] | (payload[18] << 8) | (payload[19] << 16) | (payload[20] << 24)) / 1000.0f;
-    p.gpsEph = (uint16_t)(payload[21] | (payload[22] << 8)) / 100.0f;
-    p.gpsEpv = (uint16_t)(payload[23] | (payload[24] << 8)) / 100.0f;
+    // ArduPilot GPS_RAW_INT layout (ardupilotmega.xml):
+    //   time_usec(8) + lat(4) + lon(4) + alt(4)
+    //   + eph(2) + epv(2) + vel(2) + cog(2) + fix_type(1) + satellites_visible(1) = 30 bytes
+    // 与标准 MAVLink common.xml 不同: fix_type 在偏移 28 而非 8
+    p.gpsFixType = payload[28];
+    p.gpsEph = (uint16_t)(payload[20] | (payload[21] << 8)) / 100.0f;
+    p.gpsEpv = (uint16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
     p.gpsSats = payload[29];
 
     p.lastGpsMs = nowMs;
 
     #if CONFIG_RID_VERBOSE_LOG
-    ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f alt=%.1f sats=%d eph=%.1f",
-             p.gpsFixType, p.lat, p.lon, p.altMsl, p.gpsSats, p.gpsEph);
+    float lat = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
+    float lon = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1e7f;
+    ESP_LOGI(TAG, "GPS: fix=%d lat=%.7f lon=%.7f sats=%d eph=%.1f (raw only, pos from GLOBAL_POSITION_INT)",
+             p.gpsFixType, lat, lon, p.gpsSats, p.gpsEph);
     #endif
 }
 
 static void decode_attitude(MavlinkParser& p, const uint8_t* payload) {
     // ATTITUDE: time_boot_ms(4) + roll(4) + pitch(4) + yaw(4) + rollspeed(4) + pitchspeed(4) + yawspeed(4) = 28 bytes
     // 暂不存储, 可用于诊断
+    (void)p;
+    (void)payload;
 
     #if CONFIG_RID_VERBOSE_LOG
-    float roll = *(const float*)(payload + 4) * 180.0f / M_PI;
-    float pitch = *(const float*)(payload + 8) * 180.0f / M_PI;
-    float yaw = *(const float*)(payload + 12) * 180.0f / M_PI;
+    float roll, pitch, yaw;
+    memcpy(&roll,  payload + 4,  4); roll  *= 180.0f / M_PI;
+    memcpy(&pitch, payload + 8,  4); pitch *= 180.0f / M_PI;
+    memcpy(&yaw,   payload + 12, 4); yaw   *= 180.0f / M_PI;
     ESP_LOGI(TAG, "ATTITUDE: roll=%.1f pitch=%.1f yaw=%.1f deg", roll, pitch, yaw);
     #endif
 }
 
 static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload, uint64_t nowMs) {
     // GLOBAL_POSITION_INT: time_boot_ms(4) + lat(4) + lon(4) + alt(4) + relative_alt(4) + vx(2) + vy(2) + vz(2) + hdg(2) = 28 bytes
+    // Some FC frames are 26-27 bytes (truncated hdg), handled by payloadLen check below
+    uint32_t bootMs = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+
+    // boot_ms 回绕 / 飞控重启检测 (GB 46750-2025 8.2.1.3.3 相邻帧时间戳差 ≤1s):
+    // FC 重启后 boot_ms 从 0 重新计时, 会相对旧值显著减小。此时 unixBootOffsetMs
+    // 仍是旧启动时刻的 Unix 时间, 用它拼出的时间戳会大幅倒退, 违反时间戳一致性 —
+    // 立即作废时间戳, 让编码侧按表3-020 输出未知(0), 直到新 SYSTEM_TIME 重建偏移。
+    if (p.lastPositionBootMs > 0 &&
+        bootMs + MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS < p.lastPositionBootMs) {
+        p.unixTimeValid = false;
+        p.bootRollovers++;
+        #if CONFIG_RID_VERBOSE_LOG
+        ESP_LOGW(TAG, "FC reboot/boot_ms rollover: %lu -> %lu, timestamp invalidated",
+                 (unsigned long)p.lastPositionBootMs, (unsigned long)bootMs);
+        #endif
+    }
+    p.lastPositionBootMs = bootMs;
+
     p.lat = (int32_t)(payload[4] | (payload[5] << 8) | (payload[6] << 16) | (payload[7] << 24)) / 1e7f;
     p.lon = (int32_t)(payload[8] | (payload[9] << 8) | (payload[10] << 16) | (payload[11] << 24)) / 1e7f;
     p.altMsl = (int32_t)(payload[12] | (payload[13] << 8) | (payload[14] << 16) | (payload[15] << 24)) / 1000.0f;
@@ -95,11 +97,17 @@ static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload,
     p.velE = (int16_t)(payload[22] | (payload[23] << 8)) / 100.0f;
     p.velD = (int16_t)(payload[24] | (payload[25] << 8)) / 100.0f;
 
-    uint16_t hdg_raw = payload[26] | (payload[27] << 8);
-    if (hdg_raw != 65535) {
-        p.heading = hdg_raw / 100.0f;
+    if (p.payloadLen >= 28) {
+        uint16_t hdg_raw = payload[26] | (payload[27] << 8);
+        if (hdg_raw != 65535) {
+            p.heading = hdg_raw / 100.0f;
+        } else {
+            p.heading = NAN;
+        }
+    } else if (p.payloadLen == 27) {
+        p.heading = payload[26] / 100.0f;  // single-byte hdg (hi byte=0)
     } else {
-        p.heading = NAN;  // 航向未知
+        p.heading = NAN;  // no hdg data
     }
 
     p.lastPositionMs = nowMs;
@@ -110,15 +118,20 @@ static void decode_global_position_int(MavlinkParser& p, const uint8_t* payload,
     #endif
 }
 
-static void decode_vfr_hud(MavlinkParser& p, const uint8_t* payload) {
+static void decode_vfr_hud(MavlinkParser& p, const uint8_t* payload, uint8_t payloadLen) {
     // VFR_HUD: airspeed(4) + groundspeed(4) + alt(4) + climb(4) + heading(2) + throttle(2) = 20 bytes
+    // 真实飞控发送 16-19 字节截断帧: groundspeed/climb 在 16 字节内均有效
     memcpy(&p.groundspeed, payload + 4, 4);
     memcpy(&p.climbRate, payload + 12, 4);
 
     // heading 是 int16, 如果为 -1 表示未知
-    int16_t hdg = (int16_t)(payload[16] | (payload[17] << 8));
-    if (hdg >= 0) {
-        p.heading = (float)hdg;
+    // 短帧 (<18B) 不含 heading 字节, 跳过避免越界读到 CRC 字节
+    int16_t hdg = -1;
+    if (payloadLen >= 18) {
+        hdg = (int16_t)(payload[16] | (payload[17] << 8));
+        if (hdg >= 0) {
+            p.heading = (float)hdg;
+        }
     }
     // 如果 GLOBAL_POSITION_INT 已有航向, 不覆盖
 
@@ -140,15 +153,50 @@ static void decode_home_position(MavlinkParser& p, const uint8_t* payload) {
     #endif
 }
 
+static void decode_system_time(MavlinkParser& p, const uint8_t* payload, uint8_t payloadLen, uint64_t nowMs) {
+    uint64_t unixUsec;
+    memcpy(&unixUsec, payload, 8);
+    uint32_t bootMs;
+    if (payloadLen >= 12) {
+        memcpy(&bootMs, payload + 8, 4);
+    } else {
+        // 11-byte variant (真实飞控): unix_usec(8) + boot_ms 仅保留低 3 字节
+        bootMs = (uint32_t)payload[8] | ((uint32_t)payload[9] << 8) | ((uint32_t)payload[10] << 16);
+    }
+
+    p.unixBootOffsetMs = (int64_t)(unixUsec / 1000ULL) - (int64_t)bootMs;
+    p.unixTimeValid = true;
+    p.lastSystemTimeMs = nowMs;
+    // 重新锚定 lastPositionBootMs 到当前 boot 纪元:
+    //  1) 飞控重启后若 SYSTEM_TIME 先于 GLOBAL_POSITION_INT 到达, 此处把基线更新到新纪元,
+    //     避免后续位置帧被误判为回绕 (回绕检测的假阳性);
+    //  2) 在新位置帧到来前, fillFlightData 用 SYSTEM_TIME 自身的 boot_ms 拼时间戳,
+    //     结果等于 SYSTEM_TIME 的 Unix 时刻, 而不是旧的巨值 boot_ms (杜绝垃圾时间戳)。
+    p.lastPositionBootMs = bootMs;
+
+    #if CONFIG_RID_VERBOSE_LOG
+    ESP_LOGI(TAG, "SYSTEM_TIME: unix=%llu ms, boot=%lu ms, offset=%lld ms",
+             (unsigned long long)(unixUsec / 1000ULL), (unsigned long)bootMs,
+             (long long)p.unixBootOffsetMs);
+    #endif
+}
+
 // ================= 帧处理 =================
 
 static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
-    uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
-    const uint8_t* payload = p.buffer + MAVLINK_V2_HEADER_LEN;
+    uint16_t msgid;
+    const uint8_t* payload;
+    if (p.isV2) {
+        msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+        payload = p.buffer + MAVLINK_V2_HEADER_LEN;
+    } else {
+        msgid = p.buffer[5];  // v1: single-byte msgid
+        payload = p.buffer + MAVLINK_V1_HEADER_LEN;
+    }
 
     switch (msgid) {
         case MAVLINK_MSG_HEARTBEAT:
-            if (p.payloadLen >= 9) decode_heartbeat(p, payload);
+            if (p.payloadLen >= 9) decode_heartbeat(p, payload, nowMs);
             break;
         case MAVLINK_MSG_GPS_RAW_INT:
             if (p.payloadLen >= 30) decode_gps_raw_int(p, payload, nowMs);
@@ -157,13 +205,16 @@ static void handle_frame(MavlinkParser& p, uint64_t nowMs) {
             if (p.payloadLen >= 28) decode_attitude(p, payload);
             break;
         case MAVLINK_MSG_GLOBAL_POSITION_INT:
-            if (p.payloadLen >= 28) decode_global_position_int(p, payload, nowMs);
+            if (p.payloadLen >= 26) decode_global_position_int(p, payload, nowMs);
             break;
         case MAVLINK_MSG_VFR_HUD:
-            if (p.payloadLen >= 20) decode_vfr_hud(p, payload);
+            if (p.payloadLen >= 16) decode_vfr_hud(p, payload, p.payloadLen);
             break;
         case MAVLINK_MSG_HOME_POSITION:
             if (p.payloadLen >= 12) decode_home_position(p, payload);
+            break;
+        case MAVLINK_MSG_SYSTEM_TIME:
+            if (p.payloadLen >= 11) decode_system_time(p, payload, p.payloadLen, nowMs);
             break;
         default:
             #if CONFIG_RID_VERBOSE_LOG
@@ -179,6 +230,14 @@ void mavlink_init(MavlinkParser& p) {
     memset(&p, 0, sizeof(p));
     p.state = PARSE_STATE_IDLE;
     p.heading = NAN;
+    p.consecutiveCrcErrors = 0;
+    p.lastValidFrameMs = 0;
+    p.unixBootOffsetMs = 0;
+    p.unixTimeValid = false;
+    p.lastSystemTimeMs = 0;
+    p.lastPositionBootMs = 0;
+    p.bootRollovers = 0;
+    p.takeoffValid = false;  // takeoff point not recorded yet
 }
 
 bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
@@ -187,126 +246,210 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
             if (byte == MAVLINK_V2_MAGIC) {
                 p.buffer[0] = byte;
                 p.bufferIdx = 1;
+                p.isV2 = true;
+                p.state = PARSE_STATE_HEADER;
+                // 预填充 v2 不同字段的偏移: INCOMPAT=0, COMPAT=0
+                // 后续 header 字节会覆盖实际值
+            } else if (byte == MAVLINK_V1_MAGIC) {
+                p.buffer[0] = byte;
+                p.bufferIdx = 1;
+                p.isV2 = false;
                 p.state = PARSE_STATE_HEADER;
             }
             break;
 
-        case PARSE_STATE_HEADER:
+        case PARSE_STATE_HEADER: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
             p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN) {
-                // 帧头接收完成, 解析 payload 长度
+            if (p.bufferIdx >= headerLen) {
                 p.payloadLen = p.buffer[1];
-                p.expectedLen = MAVLINK_V2_HEADER_LEN + p.payloadLen + MAVLINK_V2_CRC_LEN;
+                if (p.payloadLen > (p.isV2 ? MAVLINK_V2_MAX_PAYLOAD : MAVLINK_V1_MAX_PAYLOAD)) {
+                    // payload 长度非法，丢弃
+                    p.parseErrors++;
+                    p.state = PARSE_STATE_IDLE;
+                    break;
+                }
+                // v2 签名帧: INCOMPAT 标志位 bit0 → CRC 后追加 13 字节签名
+                p.isSigned = p.isV2 && ((p.buffer[2] & MAVLINK_IFLAG_SIGNED) != 0);
+                p.expectedLen = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN
+                                + (p.isSigned ? MAVLINK_V2_SIG_LEN : 0);
                 p.state = PARSE_STATE_PAYLOAD;
             }
             break;
+        }
 
-        case PARSE_STATE_PAYLOAD:
+        case PARSE_STATE_PAYLOAD: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
             p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= MAVLINK_V2_HEADER_LEN + p.payloadLen) {
+            if (p.bufferIdx >= headerLen + p.payloadLen) {
                 p.state = PARSE_STATE_CRC;
             }
             break;
+        }
 
-        case PARSE_STATE_CRC:
+        case PARSE_STATE_CRC: {
+            uint8_t headerLen = p.isV2 ? MAVLINK_V2_HEADER_LEN : MAVLINK_V1_HEADER_LEN;
+            // CRC 紧跟在 payload 之后 (2 字节); 签名帧的 13 字节签名在 CRC 之后
+            uint16_t crcEnd = headerLen + p.payloadLen + MAVLINK_V2_CRC_LEN;
+
             p.buffer[p.bufferIdx++] = byte;
-            if (p.bufferIdx >= p.expectedLen) {
-                // 完整帧接收, 验证 CRC
-                uint16_t crcReceived = p.buffer[p.expectedLen - 2] |
-                                    (p.buffer[p.expectedLen - 1] << 8);
 
-                // CRC 计算范围: LEN(1) 到 payload 末尾 (不含 STX 和 CRC)
-                uint16_t crcLen = p.expectedLen - 1 - MAVLINK_V2_CRC_LEN;  // 从 LEN 到 payload 结束
-                uint16_t crcCalc = crc_calculate(p.buffer + 1, crcLen);
+            // 签名帧非阻塞 (P1-6): CRC 字节一收齐就立即校验, 不等待 13 字节签名尾部。
+            // 签名可能因流中断/噪声/飞控实际不发送而永远不来 — 旧逻辑要等 expectedLen
+            // (含签名) 才校验 CRC, 期间解析器卡在 CRC 状态, 且截断签名会让 CRC 校验
+            // 在错误时机读取垃圾字节。这里把签名视为"可选尾部", 无需校验, 只消费丢弃。
+            if (p.bufferIdx < crcEnd) {
+                break;  // CRC 字节未收齐
+            }
+
+            if (p.bufferIdx == crcEnd) {
+                // --- CRC 字节刚收齐: 立即校验 ---
+                uint16_t crcReceived = p.buffer[crcEnd - 2] |
+                                       ((uint16_t)p.buffer[crcEnd - 1] << 8);
+
+                // CRC 计算范围: 从 LEN(byte 1) 到 payload 末尾 (不含 STX、CRC 和签名)
+                // 参考实现 (mavlink/c_library_v2) 确认: 签名帧的 CRC 同样不含 link_id
+                uint16_t crcDataLen = headerLen - 1 + p.payloadLen;
+                uint16_t crcCalc = mavlink_crc_calculate(p.buffer + 1, crcDataLen);
 
                 // 加上 CRC extra byte
-                uint16_t msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
-                uint8_t crcExtra = get_crc_extra(msgid);
-                crcCalc = crc_accumulate(crcExtra, crcCalc);
+                uint16_t msgid;
+                if (p.isV2) {
+                    msgid = p.buffer[7] | (p.buffer[8] << 8) | (p.buffer[9] << 16);
+                } else {
+                    msgid = p.buffer[5];
+                }
+                uint8_t crcExtra = mavlink_crc_extra(msgid);
+
+                if (crcExtra == 0) {
+                    // 未知 msgid: 无 CRC extra byte，无法校验。
+                    // 合法但不支持的帧不应计入 CRC 错误，否则会触发假"CRC 风暴"恢复
+                    p.state = PARSE_STATE_IDLE;
+                    break;
+                }
+
+                crcCalc = mavlink_crc_accumulate(crcExtra, crcCalc);
 
                 if (crcCalc == crcReceived) {
                     p.totalFrames++;
+                    if (p.isV2) p.totalV2Frames++;
+                    else p.totalV1Frames++;
+                    p.consecutiveCrcErrors = 0;
+                    p.lastValidFrameMs = nowMs;
                     handle_frame(p, nowMs);
-                    p.state = PARSE_STATE_IDLE;
+                    if (!p.isSigned) {
+                        p.state = PARSE_STATE_IDLE;
+                        return true;
+                    }
+                    // 签名帧: CRC 已通过, 帧有效。签名不校验, 仅消费 13 字节
+                    // (由下面 bufferIdx >= expectedLen 复位), 本帧先返回成功。
                     return true;
                 } else {
                     p.crcErrors++;
+                    p.consecutiveCrcErrors++;
                     #if CONFIG_RID_VERBOSE_LOG
-                    ESP_LOGW(TAG, "CRC fail: msgid=%d recv=0x%04X calc=0x%04X",
-                             msgid, crcReceived, crcCalc);
+                    ESP_LOGW(TAG, "CRC fail: %s msgid=%d recv=0x%04X calc=0x%04X",
+                             p.isV2 ? "v2" : "v1", msgid, crcReceived, crcCalc);
                     #endif
-                    p.state = PARSE_STATE_IDLE;  // 丢弃, 重新等待
+                    // 立即复位, 不等签名尾部
+                    p.state = PARSE_STATE_IDLE;
                 }
+            } else if (p.bufferIdx >= p.expectedLen) {
+                // 签名帧: 13 字节签名尾部消费完毕 — 复位, 开始下一帧
+                p.state = PARSE_STATE_IDLE;
             }
             break;
+        }
     }
     return false;
 }
 
 bool mavlink_fillFlightData(const MavlinkParser& p, FlightData& fd, uint64_t nowMs) {
-    // 检查数据有效性
-    if (p.gpsFixType < 2) {
-        // GPS 无定位或 2D, 不输出位置
-        return false;
+    if (p.lastPositionMs == 0) {
+        return false;  // 从未收到 GLOBAL_POSITION_INT
     }
 
-    // 填充位置
     fd.lat = p.lat;
     fd.lon = p.lon;
     fd.geoAlt = p.altMsl;
-    fd.heightAgl = p.altRel;  // 相对高度 (AGL)
-    fd.baroAlt = p.altMsl;    // 简化: 用 MSL 代替气压高度
+    fd.heightAgl = p.altRel;
+    // 不设置 fd.baroAlt — 无真实气压计数据源，直接填 MSL 高度属于数据伪造
 
-    // 填充速度
+    fd.horizAccM = p.gpsEph;
+    fd.vertAccM  = p.gpsEpv;
+
+    // Unix 时间戳: FC boot 时的 Unix 时间 + FC 的位置采样 boot_ms
+    // 使用 FC 的 time_boot_ms (而非 ESP32 的 nowMs) 避免独立复位时时间域错位
+    if (p.unixTimeValid && (nowMs - p.lastSystemTimeMs < 30000)) {
+        fd.unixTimestampMs = (uint64_t)p.unixBootOffsetMs + p.lastPositionBootMs;
+    } else {
+        fd.unixTimestampMs = 0;
+    }
     fd.speed = sqrtf(p.velN * p.velN + p.velE * p.velE);
-    fd.vspeed = -p.velD;  // MAVLink velD 正=向下, 我们定义 正=上升
+    fd.vspeed = -p.velD;
 
     // 填充航向
     if (!isnan(p.heading)) {
         fd.heading = p.heading;
     } else {
-        // 从速度计算航向
         fd.heading = atan2f(p.velE, p.velN) * 180.0f / M_PI;
         if (fd.heading < 0) fd.heading += 360.0f;
     }
 
     // 填充运行状态
+    // MAV_STATE_CRITICAL(5)/EMERGENCY(6) 统一归为 GB 状态 3「紧急状态」;
+    // GB 状态 4/5「识别发送功能失效」仅指模块自身广播功能失效, 不由飞控状态推断
+    // (旧实现把 CRITICAL 错标为 4, 导致飞控链路保护被误报成 RID 失效)
     if (!p.armed) {
         fd.opStatus = STATUS_GROUND;
-    } else if (p.systemStatus == 6) {  // EMERGENCY
+    } else if (p.systemStatus >= 5) {
         fd.opStatus = STATUS_EMERGENCY;
-    } else if (p.systemStatus == 5) {  // CRITICAL
-        fd.opStatus = STATUS_FAIL_SAFE;
     } else {
         fd.opStatus = STATUS_AIRBORNE;
     }
 
-    // 操作员位置: 使用 HOME 位置 (如果有), 否则用当前位置
-    // TODO: 实际应用中, 操作员位置应该来自遥控器的 GPS 或手动设置
+    // 操作员位置
+    // Priority: HOME_POSITION > takeoff point > unknown (Table 3 item 006/007 哨兵值)
+    // OP_LOCATION_TYPE=0 means "takeoff point", so using takeoff point is semantically correct
+    bool opPosValid = true;
     if (p.homeValid) {
         fd.opLat = p.homeLat;
         fd.opLon = p.homeLon;
         fd.opAlt = p.homeAlt;
+    } else if (p.takeoffValid) {
+        fd.opLat = p.takeoffLat;
+        fd.opLon = p.takeoffLon;
+        fd.opAlt = p.takeoffAlt;
     } else {
-        fd.opLat = p.lat;
-        fd.opLon = p.lon;
-        fd.opAlt = p.altMsl;
+        // No home, no takeoff point → 不置 OP_POS/OP_ALT 位，
+        // 编码侧输出表3未知哨兵值 (006 位置 → 0xFFFFFFFF, 007 高度 → 0)
+        fd.opLat = 0.0f;
+        fd.opLon = 0.0f;
+        fd.opAlt = 0.0f;
+        opPosValid = false;
     }
 
-    // 设置有效标志
     fd.validMask = FLD_ALL;
+    if (!opPosValid) {
+        fd.validMask &= ~(FLD_OP_POS | FLD_OP_ALT);
+    }
+    // 无气压计数据源: 不置 BARO_ALT (O 字段) 位，编码侧省略该字段，而非伪造数值
+    fd.validMask &= ~FLD_BARO_ALT;
 
-    // 设置时间戳
-    fd.ts_pos = p.lastPositionMs;
-    fd.ts_geoAlt = nowMs;
-    fd.ts_speed = nowMs;
-    fd.ts_heading = nowMs;
-    fd.ts_opStatus = nowMs;
-    fd.ts_opPos = p.lastPositionMs;
+    fd.ts_pos      = p.lastPositionMs;
+    fd.ts_geoAlt   = p.lastPositionMs;
+    fd.ts_speed    = p.lastPositionMs;
+    fd.ts_heading  = p.lastPositionMs;
+    fd.ts_opStatus = p.lastHeartbeatMs;
+    fd.ts_opPos    = p.lastPositionMs;
 
-    // 数据质量
+    // 数据质量: gpsFixType < 2 表示 GPS 定位精度不足，标记为 STALE 但不阻止输出
     fd.freshness = FRESH_OK;
     fd.validationFlags = 0;
+    if (p.gpsFixType < 2) {
+        fd.freshness = FRESH_STALE;
+        fd.validationFlags |= (1 << 0);  // bit 0: GPS fix 不足
+    }
 
     return true;
 }
@@ -323,11 +466,21 @@ bool mavlink_isDataStale(const MavlinkParser& p, uint64_t nowMs, uint64_t timeou
 
 void mavlink_getStatus(const MavlinkParser& p, char* buf, uint16_t bufLen) {
     snprintf(buf, bufLen,
-             "frames=%lu crc_err=%lu armed=%d status=%d "
+             "frames=%lu(v1=%lu,v2=%lu) crc_err=%lu armed=%d status=%d "
              "fix=%d sats=%d lat=%.6f lon=%.6f alt=%.1f",
              (unsigned long)p.totalFrames,
+             (unsigned long)p.totalV1Frames,
+             (unsigned long)p.totalV2Frames,
              (unsigned long)p.crcErrors,
              p.armed, p.systemStatus,
              p.gpsFixType, p.gpsSats,
              p.lat, p.lon, p.altMsl);
+}
+
+bool mavlink_needsRecovery(const MavlinkParser& p, uint64_t nowMs, uint32_t errorLimit) {
+    (void)nowMs;
+    // 从未收到过有效帧 → 设备可能尚未连接，不触发恢复
+    if (p.lastValidFrameMs == 0) return false;
+    // 连续 CRC 失败超过阈值 → 数据流已损坏，需要恢复
+    return p.consecutiveCrcErrors >= errorLimit;
 }

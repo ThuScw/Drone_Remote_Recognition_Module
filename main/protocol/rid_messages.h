@@ -5,7 +5,9 @@
 
 // GB 46750-2025 Section 5.2.1 数据包头部常量
 #define GB46750_DATA_TYPE   0xFF
-#define GB46750_VERSION     0x01  // V1.0
+// 版本号字节 (GB 46750-2025 表1): 第1~3位固定为"001"(主版本), 第4~8位为次版本 (MSB优先, 与表2数据标识位编号一致)
+// V1.0 = 0b001_00000 = 0x20
+#define GB46750_VERSION     0x20  // V1.0
 
 // 最大数据包长度: 1(type)+1(ver)+1(len)+3(id)+71(content) = 77
 #define GB46750_MAX_PACKET  128
@@ -101,6 +103,9 @@ struct FlightData {
     float opLat, opLon;      // 操作员/遥控站位置
     float opAlt;             // 操作员高度 (m)
 
+    float horizAccM;         // GPS 水平精度 (m, from eph)
+    float vertAccM;          // GPS 垂直精度 (m, from epv)
+
     uint32_t validMask;      // FlightDataField 按位或, 标记哪些字段本周期有效
 
     // 数据新鲜度追踪 (每个字段的时间戳)
@@ -114,12 +119,14 @@ struct FlightData {
     // 数据质量指标
     DataFreshness freshness; // 整体新鲜度 (取最差值)
     uint32_t validationFlags; // 范围验证结果 (每位置位表示无效)
+
+    uint64_t unixTimestampMs; // Unix 纪元毫秒 (0 = 尚未授时)
 };
 
 // --- API ---
 
 // 构建 GB 46750-2025 完整数据包
-// timestampMs: Unix 毫秒时间戳 (Stage 1 使用 esp_timer_get_time()/1000, Stage 2 GPS RMC)
+// timestampMs: Unix 毫秒时间戳
 void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
                           const char* uasId, const char* realNameId,
                           uint8_t opCategory, uint8_t uaClass,
@@ -145,5 +152,16 @@ bool gb46750_validateFlightData(const FlightData& fd, uint32_t& validationFlags)
 // 检查数据新鲜度 (基于时间戳)
 // 返回整体新鲜度等级 (取最差值)
 DataFreshness gb46750_checkFreshness(const FlightData& fd, uint64_t nowMs, uint64_t thresholdMs);
+
+// 过期字段老化 — 清除超过阈值未更新的 M 字段 validMask 位
+// 使编码侧按表3"未知或不可用"哨兵值编码 (位置→0xFFFFFFFF, 航迹/速度→0xFFFF, 高度→0)
+// 依据 GB 46750-2025 表3: 位置等字段"未知或不可用"应取哨兵值，而非广播过期的旧坐标。
+// 注意: 不老化 opStatus/opPos (状态机与起飞点语义，保留上次已知状态)。
+// 位置过期时 unixTimestampMs 一并置未知(0) (表3-020 哨兵，时间戳与位置帧同源)。
+void gb46750_expireStaleFields(FlightData& fd, uint64_t nowMs, uint64_t thresholdMs);
+
+// GPS 精度 (m) → GB 46750-2025 精度枚举值。返回 0 = unknown
+uint8_t gb46750_mapHorizAcc(float ephM);
+uint8_t gb46750_mapVertAcc(float epvM);
 
 #endif // RID_MESSAGES_H

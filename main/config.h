@@ -9,11 +9,11 @@
 // 结构: 厂商识别码(4) + 产品型号代码(4) + 序列号(12) = 20字符 ASCII
 // 字符范围: 0-9 及除 O/I 外的大写字母 A-Z
 // 产品化时替换为 UOM 平台备案的真实编码
-#define UAS_ID "CPNYMDL001234567890A"
+#define UAS_ID "CNGBLSDR2026AP240167"
 
 // 实名登记标志 (GB 46750-2025 Table 3-002)
 // 在 UOM 实名登记系统获取的登记号码后 8 位字符，ASCII 编码，未填写时以 NULL 填充
-#define REALNAME_ID "00000000"
+#define REALNAME_ID "99498179"
 
 // 运行类别 (GB 46750-2025 Table 3-003)
 // 0=未定义, 1=开放类, 2=特定类, 3=审定类
@@ -34,21 +34,29 @@
 #define COORD_SYS 0
 
 // 精度取值 (GB 46750-2025 Table 3-017/018/019)
+// 广播时精度由 GPS eph/epv 实时映射（不可用如实上报 unknown=0），以下仅供 BLE 自检包使用
 #define HORIZ_ACC 10  // <10m
 #define VERT_ACC  5   // <3m
 #define SPEED_ACC 3   // <1m/s
 
-// 时间戳精度 (GB 46750-2025 Table 3-021)
+// 时间戳精度 (GB 46750-2025 Table 3-021) — GPS 授时后的动态值; 未授时设为 0 (未知)
 #define TS_ACC 5  // ≤0.1s
 
 // 广播间隔 (毫秒) — 完整包发送周期
 // GB 46750 5.1.3: 更新和发送间隔 ≤ 1s
-#define BROADCAST_INTERVAL_MS 800
+#define BROADCAST_INTERVAL_MS 400
 
 // BLE 底层广播间隔 (毫秒) — 影响功耗和被发现概率
 // 值越小广播越密集 (功耗越高), 值越大越省电 (但接收方发现延迟增加)
 // 根据 GB 46750 5.1.3, 每秒至少发送 1 次, 间隔 ≤ 1000ms
 #define BLE_ADV_INTERVAL_MS 100
+
+// BLE 发射功率 (ESP32-S3)
+// GB 46750-2025 6.1.3: 轻型无人机 EIRP ≥ 4 dBm (360°) 或 ≥ 6 dBm (平均)
+// ESP32-S3 最大 +9 dBm (ESP_PWR_LVL_P9), 加 PCB 天线 ~2 dBi → EIRP ≈ 11 dBm
+// 可选用: ESP_PWR_LVL_P3(+3), ESP_PWR_LVL_P6(+6), ESP_PWR_LVL_P9(+9)
+#include <esp_bt.h>
+#define BLE_TX_POWER_LEVEL ESP_PWR_LVL_P9
 
 // 数据更新间隔 (毫秒) — 飞行数据刷新频率
 // 独立于广播间隔，避免广播分片被打断
@@ -65,49 +73,18 @@
 // 任务看门狗超时 (毫秒) — 主循环卡死超过此时长触发系统复位
 #define WATCHDOG_TIMEOUT_MS 5000
 
-// ================= 模拟飞行数据 =================
-// Stage 1: 模拟飞行循环验证广播链路
-// Stage 2: 替换为 UART 飞控/GPS 真实数据 — 仅需实现 FlightData 填充
-
-// 起飞点 (上海, WGS-84)
-#define MOCK_LATITUDE       31.230416f
-#define MOCK_LONGITUDE     121.473701f
-#define MOCK_GEO_BASE_ALT  120.5f       // 地面大地高度 (m)
-
-// 遥控站/操作员位置 (固定)
-#define MOCK_OP_LAT         31.230500f
-#define MOCK_OP_LON        121.473800f
-#define MOCK_OP_ALT         10.0f
-
-// 仿真阶段时长 (毫秒)
-#define SIM_GROUND_WAIT_MS   5000       // 地面等待
-#define SIM_TAKEOFF_MS      10000       // 起飞爬升
-#define SIM_CRUISE_MS       40000       // 巡航飞行
-#define SIM_LANDING_MS      10000       // 降落
-
-// 巡航参数
-#define SIM_CRUISE_ALT      50.0f       // 巡航高度 AGL (m)
-#define SIM_CRUISE_SPEED    15.0f       // 巡航地速 (m/s)
-
 // ================= 日志配置 =================
 
 // 设为 1 开启详细日志 (hex dump, TX 详情, 调试信息)
 // 量产固件应设为 0
 #define CONFIG_RID_VERBOSE_LOG 0
 
-// ================= GPIO 引脚分配 =================
-
-// 飞控联锁引脚 (GB 46750-2025, 5.1.7a)
-// 自检通过 → 拉高（飞控允许起飞），异常 → 拉低（飞控禁止起飞/执行处置）
-// 飞控端需将此引脚配置为输入，低电平时拒绝解锁
-// GPIO6 = MTMS (JTAG)，量产固件中 JTAG 已禁用，可安全使用
-#define INTERLOCK_RID_OK_GPIO  GPIO_NUM_6
-#define INTERLOCK_ACTIVE_LEVEL 1  // 1=高电平有效, 0=低电平有效
+// ================= GPIO 引脚分配 (ESP32-S3) =================
 
 // 状态指示灯 (GB 46750-2025, 5.1.5)
-// ESP32-C5-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO27，通过 RMT 外设驱动
+// ESP32-S3-DevKitC-1 板载 WS2812B RGB LED，连接至 GPIO48，通过 RMT 外设驱动
 // 绿色慢闪=待机, 蓝色快闪=广播中, 红色常亮=故障
-#define STATUS_LED_GPIO        GPIO_NUM_27
+#define STATUS_LED_GPIO        GPIO_NUM_48
 #define STATUS_LED_NUM_LEDS    1
 
 // ================= 飞行数据存储配置 (GB 46750-2025, 5.1.8) =================
@@ -127,30 +104,39 @@
 #define FLIGHT_LOG_QUEUE_DEPTH      16     // 队列深度 (160s 缓冲 @ 10s 间隔)
 #define FLIGHT_LOG_WRITE_TIMEOUT_MS 100    // 队列满时等待超时 (ms)
 
-// ================= UART 飞控数据接口 (Stage 2) =================
+// ================= USB Host 飞控数据接口 (ESP32-S3) =================
 
-// UART 端口选择
-// UART0: 通常用于 USB 串口调试 (USB-C 口)
-// UART1: 可用 GPIO, 用于连接飞控 TELEM1 端口
-// 注意: UART_NUM_1 等常量来自 driver/uart.h, 在 cpp 文件中使用
-#define FC_UART_PORT_NUM      1   // UART1
+// USB Host CDC-ACM 配置
+// 通过 USB OTG 口 (GPIO19/20) 读取飞控 MAVLink 数据
+// 注意: ESP32-S3 的 USB OTG 引脚是固定的 GPIO19 (D-) 和 GPIO20 (D+)
 
-// UART1 引脚分配 (ESP32-C5)
-// 注意: GPIO4 是推荐的 UART1_RX 引脚, 无特殊功能冲突
-// 飞控 TELEM1 TX → ESP32-C5 GPIO4 (UART1_RX)
-// 飞控 TELEM1 GND → ESP32-C5 GND
-// 只需接收, 不发送, 所以 TX 引脚不需要配置
-#define FC_UART_RX_GPIO     GPIO_NUM_4
-#define FC_UART_TX_GPIO     -1    // 不使用, 飞控→RID 单向通信 (在代码中转换为 UART_PIN_NO_CHANGE)
+// USB Host 设备指定
+// 必须设置正确的 VID 和 PID（十六进制），不支持 VID=0 自动检测
+// 如需自动检测（即插即用），需要另行实现 USB 设备枚举逻辑
+//
+// 常见飞控 VID/PID 参考:
+//   - Pixhawk/Cube (ArduPilot): 0x1209 / 0x5740
+//   - PX4: 0x26AC / 0x0011
+//   - Betaflight: 0x0483 / 0x5740
+//   - 通用 CDC-ACM: 0x303A / 0x4001
+//   - CH340 芯片: 0x1A86 / 0x7523
+//   - CP2102 芯片: 0x10C4 / 0xEA60
 
-// UART 参数
-// ArduPilot 默认 TELEM1 波特率为 57600, 但用户环境使用 115200
-// 根据实际飞控配置调整
-#define FC_UART_BAUD_RATE   115200
+// 用户无人机飞控的 VID/PID (已确认所有同型号无人机一致)
+// VID = 0x1B8C, PID = 0x0036
+// 通过设备管理器硬件 ID 确认: USB\VID_1B8C&PID_0036&REV_0101
+#define FC_USB_VID          0x1B8C
+#define FC_USB_PID          0x0036
 
-// UART 接收缓冲区
-#define FC_UART_RX_BUF_SIZE 1024   // 接收缓冲区 (bytes)
-#define FC_UART_TX_BUF_SIZE 0      // 不发送, 设为 0
+// USB CDC-ACM 参数 (需与飞控 USB 配置一致)
+#define FC_USB_BAUD_RATE    115200
+#define FC_USB_DATA_BITS    8
+#define FC_USB_PARITY       0   // 0=None, 1=Odd, 2=Even
+#define FC_USB_STOP_BITS    1
+
+// USB Host 任务配置
+#define USB_HOST_TASK_STACK     4096
+#define USB_HOST_TASK_PRIO      10  // 较高优先级, 确保及时处理 USB 事件
 
 // MAVLink 解析配置
 #define MAVLINK_MAX_PAYLOAD_LEN  255   // MAVLink v2 最大 payload
@@ -159,5 +145,13 @@
 // 数据超时配置
 // 如果超过此时间未收到有效位置数据, 标记为 STALE
 #define FC_DATA_TIMEOUT_MS     2000
+
+// MAVLink 连续 CRC 失败阈值 — 超过此值触发 USB 恢复
+// 正常运行时约 47% 的帧通过 CRC，但有效帧间最多几十个未知帧
+// 200 个连续失败 ≈ 约 1 秒无任何已知消息类型通过，表明数据流损坏
+#define MAVLINK_CONSECUTIVE_CRC_LIMIT 200
+
+// USB 恢复冷却时间 (毫秒) — 防止反复重连
+#define USB_RECOVERY_COOLDOWN_MS 5000
 
 #endif // CONFIG_H

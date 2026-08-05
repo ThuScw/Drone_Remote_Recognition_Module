@@ -1,40 +1,8 @@
 #include "indicators.h"
 #include <esp_log.h>
 #include <esp_timer.h>
-#include <driver/gpio.h>
 
 static const char* TAG = "IND";
-
-// ======================== RIDInterlock ========================
-
-bool RIDInterlock::init() {
-    gpio_config_t cfg = {};
-    cfg.pin_bit_mask = 1ULL << INTERLOCK_RID_OK_GPIO;
-    cfg.mode         = GPIO_MODE_OUTPUT;
-    cfg.pull_up_en   = GPIO_PULLUP_DISABLE;
-    cfg.pull_down_en = GPIO_PULLDOWN_ENABLE;
-    cfg.intr_type    = GPIO_INTR_DISABLE;
-    esp_err_t rc = gpio_config(&cfg);
-    if (rc != ESP_OK) {
-        ESP_LOGE(TAG, "Interlock GPIO config failed: %d", rc);
-        return false;
-    }
-    disarm();
-    ESP_LOGI(TAG, "Interlock GPIO%d init OK (default: DISARMED)", INTERLOCK_RID_OK_GPIO);
-    return true;
-}
-
-void RIDInterlock::arm() {
-    _armed = true;
-    gpio_set_level(INTERLOCK_RID_OK_GPIO, INTERLOCK_ACTIVE_LEVEL ? 1 : 0);
-    ESP_LOGI(TAG, "Interlock: ARMED — flight controller may take off");
-}
-
-void RIDInterlock::disarm() {
-    _armed = false;
-    gpio_set_level(INTERLOCK_RID_OK_GPIO, INTERLOCK_ACTIVE_LEVEL ? 0 : 1);
-    ESP_LOGW(TAG, "Interlock: DISARMED — flight controller should prevent takeoff");
-}
 
 // ======================== StatusLed (WS2812B via RMT) ========================
 
@@ -76,6 +44,8 @@ void StatusLed::setState(LedState state) {
     }
 }
 
+// setState() and update() are called only from the main loop task.
+// If this ever changes to multi-task or ISR usage, add a spinlock guard.
 void StatusLed::update() {
     if (!_handle) return;
 
@@ -98,6 +68,18 @@ void StatusLed::update() {
                 setOff();
             } else {
                 setColor(0, 0, 255);
+            }
+        }
+        return;
+
+    case LedState::DEGRADED:
+        // 橙色快闪: 300ms 开 / 300ms 关 → ~1.7Hz, 与广播蓝闪/待机绿闪区分
+        if (nowMs - _lastToggleMs >= 300) {
+            _lastToggleMs = nowMs;
+            if (_ledOn) {
+                setOff();
+            } else {
+                setColor(255, 128, 0);
             }
         }
         return;
