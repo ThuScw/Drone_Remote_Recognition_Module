@@ -53,7 +53,7 @@ class BleScanWorker(QThread):
 
         scanner = BleakScanner(detection_callback=self._on_detect, scanning_mode="active")
         await scanner.start()
-        self.sig_log.emit("蓝牙扫描已开始，等待模块广播（目标 UUID 0x0D50 / 名称 ESP32S3_RID）...")
+        self.sig_log.emit("蓝牙扫描已开始，等待模块广播（目标 UUID 0x0D50 / 名称 GBI_RID_001）...")
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(0.05)

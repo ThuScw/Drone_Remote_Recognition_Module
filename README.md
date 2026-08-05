@@ -64,7 +64,7 @@ tools/
                                                           ┌─────────┼──────────┬──────────┐
                                                           ▼         ▼          ▼          ▼
                                                    validateData  buildPacket  broadcast  flightLog
-                                                    (范围检查)   (M=0,O=条件)  (800ms)   (10s间隔)
+                                                    (范围检查)   (M=0,O=条件)  (400ms)   (10s间隔)
 
 PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ flightLog.readRecord() ──→ CSV 文件
 ```
@@ -167,7 +167,7 @@ idf.py -p <COM口> flash monitor
 #define UA_CLASS 1                     // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
 #define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点,1=遥控站位置
 #define COORD_SYS 0                    // 坐标系：0=WGS-84,1=CGCS2000
-#define BROADCAST_INTERVAL_MS 800      // 数据包广播间隔（GB 46750 要求 ≤1s）
+#define BROADCAST_INTERVAL_MS 400      // 数据包广播间隔（GB 46750 要求 ≤1s）
 #define FLIGHT_LOG_INTERVAL_S 10       // 飞行日志记录间隔（GB 46750 要求 ≤10s）
 #define FLIGHT_LOG_PARTITION "flight_log"  // Flash 分区（见 partitions.csv）
 #define STATUS_LED_GPIO GPIO_NUM_48    // WS2812B RGB LED（RMT 驱动）
@@ -248,7 +248,7 @@ GB 46750-2025 5.1.7 要求运行识别发送模块与飞行控制功能模块互
 
 也可用通用抓包工具 **nRF Connect**（Nordic Semiconductor）手动查看：
 
-- 设备名：`ESP32S3_RID`
+- 设备名：`GBI_RID_001`
 - Service UUID：`0x0D50`（ASTM F3411 RID Service）
 - Service Data 中为 GB 46750-2025 编码的数据包（可复制完整 Raw 广播帧，贴进 RID 检测 APP 的「粘贴解码」做单包解析）
 

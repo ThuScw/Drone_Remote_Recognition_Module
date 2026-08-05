@@ -3,7 +3,7 @@
 The firmware (`main/broadcaster/ble_rid_broadcaster.cpp`) puts the serialized
 GB 46750 packet inside the advertisement as **Service Data (AD type 0x16)
 under the 16-bit UUID 0x0D50**, plus AD Flags and the local name
-"ESP32S3_RID". Broadcasting uses BLE 5 extended advertising (1M primary PHY).
+"GBI_RID_001". Broadcasting uses BLE 5 extended advertising (1M primary PHY).
 
 Packet extraction tries, in order:
   1. `advertisement_data.service_data` (bleak-normalized dict)
@@ -16,7 +16,7 @@ import struct
 from typing import Any
 
 SERVICE_UUID_16BIT = 0x0D50
-EXPECTED_NAME = "ESP32S3_RID"
+EXPECTED_NAME = "GBI_RID_001"
 
 
 def _match_uuid(key: str | int) -> bool:

@@ -65,7 +65,7 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM");
 
     // --- Subsystems ---
-    if (!broadcaster.begin("ESP32S3_RID")) {
+    if (!broadcaster.begin("GBI_RID_001")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }

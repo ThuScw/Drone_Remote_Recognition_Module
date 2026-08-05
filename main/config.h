@@ -44,7 +44,7 @@
 
 // 广播间隔 (毫秒) — 完整包发送周期
 // GB 46750 5.1.3: 更新和发送间隔 ≤ 1s
-#define BROADCAST_INTERVAL_MS 800
+#define BROADCAST_INTERVAL_MS 400
 
 // BLE 底层广播间隔 (毫秒) — 影响功耗和被发现概率
 // 值越小广播越密集 (功耗越高), 值越大越省电 (但接收方发现延迟增加)

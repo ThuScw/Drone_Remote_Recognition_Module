@@ -49,7 +49,7 @@ def test_extract_from_raw_ad_bytes():
     raw = build_packet()
     ad = (
         _ad_struct(0x01, b"\x06")
-        + _ad_struct(0x09, b"ESP32S3_RID")
+        + _ad_struct(0x09, b"GBI_RID_001")
         + _ad_struct(0x16, UUID_LE + raw)
     )
     assert extract_packet(_fake_adv(data=ad)) == raw
@@ -60,7 +60,7 @@ def test_extract_from_winrt_platform_data():
     raw = build_packet()
     ad = (
         _ad_struct(0x01, b"\x06")
-        + _ad_struct(0x09, b"ESP32S3_RID")
+        + _ad_struct(0x09, b"GBI_RID_001")
         + _ad_struct(0x16, UUID_LE + raw)
     )
     assert extract_packet(_fake_adv(platform_data=("sender", ad))) == raw
@@ -76,7 +76,7 @@ def test_extract_from_fragmented_raw_ad():
 
 
 def test_is_target_by_name_and_uuid():
-    assert is_target("ESP32S3_RID", _fake_adv())
+    assert is_target("GBI_RID_001", _fake_adv())
     assert is_target("", _fake_adv(uuids=["00000d50-0000-1000-8000-00805f9b34fb"]))
     assert is_target("", _fake_adv(sd={"0d50": build_packet()}))
     assert not is_target("OTHER_DEV", _fake_adv(uuids=["0000aaaa-0000-1000-8000-00805f9b34fb"]))
