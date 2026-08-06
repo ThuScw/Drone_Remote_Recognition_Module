@@ -60,7 +60,7 @@
 
 // 数据更新间隔 (毫秒) — 飞行数据刷新频率
 // 独立于广播间隔，避免广播分片被打断
-#define DATA_UPDATE_INTERVAL_MS 1000
+#define DATA_UPDATE_INTERVAL_MS 400
 
 // 数据新鲜度阈值 (毫秒) — 超过此时间未更新的数据标记为"过期"
 // GB 46750-2025 要求实时性，超过 2s 的数据视为不可靠
@@ -122,8 +122,7 @@
 //   - CH340 芯片: 0x1A86 / 0x7523
 //   - CP2102 芯片: 0x10C4 / 0xEA60
 
-// 用户无人机飞控的 VID/PID (已确认所有同型号无人机一致)
-// VID = 0x1B8C, PID = 0x0036
+// GBI无人机VID = 0x1B8C, PID = 0x0036
 // 通过设备管理器硬件 ID 确认: USB\VID_1B8C&PID_0036&REV_0101
 #define FC_USB_VID          0x1B8C
 #define FC_USB_PID          0x0036
@@ -147,7 +146,6 @@
 #define FC_DATA_TIMEOUT_MS     2000
 
 // MAVLink 连续 CRC 失败阈值 — 超过此值触发 USB 恢复
-// 正常运行时约 47% 的帧通过 CRC，但有效帧间最多几十个未知帧
 // 200 个连续失败 ≈ 约 1 秒无任何已知消息类型通过，表明数据流损坏
 #define MAVLINK_CONSECUTIVE_CRC_LIMIT 200
 
