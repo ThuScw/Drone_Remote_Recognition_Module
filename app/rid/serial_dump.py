@@ -3,11 +3,20 @@
 Protocol (firmware: main/console/console_cmd.cpp):
   PC → ESP32:  "DUMP\\r\\n"
   ESP32 → PC:  "+OK <N>\\r\\n"  (N = available records) or "+EMPTY\\r\\n"
-  ESP32 → PC:  <N × 96 binary bytes>
+  ESP32 → PC:  <N × 128 binary bytes>
   ESP32 → PC:  "+DONE\\r\\n"
 
-Each 96-byte record stores one serialized GB 46750 packet, so records are
+Each 128-byte record stores one serialized GB 46750 packet, so records are
 decoded with the same decoder as live BLE packets.
+
+Record layout (S3-v5.6.5+, was 96 B before the 128 B sector-aligned format):
+  [0..3]   Magic "RIDL" LE
+  [4..5]   CRC16 LE  (over bytes 6..127)
+  [6..13]  Timestamp uint64 LE (ms)
+  [14..15] DataLen uint16 LE
+  [16..95] Payload (80 bytes, zero-padded)
+  [96..127] Reserved (zero-filled) — pads records to 128 B so 32 of them fill a
+            4096 B flash sector exactly, eliminating cross-sector corruption.
 """
 from __future__ import annotations
 
@@ -20,7 +29,7 @@ from typing import Callable
 from .decoder import decode_gb_packet
 from .models import DecodedPacket
 
-RECORD_SIZE = 96
+RECORD_SIZE = 128
 PAYLOAD_OFFSET = 16
 MAX_PAYLOAD = 80
 BAUDRATE = 115200

@@ -7,7 +7,7 @@ PC-side tool to extract flight data from the ESP32-S3 RID module over UART.
 Protocol:
   PC → ESP32:  "DUMP\r\n"
   ESP32 → PC:  "+OK <N>\r\n"  (N = available records) or "+EMPTY\r\n"
-  ESP32 → PC:  <N × 96 binary bytes>
+  ESP32 → PC:  <N × 128 binary bytes>
   ESP32 → PC:  "+DONE\r\n"
 
 Output: CSV file with all 21 GB 46750-2025 fields decoded.
@@ -32,15 +32,16 @@ except ImportError:
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Record layout (96 bytes on ESP32-S3 Flash)
+# Record layout (128 bytes on ESP32-S3 Flash; was 96 before the sector-aligned format)
 #   [0..3]   Magic "RIDL" LE
-#   [4..5]   CRC16-CCITT over bytes 6..95
+#   [4..5]   CRC16-CCITT over bytes 6..127
 #   [6..13]  Timestamp uint64 LE (ms)
 #   [14..15] DataLen uint16 LE
 #   [16..95] GB46750 payload (≤80 bytes, zero-padded)
+#   [96..127] Reserved (zero-filled) — 32 records fill a 4096B sector exactly
 # ---------------------------------------------------------------------------
 
-RECORD_SIZE = 96
+RECORD_SIZE = 128
 PAYLOAD_OFFSET = 16
 MAX_PAYLOAD = 80
 
@@ -65,17 +66,17 @@ def crc16_ccitt(data: bytes) -> int:
 
 
 def verify_record(buf: bytes) -> bool:
-    """Check magic and CRC of a 96-byte record."""
+    """Check magic and CRC of a record."""
     magic = struct.unpack_from('<I', buf, 0)[0]
     if magic != 0x5249444C:  # "RIDL"
         return False
     stored_crc = struct.unpack_from('<H', buf, 4)[0]
-    calc_crc = crc16_ccitt(buf[6:96])
+    calc_crc = crc16_ccitt(buf[6:RECORD_SIZE])
     return stored_crc == calc_crc
 
 
 def parse_record(buf: bytes):
-    """Parse a 96-byte record into (timestamp_ms, data_len, payload_bytes)."""
+    """Parse a record into (timestamp_ms, data_len, payload_bytes)."""
     ts = struct.unpack_from('<Q', buf, 6)[0]
     data_len = buf[14] | (buf[15] << 8)
     if data_len > MAX_PAYLOAD:

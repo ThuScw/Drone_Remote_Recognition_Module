@@ -64,22 +64,24 @@ static uint16_t encodeRelHeight(float h) {
 
 // 航迹角: uint16 LE, val * 10, 范围 0~3599, 分辨率 0.1°
 // NaN/Inf → 0xFFFF (未知)。解析器在无航向时置 NAN, 若不加保护会被强转为垃圾值
+// GB 46750-2025 表3-009: "取值为实际值×10 … 向下取整" — 正数强转 uint16 即向下取整
 static uint16_t encodeHeading(float deg) {
     if (!isfinite(deg)) return 0xFFFF;
     if (deg < 0.0f)      deg = 0.0f;
     if (deg >= 360.0f)   deg = 359.9f;
-    uint16_t val = (uint16_t)(deg * 10.0f + 0.5f);
+    uint16_t val = (uint16_t)(deg * 10.0f);
     if (val > 3599)      val = 3599;
     return val;
 }
 
 // 地速: uint16 LE, val * 10, 分辨率 0.1 m/s
 // NaN/Inf → 0xFFFF (未知)
+// GB 46750-2025 表3-010: "取值为实际值×10 … 向下取整" — 正数强转 uint16 即向下取整
 static uint16_t encodeSpeed(float mps) {
     if (!isfinite(mps)) return 0xFFFF;
     if (mps < 0.0f)        mps = 0.0f;
     if (mps > 6553.5f)     mps = 6553.5f;
-    return (uint16_t)(mps * 10.0f + 0.5f);
+    return (uint16_t)(mps * 10.0f);
 }
 
 // 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2

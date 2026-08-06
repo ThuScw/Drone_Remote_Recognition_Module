@@ -963,5 +963,39 @@ void test_rid_messages() {
         CHECK_EQ(d.speed, 0xFFFF);
     }
 
+    // ==== 25. 009/010 向下取整 (GB 46750-2025 表3-009/010 "向下取整", 非四舍五入) ----
+    {
+        // 航迹角 12.35°: 向下取整 → 123 (旧实现 +0.5f 四舍五入会是 124)
+        FlightData fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 12.35f, STATUS_GROUND);
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 123);  // floor(12.35*10)=123, round=124
+
+        // 航迹角 12.34°: → 123
+        fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 12.34f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 123);
+
+        // 地速 1.25 m/s: 向下取整 → 12 (旧实现四舍五入会是 13)
+        fd = makeFd(0.0f, 0.0f, 0.0f, 1.25f, 0.0f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 51), 12);  // floor(1.25*10)=12, round=13
+
+        // 地速 1.24 m/s: → 12
+        fd = makeFd(0.0f, 0.0f, 0.0f, 1.24f, 0.0f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 51), 12);
+
+        // 边界保持: 359.9° → 3599 (向下取整 3599 不变)
+        fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 359.9f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 3599);
+    }
+
     printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");
 }

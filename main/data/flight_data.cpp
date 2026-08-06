@@ -105,9 +105,21 @@ void FlightDataSource::onUsbData(const uint8_t* data, size_t data_len, uint64_t 
     for (size_t i = 0; i < data_len; i++) {
         mavlink_parseByte(_parser, data[i], nowMs);
     }
+    // 锁内只读暂存的 CRC 失败详情并清零; 打印 (ESP_LOGW 内部取锁) 移到锁外
+    uint8_t  crcFailPending = _parser.crcFailPending;
+    bool     crcFailIsV2    = _parser.crcFailIsV2;
+    uint32_t crcFailMsgId   = _parser.crcFailMsgId;
+    uint16_t crcFailRecv    = _parser.crcFailRecv;
+    uint16_t crcFailCalc    = _parser.crcFailCalc;
+    _parser.crcFailPending  = 0;
     portEXIT_CRITICAL_SAFE(&_parserMux);
 
 #if CONFIG_RID_VERBOSE_LOG
+    if (crcFailPending) {
+        ESP_LOGW(TAG, "CRC fail: %s msgid=%lu recv=0x%04X calc=0x%04X",
+                 crcFailIsV2 ? "v2" : "v1",
+                 (unsigned long)crcFailMsgId, crcFailRecv, crcFailCalc);
+    }
     if (data_len > 0) {
         ESP_LOGD(TAG, "USB RX: %zu bytes", data_len);
     }
@@ -369,12 +381,19 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
         }
     }
 
-    // --- Critical section: read _parser state atomically ---
+    // --- Critical section: snapshot parser state atomically ---
+    // 锁内只做结构体快照拷贝 (~400B memcpy, 微秒级)。浮点运算 (mavlink_fillFlightData
+    // 内含 sqrtf/atan2f)、snprintf (mavlink_getStatus)、ESP_LOG 全部移到锁外:
+    // ESP32-S3 双核, portENTER_CRITICAL 关本核中断并自旋等待另一核, 锁内做耗时/
+    // 取锁操作 (ESP_LOG 内部也取锁) 有死锁与调度抖动风险。
+    MavlinkParser snap;
     portENTER_CRITICAL_SAFE(&_parserMux);
-    bool needsRecovery = _deviceReady && mavlink_needsRecovery(_parser, nowMs, MAVLINK_CONSECUTIVE_CRC_LIMIT);
-    bool isStale = mavlink_isDataStale(_parser, nowMs, FC_DATA_TIMEOUT_MS);
-    bool hasData = mavlink_fillFlightData(_parser, fd, nowMs);
+    snap = _parser;
     portEXIT_CRITICAL_SAFE(&_parserMux);
+
+    bool needsRecovery = _deviceReady && mavlink_needsRecovery(snap, nowMs, MAVLINK_CONSECUTIVE_CRC_LIMIT);
+    bool isStale = mavlink_isDataStale(snap, nowMs, FC_DATA_TIMEOUT_MS);
+    bool hasData = mavlink_fillFlightData(snap, fd, nowMs);
 
     if (needsRecovery) {
         ESP_LOGW(TAG, "CRC storm detected — triggering USB recovery");
@@ -386,12 +405,9 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
 
 #if CONFIG_RID_VERBOSE_LOG
         if (_deviceReady) {
-            portENTER_CRITICAL_SAFE(&_parserMux);
-            uint64_t lastPos = _parser.lastPositionMs;
-            uint64_t lastGps = _parser.lastGpsMs;
-            portEXIT_CRITICAL_SAFE(&_parserMux);
             ESP_LOGW(TAG, "Data STALE: lastPos=%llu lastGps=%llu",
-                     (unsigned long long)lastPos, (unsigned long long)lastGps);
+                     (unsigned long long)snap.lastPositionMs,
+                     (unsigned long long)snap.lastGpsMs);
         }
 #endif
     }
@@ -418,7 +434,7 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
 #if CONFIG_RID_VERBOSE_LOG
         if (_deviceReady) {
             ESP_LOGW(TAG, "No valid data: fix=%d armed=%d",
-                     _parser.gpsFixType, _parser.armed);
+                     snap.gpsFixType, snap.armed);
         }
 #endif
     }
@@ -431,13 +447,11 @@ void FlightDataSource::getFlightData(FlightData& fd, uint64_t nowMs) {
             ESP_LOGW(TAG, "USB device not connected, waiting...");
         }
 
+        // snprintf (mavlink_getStatus) 在锁外 — 锁内已通过 snap 取得一致快照
         char statusBuf[200];
-        portENTER_CRITICAL_SAFE(&_parserMux);
-        mavlink_getStatus(_parser, statusBuf, sizeof(statusBuf));
-        uint32_t crcErrs = _parser.consecutiveCrcErrors;
-        portEXIT_CRITICAL_SAFE(&_parserMux);
+        mavlink_getStatus(snap, statusBuf, sizeof(statusBuf));
         ESP_LOGI(TAG, "%s crc_storm=%lu recovery=%lu",
-                 statusBuf, (unsigned long)crcErrs,
+                 statusBuf, (unsigned long)snap.consecutiveCrcErrors,
                  (unsigned long)_recoveryCount);
     }
 }

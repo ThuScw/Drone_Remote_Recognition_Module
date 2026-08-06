@@ -7,8 +7,8 @@
 # factory:    固件镜像 (约 1-1.5 MB)
 # flight_log: 飞行数据滚动存储 (GB 46750-2025 5.1.8: ≥120飞行小时)
 #
-# 单条记录 96 bytes × 43200 条(120h@10s) = 4.15 MB
-# flight_log 分区 ≥ 5 MB 满足 120h 要求
+# 单条记录 128 bytes (扇区对齐, 4096B/128=32 条/扇区) × 43200 条(120h@10s) = 5.53 MB
+# 6MB 分区 (49152 条 @128B) 满足 120h → 实测约 136h
 
 # Name,       Type, SubType,   Offset,  Size,     Flags
 nvs,          data, nvs,       0x9000,  0x10000,

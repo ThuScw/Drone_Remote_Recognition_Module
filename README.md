@@ -83,8 +83,9 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
-- **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * 96) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
-- **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×96 bytes + `+DONE\r\n` 导出全部飞行记录
+- **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * FlightLog::kRecordSize) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
+- **扇区对齐记录格式**：记录定长 128B（内部 4B magic + 2B CRC + 8B 时间戳 + 2B 长度 + 80B 载荷 + 32B 填充），4096B Flash 扇区恰好容纳 32 条、永不跨扇区——消除旧 96B 格式下"第 42 条跨扇区、擦除扇区时被抹尾、约 1/43 记录静默丢失"的缺陷
+- **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×128 bytes + `+DONE\r\n` 导出全部飞行记录
 - **飞控重启 / boot_ms 回绕检测**：`bootMs` 显著回退（>500ms 容差 `MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS`）判定飞控重启，`unixTimeValid` 作废、时间戳输出 0（未知）；新 `SYSTEM_TIME` 重锚定基线后时间戳正确重建，且 SYSTEM_TIME 先到不误判回绕
 - **过期字段老化**：广播前 `gb46750_expireStaleFields()` 将位置/大地高度/航迹/地速中超过新鲜度阈值的字段清除 validMask 位，编码侧输出表3未知哨兵值；`opStatus`/操作员位置不老化（避免误判地面停播）
 - **NaN/Inf 防御**：校验层 `isfinite` 识别非法值并置位 flags；编码层 NaN/Inf 一律编码为表3哨兵值，单一字段非法不影响其它字段
@@ -270,7 +271,7 @@ python tools/flight_log_dump.py COM3
 python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 ```
 
-**导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×96 bytes 二进制记录 → `+DONE\r\n`
+**导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×128 bytes 二进制记录 → `+DONE\r\n`
 
 **CSV 输出**包含 27 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
 
@@ -300,7 +301,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] PC 测试套件 8303 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
+- [x] PC 测试套件 82044 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试 + 飞行日志 1.5 整卷耐力测试）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位

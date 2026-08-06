@@ -8,12 +8,13 @@
 
 static const char* TAG = "FLOG";
 
-// Record layout (96 bytes):
+// Record layout (128 bytes):
 //   [0..3]   Magic "RIDL" LE
-//   [4..5]   CRC16 LE  (over bytes 6..95)
+//   [4..5]   CRC16 LE  (over bytes 6..127)
 //   [6..13]  Timestamp uint64 LE (ms)
 //   [14..15] DataLen  uint16 LE
 //   [16..95] Payload (80 bytes, zero-padded)
+//   [96..127] Reserved (zero-filled) — pad to 128B so records align to 4096B sectors
 
 FlightLog::~FlightLog() {
     if (_taskHandle) {
@@ -195,9 +196,11 @@ uint16_t FlightLog::writeRecord(const uint8_t* data, uint16_t len, uint64_t time
         ESP_LOGI(TAG, "Log wrap — overwriting oldest records");
     }
 
-    // Flash 擦除是扇区粒度, 不能按 96 字节逐条擦除 (旧实现: 非扇区对齐时
+    // Flash 擦除是扇区粒度, 不能按 128 字节逐条擦除 (旧 96B 实现: 非扇区对齐时
     // wl_erase_range 失败 / 或整扇区被抹掉, 导致日志区实际只保留第一条记录)。
     // 正确做法: 仅在进入一个尚未擦除的扇区时整扇区擦除一次, 扇区内各条直接写入。
+    // kRecordSize=128 为 4096 的整数因子, 记录永不跨扇区边界, 不存在
+    // "上一条尾部 + 本扇区擦除" 互相覆盖的问题。
     uint32_t sector = _writeOffset / _sectorSize;
     if (_sectorDirty || sector != _currentSector) {
         uint32_t sectorStart = sector * _sectorSize;

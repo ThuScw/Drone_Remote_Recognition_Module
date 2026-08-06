@@ -95,7 +95,8 @@
 // Flash 分区名 (在 partitions.csv 中定义)
 #define FLIGHT_LOG_PARTITION    "flight_log"
 
-// 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload = 96B
+// 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload + 32B 填充 = 128B
+// 128 为 4096B 扇区整数因子 (32 条/扇区), 记录永不跨扇区, 消除跨扇区擦除损坏
 #define FLIGHT_LOG_MAGIC        0x5249444C  // "RIDL"
 
 // 飞行日志异步写入任务
