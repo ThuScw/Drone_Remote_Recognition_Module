@@ -215,7 +215,7 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 
 **接线**: 飞控 USB 口 → ESP32-S3 "USB" 口（GPIO19/20）
 
-**详细操作**: 见 [`doc/esp32s3_migration.md`](doc/esp32s3_migration.md) 和 [`doc/usb_plug_and_play.md`](doc/usb_plug_and_play.md)
+**详细操作**: 见 [`doc/RID模块技术报告.md`](doc/RID模块技术报告.md)（§3 技术方案 / §5 真机验收与配套工具）
 
 ### 飞控交联（GB 46750-2025 5.1.7）
 
@@ -300,14 +300,14 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] PC 测试套件 8228 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
+- [x] PC 测试套件 8303 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 橙色慢闪=降级 / 红色常亮=故障）
-- [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
-- [ ] 场地实地验证：RID 检测安卓 APP（`app_android/`，见[验证方法](#验证方法)）扫描距离、数据正确性
+- [x] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
+- [x] 场地实地验证：RID 检测安卓 APP（`app_android/`，见[验证方法](#验证方法)）扫描距离、数据正确性
 - [ ] 实现量产飞控交联后端（UART MAVLink / DroneCAN 或飞控内部调用），替换 `StubFcInterlink`（GB 46750-2025 5.1.7）
 - [ ] 向整机厂确认量产机网络报送功能（4 问，见「已知限制 → 网络式 RID」），确定本模块是否需实现网络式
 
@@ -389,8 +389,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 
 ## 相关文档
 
-- [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
-- [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用
+- [RID 模块技术报告](doc/RID模块技术报告.md) — 项目背景、合规对照、技术方案、测试验证、量产准备
 - [安卓检测 APP](app_android/README.md) — 手机端 BLE 抓包 / 解码 / 合规判定 / 报告导出
 
-**最后更新**: 2026-08-04
+**最后更新**: 2026-08-06
