@@ -47,7 +47,7 @@ import java.util.Locale
 
 /**
  * 安卓版 RID 检测工具：设备列表 + 详情页（自用，界面从简）。
- * 主界面列出所有广播 UUID 0x0D50 的信号源，点进某台设备实时查看判定/字段/原始数据。
+ * 主界面列出所有广播 UUID 0xFFFA 的信号源，点进某台设备实时查看判定/字段/原始数据。
  */
 class MainActivity : Activity() {
 

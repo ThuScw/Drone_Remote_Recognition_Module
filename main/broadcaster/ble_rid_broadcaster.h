@@ -4,8 +4,9 @@
 #include <stdint.h>
 #include "rid_messages.h"
 
-// ASTM F3411 / GB 42590-2023 RID Service UUID (16-bit SIG-assigned)
-#define RID_SERVICE_UUID 0x0D50
+// RID BLE Service UUID (16-bit SIG-assigned for ASTM/OpenDroneID Remote ID)
+// GB 46750-2025 未定义传输 UUID; 0xFFFA 是业界通用 (ArduRemoteID / CUAV / 安擎 DroneID)
+#define RID_SERVICE_UUID 0xFFFA
 
 class BleRidBroadcaster {
 public:
@@ -54,6 +55,7 @@ private:
     uint8_t  _updateFailures = 0;
     bool     _degraded = false;
     bool     _useAltPhy = false;
+    uint8_t  _msgCounter = 0;  // ASTM F3411 message counter (wraps at 255)
 };
 
 #endif // BLE_RID_BROADCASTER_H

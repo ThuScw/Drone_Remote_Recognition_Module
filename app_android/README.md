@@ -6,7 +6,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 实时抓包监听 | BLE 5 扩展广播扫描（Service UUID `0x0D50`），全接受扫描 + 回调内过滤；多设备按 MAC 区分 |
+| 实时抓包监听 | BLE 5 扩展广播扫描（Service UUID `0xFFFA`），全接受扫描 + 回调内过滤；支持 ASTM F3411 头（0x0D + 计数器）自动剥离；多设备按 MAC 区分 |
 | 后台持续扫描 | 前台服务（connectedDevice 类型）常驻：切到 QGC 等其他前台应用记录不中断，常驻通知显示设备数；返回 App 数据仍在 |
 | 一键彻底退出 | 底部栏「退出」键：停止后台扫描服务、结束本次记录并关闭进程，彻底退出（START_STICKY 服务不会复活） |
 | 逐字段解码 | 按 GB 46750-2025 表 3 解析全部 21 项字段（含 M/O 可选标志与原始字节 HEX 对照） |
@@ -32,7 +32,7 @@ app_android/
         │   └── java/com/ridcheck/
         │       ├── MainActivity.kt        # 主界面：设备列表 + 详情页 + 底部导航（只读展示，扫描在服务里；底部「退出」彻底关闭）
         │       ├── ble/
-        │       │   ├── BleScanner.kt      # BLE 扫描 + 0x0D50 提取 + 同包去重
+        │       │   ├── BleScanner.kt      # BLE 扫描 + 0xFFFA 提取 + 同包去重
         │       │   └── RidScanService.kt  # 前台扫描服务：后台常驻 + 1Hz 采样 + 常驻通知
         │       ├── core/                  # 纯逻辑，可 JVM 单元测试
         │       │   ├── AppState.kt        # 全局共享：注册表 + 扫描标志 + 日志缓冲（服务与 UI 共用）
@@ -77,7 +77,7 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 ## 使用
 
-1. 主界面点 **开始扫描**，信号源列表实时出现所有广播 UUID `0x0D50` 的设备（按 MAC 区分）。
+1. 主界面点 **开始扫描**，信号源列表实时出现所有广播 UUID `0xFFFA` 的设备（按 MAC 区分）。
 2. 点某台设备进详情：查看逐字段解码、问题清单、RSSI / 速率曲线；可复制或分享原始 HEX。
 3. 详情页可生成该设备 **Word 合规报告**，或导出 **历史采样 CSV**（Excel / WPS 可打开）。
 4. **粘贴解码**：粘贴 nRF Connect 抓到的完整 Raw 广播帧、或从 `FF` 开始的 GB 数据包，做单包静态判定（不参与扫描统计）。
@@ -136,11 +136,11 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 ## 测试
 
-`app/src/test/java/com/ridcheck/` 下 **63 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
+`app/src/test/java/com/ridcheck/` 下 **64 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
 
 | 测试文件 | 数量 | 覆盖内容 |
 |----------|------|----------|
-| DecoderTest | 10 | 数据包解码、AD Service Data 提取、HEX 解析、广播帧抽包 |
+| DecoderTest | 11 | 数据包解码、AD Service Data 提取、HEX 解析、广播帧抽包（含 ASTM F3411 头剥离 + 旧格式兼容） |
 | HealthTest | 9 | 单包判定、流式窗口（速率 / 停滞 / 冻结） |
 | DeviceRegistryTest | 14 | 多设备注册、采样 / 帧存档截断、字段携带计数、状态日志、轨迹、问题时段喂入 |
 | ReportBuilderTest | 11 | 文本报告、逐帧 CSV、8 章 Word 报告、会话统计列、建议与时间线、公式注入防护 |

@@ -150,7 +150,7 @@ class RidScanService : Service() {
     private fun buildNotification(): Notification {
         val count = AppState.registry.size
         val text = if (count == 0) {
-            "等待 RID 广播设备（UUID 0x0D50）..."
+            "等待 RID 广播设备（UUID 0xFFFA）..."
         } else {
             "已记录 $count 台设备，后台持续收集中"
         }

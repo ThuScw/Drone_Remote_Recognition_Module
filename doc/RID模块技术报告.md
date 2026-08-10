@@ -57,7 +57,7 @@
 | 部件 | 配置 | 说明 |
 |------|------|------|
 | 主控 | ESP32-S3（8MB Flash） | 满足飞行日志 ≥ 120h 存储需求（实测约 136h） |
-| 广播链路 | BLE 5 Extended Advertising（NimBLE 协议栈） | 设备名 `GBI_RID_001`，Service UUID `0x0D50`，GB 版本字节 `0x20` |
+| 广播链路 | BLE 5 Extended Advertising（NimBLE 协议栈） | 设备名 `GBI_RID_001`，Service UUID `0xFFFA`，GB 版本字节 `0x20` |
 | 数据源 | USB Host（GPIO19/20，CDC-ACM） | 直连飞控 USB 口，只读模式读取 MAVLink 数据 |
 | 状态指示 | WS2812B RGB LED（GPIO48，RMT 驱动） | 详见表 3.1 |
 | 调试/导出 | UART0 | 调试输出 + 飞行日志串口导出 |
@@ -142,7 +142,7 @@
 ### 5.1 真机验收
 
 1. 模块 USB 口直连飞控，飞控开机即有数据，模块随解锁起飞自动切换广播状态
-2. nRF Connect（安卓）抓包可正确接收以 `0x0D50` 开头的广播报文
+2. nRF Connect（安卓）抓包可正确接收 Service UUID `0xFFFA` 的广播报文
 3. 自研安卓 APP 现场抓包、逐字段解码，内置判定器给出"正常/警告/故障"结论，能够导出分析报告和广播日志。
 4. 两路均稳定收到 400ms 间隔广播，21 字段解码与国标一致，全链路验证通过
 

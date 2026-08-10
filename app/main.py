@@ -5,7 +5,7 @@ Run:
     python main.py
 
 Features:
-  1. BLE 扫描并接收模块广播（目标 UUID 0x0D50）
+  1. BLE 扫描并接收模块广播（目标 UUID 0xFFFA）
   2. GB 46750-2025 数据包解码
   3. 内置判断器：检查模块/广播是否正常
   4. 串口 DUMP：提取模块内部飞行日志 → CSV

@@ -13,7 +13,7 @@ import com.ridcheck.core.Decoder
 /**
  * 基于 BluetoothLeScanner 的 RID 广播扫描封装。
  * 行为对齐 PC 版 rid/ble_scanner.py + gui/workers.py：
- * - 全接受扫描，回调内手动过滤 UUID 0x0D50（规避 ScanFilter 的 Service Data 匹配差异）
+ * - 全接受扫描，回调内手动过滤 UUID 0xFFFA（规避 ScanFilter 的 Service Data 匹配差异）
  * - 相同原始包去重（固件每事件在 3 个信道重发同包）
  * - 回调在主线程 → 可直接刷新 UI
  */
@@ -29,9 +29,9 @@ class BleScanner(private val listener: Listener) {
     }
 
     companion object {
-        const val SERVICE_UUID_16BIT = 0x0D50
+        const val SERVICE_UUID_16BIT = 0xFFFA
         val SERVICE_UUID_128: ParcelUuid =
-            ParcelUuid.fromString("00000d50-0000-1000-8000-00805f9b34fb")
+            ParcelUuid.fromString("0000fffa-0000-1000-8000-00805f9b34fb")
     }
 
     private var adapter: BluetoothAdapter? = null
@@ -94,7 +94,7 @@ class BleScanner(private val listener: Listener) {
         }
         isScanning = true
         listener.onScanState(true)
-        listener.onLog("蓝牙扫描已开始，等待设备广播（UUID 0x0D50）...")
+        listener.onLog("蓝牙扫描已开始，等待设备广播（UUID 0xFFFA）...")
         return true
     }
 
@@ -110,7 +110,7 @@ class BleScanner(private val listener: Listener) {
         listener.onLog("扫描已停止")
     }
 
-    /** 是否来自 RID 模块：含 UUID 0x0D50 的 Service Data（或原始 AD 字节可解析出 0x0D50）。 */
+    /** 是否来自 RID 模块：含 UUID 0xFFFA 的 Service Data（或原始 AD 字节可解析出 0xFFFA）。 */
     private fun isTarget(rec: ScanRecord): Boolean {
         val sd = rec.getServiceData()
         if (sd != null && sd.containsKey(SERVICE_UUID_128)) return true
@@ -127,12 +127,12 @@ class BleScanner(private val listener: Listener) {
     private fun extractPacket(rec: ScanRecord): ByteArray? {
         val sd = rec.getServiceData()
         val data = sd?.get(SERVICE_UUID_128)
-        if (data != null && data.isNotEmpty()) return data
+        if (data != null && data.isNotEmpty()) return Decoder.stripAstmHeader(data)
 
         val raw = rec.getBytes()
         if (raw.isNotEmpty()) {
             val found = Decoder.parseAdServiceData(raw)[SERVICE_UUID_16BIT]
-            if (found != null && found.isNotEmpty()) return found
+            if (found != null && found.isNotEmpty()) return Decoder.stripAstmHeader(found)
         }
         return null
     }

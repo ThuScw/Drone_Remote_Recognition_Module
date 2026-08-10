@@ -34,9 +34,9 @@
 #define COORD_SYS 0
 
 // 精度取值 (GB 46750-2025 Table 3-017/018/019)
-// 广播时精度由 GPS eph/epv 实时映射（不可用如实上报 unknown=0），以下仅供 BLE 自检包使用
-#define HORIZ_ACC 10  // <10m
-#define VERT_ACC  5   // <3m
+// 广播时精度由 GPS eph/epv 实时映射；eph/epv 不可用时 fallback 到以下硬编码值
+#define HORIZ_ACC 12  // <1m (±1~3cm 水平精度)
+#define VERT_ACC  6   // <1m (±2~5cm 垂直精度)
 #define SPEED_ACC 3   // <1m/s
 
 // 时间戳精度 (GB 46750-2025 Table 3-021) — GPS 授时后的动态值; 未授时设为 0 (未知)

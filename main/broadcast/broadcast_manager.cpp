@@ -192,10 +192,11 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
     }
 
     // 始终构建新包 (P0: 不再 "keeping previous packet")
-    // 精度: 直接用 GPS eph/epv 映射结果; eph/epv 不可用 (≤0) 时映射为 0 (unknown),
-    // 如实上报 unknown, 不做 fallback 伪造 (表3-017/018 unknown=0)
-    uint8_t horizAcc = gb46750_mapHorizAcc(broadcastFd.horizAccM);
-    uint8_t vertAcc  = gb46750_mapVertAcc(broadcastFd.vertAccM);
+    // 精度: 优先用 GPS eph/epv 实时映射; eph/epv 不可用 (≤0) 时 fallback 到 config 硬编码值
+    uint8_t horizAcc = (broadcastFd.horizAccM > 0.0f)
+        ? gb46750_mapHorizAcc(broadcastFd.horizAccM) : HORIZ_ACC;
+    uint8_t vertAcc  = (broadcastFd.vertAccM > 0.0f)
+        ? gb46750_mapVertAcc(broadcastFd.vertAccM) : VERT_ACC;
 
     uint8_t tsAcc = (broadcastFd.unixTimestampMs == 0) ? 0 : TS_ACC;
 

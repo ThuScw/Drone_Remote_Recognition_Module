@@ -256,11 +256,14 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     memcpy(p, _deviceName, nameLen);
     p += nameLen;
 
-    // AD Service Data (16-bit UUID) with GB46750 payload
-    *p++ = 1 + 2 + (uint8_t)payloadLen;
+    // AD Service Data (16-bit UUID) with ASTM F3411 header + GB46750 payload
+    // ASTM F3411/OpenDroneID: Service Data = [UUID 2B][AppCode 1B][MsgCounter 1B][payload...]
+    *p++ = 1 + 2 + 2 + (uint8_t)payloadLen;  // length = UUID(2) + AppCode(1) + Counter(1) + payload
     *p++ = 0x16;
     *p++ = RID_SERVICE_UUID & 0xFF;
     *p++ = (RID_SERVICE_UUID >> 8) & 0xFF;
+    *p++ = 0x0D;           // ASTM F3411 application code for Open Drone ID
+    *p++ = _msgCounter++;  // message counter (wraps at 255)
     memcpy(p, payload, payloadLen);
     p += payloadLen;
 

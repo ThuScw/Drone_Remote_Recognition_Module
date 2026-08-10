@@ -26,7 +26,7 @@ main/
 │                                   # 缺失编码为表3未知哨兵值（位置0xFFFFFFFF、航迹/速度0xFFFF）；O字段条件编码）
 │
 ├── broadcaster/
-│   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
+│   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复，ASTM F3411 兼容头）
 │
 ├── data/
 │   ├── flight_data.h/cpp           # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
@@ -79,7 +79,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
 - **USB 只读模式**：USB CDC 以只读模式打开（`out_buffer_size=0`），从物理层面杜绝任何数据反向注入飞控
-- **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
+- **ASTM F3411 兼容头**：Service Data 在 GB46750 载荷前插入 2 字节 ASTM F3411 头（`0x0D` 应用码 + 滚动计数器），兼容 OpenDroneID 生态扫描器（嗖嗖Fly 等），同时不改变 GB 46750 数据包内容
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
@@ -245,13 +245,13 @@ GB 46750-2025 5.1.7 要求运行识别发送模块与飞行控制功能模块互
 推荐使用本仓库自带的**安卓检测 APP**（`app_android/`）现场抓包验证，安装与使用见 [`app_android/README.md`](app_android/README.md)：
 
 - 安装 APK（`app_android/app/build/outputs/apk/debug/app-debug.apk`）→ 点 **开始扫描**；
-- App 实时列出所有广播 UUID `0x0D50` 的设备，点进详情可查看逐字段解码、合规判定、RSSI / 速率曲线，并生成 Word 报告 / 导出 CSV。
+- App 实时列出所有广播 UUID `0xFFFA` 的设备，点进详情可查看逐字段解码、合规判定、RSSI / 速率曲线，并生成 Word 报告 / 导出 CSV。
 
 也可用通用抓包工具 **nRF Connect**（Nordic Semiconductor）手动查看：
 
 - 设备名：`GBI_RID_001`
-- Service UUID：`0x0D50`（ASTM F3411 RID Service）
-- Service Data 中为 GB 46750-2025 编码的数据包（可复制完整 Raw 广播帧，贴进 RID 检测 APP 的「粘贴解码」做单包解析）
+- Service UUID：`0xFFFA`（Remote ID 行业通用 UUID，ASTM F3411 / OpenDroneID 标准）
+- Service Data 格式：`[UUID 0xFFFA][0x0D][msg_counter][GB46750 packet]`（0x0D 为 ASTM F3411 Open Drone ID 应用码，兼容嗖嗖Fly 等第三方扫描器；GB46750 数据包内容不变）
 
 ### 导出飞行日志
 
@@ -393,4 +393,4 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 - [RID 模块技术报告](doc/RID模块技术报告.md) — 项目背景、合规对照、技术方案、测试验证、量产准备
 - [安卓检测 APP](app_android/README.md) — 手机端 BLE 抓包 / 解码 / 合规判定 / 报告导出
 
-**最后更新**: 2026-08-06
+**最后更新**: 2026-08-10

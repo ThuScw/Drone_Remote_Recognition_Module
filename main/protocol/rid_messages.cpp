@@ -32,14 +32,15 @@ static void writeTimestamp(uint8_t* buf, uint64_t unixMs) {
 // ======================== 编码函数 (GB 46750-2025 Table 3) ========================
 
 // 经纬度: int32 LE, deg * 1e7
+// GB 46750-2025 表3-006/008: 字段为 "32位经度|32位纬度" — 经度在前, 纬度在后
 // NaN/Inf 或超出物理范围 → 表3未知哨兵 (0xFFFFFFFF), 而非未定义行为的垃圾强转
 static void encodeLatLon(uint8_t* buf, float lat, float lon) {
     int32_t lat_i = (isfinite(lat) && lat >= -90.0f && lat <= 90.0f)
                     ? (int32_t)(lat * 10000000.0f) : -1;
     int32_t lon_i = (isfinite(lon) && lon >= -180.0f && lon <= 180.0f)
                     ? (int32_t)(lon * 10000000.0f) : -1;
-    writeI32LE(buf, lat_i);
-    writeI32LE(buf + 4, lon_i);
+    writeI32LE(buf, lon_i);
+    writeI32LE(buf + 4, lat_i);
 }
 
 // 大地/气压高度: uint16 LE, (val + 1000) * 2, 分辨率 0.5m
@@ -135,7 +136,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     // O 字段: 条件置位
     if (fd.validMask & FLD_HEIGHT_AGL) pkt.dataId[1] |= DID_REL_HEIGHT;
     if (fd.validMask & FLD_VSPEED)     pkt.dataId[1] |= DID_VERT_SPEED;
-    if (fd.validMask & FLD_BARO_ALT)   pkt.dataId[1] |= DID_BARO_ALT;
+    pkt.dataId[1] |= DID_BARO_ALT;  // 014 气压高度: 始终发送，缺失时编码为0
 
     // Byte 2: 状态/精度/时间字段
     pkt.dataId[2] = DID_OP_STATUS | DID_COORD_SYS | DID_HORIZ_ACC
@@ -235,11 +236,13 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     }
     pos += 2;
 
-    // 014 气压高度 (2 bytes, O — only present if valid)
+    // 014 气压高度 (2 bytes, always — unknown=0 if missing)
     if (fd.validMask & FLD_BARO_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.baroAlt));
-        pos += 2;
+    } else {
+        writeU16LE(c + pos, 0);  // unknown
     }
+    pos += 2;
 
     // 015 运行状态 (1 byte, M, always — unknown=0 if missing)
     if (fd.validMask & FLD_OP_STATUS) {

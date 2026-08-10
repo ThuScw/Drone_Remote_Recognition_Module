@@ -45,8 +45,9 @@ object PacketBuilder {
         return byteArrayOf((dirBit or Math.round(Math.abs(mps) * 2.0).toInt()).toByte())
     }
 
+    // GB 表3-006/008: 32位经度|32位纬度 — 经度在前, 纬度在后
     private fun encodePos(lat: Double, lon: Double): ByteArray =
-        leInt32((lat * 1e7).toInt()) + leInt32((lon * 1e7).toInt())
+        leInt32((lon * 1e7).toInt()) + leInt32((lat * 1e7).toInt())
 
     private fun encodeTs(ms: Long): ByteArray {
         val out = ByteArray(6)

@@ -48,7 +48,8 @@ def _encode_vspeed(mps: float) -> bytes:
 
 
 def _encode_pos(lat: float, lon: float) -> bytes:
-    return _le32(int(lat * 1e7)) + _le32(int(lon * 1e7))
+    # GB 表3-006/008: 32位经度|32位纬度 — 经度在前, 纬度在后
+    return _le32(int(lon * 1e7)) + _le32(int(lat * 1e7))
 
 
 def _encode_ts(ms: int) -> bytes:
