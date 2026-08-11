@@ -237,9 +237,9 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     }
 
     // 编译期保证 ADV data 不超 buffer
-    // AD Flags(3) + AD ServiceData 固定开销(长度1 + 类型1 + UUID2 + AppCode1 + Counter1) ≤ buffer
-    constexpr size_t kAdvOverhead = 3 + 6;                    // 9
-    uint8_t advData[kAdvOverhead + GB46750_MAX_PACKET];       // 9 + 128 = 137
+    // AD Flags(3) + AD Name(2+maxName) + AD ServiceData(2+2+payload) ≤ buffer
+    constexpr size_t kAdvOverhead = 3 + (2 + 31) + (2 + 2);  // 40
+    uint8_t advData[kAdvOverhead + GB46750_MAX_PACKET];       // 40 + 128 = 168
     static_assert(sizeof(advData) >= kAdvOverhead + GB46750_MAX_PACKET,
                   "ADV data exceeds buffer");
     uint8_t *p = advData;
@@ -249,7 +249,13 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     *p++ = 0x01;
     *p++ = 0x06;
 
-    // NOTE: AD Complete Local Name intentionally omitted (实验: 验证嗖嗖fly 是否依赖设备名偏移解析)
+    // AD Complete Local Name
+    size_t nameLen = strlen(_deviceName);
+    *p++ = (uint8_t)(1 + nameLen);
+    *p++ = 0x09;
+    memcpy(p, _deviceName, nameLen);
+    p += nameLen;
+
     // AD Service Data (16-bit UUID) with ASTM F3411 header + GB46750 payload
     // ASTM F3411/OpenDroneID: Service Data = [UUID 2B][AppCode 1B][MsgCounter 1B][payload...]
     *p++ = 1 + 2 + 2 + (uint8_t)payloadLen;  // length = UUID(2) + AppCode(1) + Counter(1) + payload
