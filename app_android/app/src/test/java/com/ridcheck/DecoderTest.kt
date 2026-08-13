@@ -155,14 +155,14 @@ class DecoderTest {
         }
     }
 
-    /** 从完整 BLE 广播帧中提取 GB 包（nRF Connect 粘贴场景）。 */
+    /** 从完整 BLE 广播帧中提取 GB 包（nRF Connect 粘贴场景）。
+     *  广播为纯 GB 包：Service Data (0x16, UUID 0xFFFF LE + GB 包)。 */
     @Test
     fun extractGbFromRawFrame() {
         val gb = PacketBuilder.buildPacket()
-        // 伪广播帧：AD Flags + Service Data (0x16, UUID 0xFFFA LE + ASTM header + 载荷)
         val ad = ByteArrayOutputStream()
         ad.write(byteArrayOf(0x02, 0x01, 0x06))
-        val payload = byteArrayOf(0xFA.toByte(), 0xFF.toByte(), Decoder.ASTM_APP_CODE.toByte(), 0x01) + gb
+        val payload = byteArrayOf(0xFF.toByte(), 0xFF.toByte()) + gb
         ad.write(byteArrayOf((payload.size + 1).toByte(), 0x16))
         ad.write(payload)
         val frame = ad.toByteArray()
@@ -172,21 +172,6 @@ class DecoderTest {
 
         // 裸包原样返回
         assertArrayEquals(gb, Decoder.extractGbFromAdv(gb))
-    }
-
-    /** 旧格式（无 ASTM 头）仍然兼容。 */
-    @Test
-    fun extractGbFromRawFrameOldFormat() {
-        val gb = PacketBuilder.buildPacket()
-        val ad = ByteArrayOutputStream()
-        ad.write(byteArrayOf(0x02, 0x01, 0x06))
-        val payload = byteArrayOf(0xFA.toByte(), 0xFF.toByte()) + gb
-        ad.write(byteArrayOf((payload.size + 1).toByte(), 0x16))
-        ad.write(payload)
-        val frame = ad.toByteArray()
-
-        val extracted = Decoder.extractGbFromAdv(frame)
-        assertArrayEquals(gb, extracted)
     }
 
     /** fieldHex：逐字段原始字节应记录到表3 序号下，可选字段未广播时不记录。 */
@@ -210,32 +195,15 @@ class DecoderTest {
         assertTrue(!pkt2.fieldHex.containsKey("014"))
     }
 
-    /** 实机链路回归：Service Data 值 = [0x0D][counter][GB 包]（固件 buildAdvData 格式）。
-     *  BLE 扫描提取后必须先剥 ASTM 头再解码，否则 dataType=0x0D 导致结构错误、字段全错位。 */
+    /** 实机链路回归：Service Data 值 = [GB 包]（固件纯 GB 广播，无 ASTM 头）。
+     *  提取后直接解码，dataType=0xFF，字段不错位。 */
     @Test
-    fun liveScanPacketWithAstmHeaderDecodesCleanly() {
+    fun liveScanPacketPureGbDecodesCleanly() {
         val gb = PacketBuilder.buildPacket()
-        val serviceData = byteArrayOf(Decoder.ASTM_APP_CODE.toByte(), 0x01) + gb
 
-        val extracted = Decoder.stripAstmHeader(serviceData)
-        assertArrayEquals(gb, extracted)
-
-        val pkt = Decoder.decodeGbPacket(extracted, address = "AA:BB:CC:DD:EE:FF", rssi = -50)
+        val pkt = Decoder.decodeGbPacket(gb, address = "AA:BB:CC:DD:EE:FF", rssi = -50)
         assertEquals("", pkt.structureError)
         assertEquals(PacketBuilder.DATA_TYPE, pkt.dataType)
         assertEquals("CPNYMDL001234567890A", pkt.uasId)
-    }
-
-    /** 非 ASTM 头（data[0]==0x0D 但 data[2]!=0xFF）不误剥离；裸包原样返回。 */
-    @Test
-    fun stripAstmHeaderNoFalsePositive() {
-        val gb = PacketBuilder.buildPacket()
-        assertArrayEquals(gb, Decoder.stripAstmHeader(gb))
-
-        val notHeader = byteArrayOf(Decoder.ASTM_APP_CODE.toByte(), 0x01, 0x55.toByte(), 0x20)
-        assertArrayEquals(notHeader, Decoder.stripAstmHeader(notHeader))
-
-        val short = byteArrayOf(Decoder.ASTM_APP_CODE.toByte(), 0x01)
-        assertArrayEquals(short, Decoder.stripAstmHeader(short))
     }
 }

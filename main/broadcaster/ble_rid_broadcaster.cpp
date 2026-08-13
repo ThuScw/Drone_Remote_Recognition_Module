@@ -1,5 +1,6 @@
 #include "ble_rid_broadcaster.h"
 #include "config.h"
+#include "rid_config.h"
 
 #include <string.h>
 #include <atomic>
@@ -16,6 +17,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "nimble/ble.h"
 
 static const char* TAG = "BLE_RID";
 
@@ -62,11 +64,46 @@ static void host_task(void *param) {
     nimble_port_freertos_deinit();
 }
 
+// --- GAP 事件 (连接/断开) ---
+// 地面可连接模式下: 连接建立 → 停止广播标志; 断开 → 恢复可连接广播等待下次配置。
+// 空中广播模式下: 无连接事件 (不可连接广播)。
+int BleRidBroadcaster::onGapEvent(struct ble_gap_event* event, void* arg) {
+    BleRidBroadcaster* self = (BleRidBroadcaster*)arg;
+    switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+        if (event->connect.status == 0) {
+            self->_connected = true;
+            self->_connHandle = event->connect.conn_handle;
+            self->_advertising = false;  // 连接建立, 可连接广播自动停止
+            ESP_LOGI(TAG, "GATT connection established (handle=%d)",
+                     event->connect.conn_handle);
+        } else {
+            ESP_LOGW(TAG, "GATT connection attempt failed (status=%d)",
+                     event->connect.status);
+        }
+        return 0;
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "GATT disconnected (reason=%d)", event->disconnect.reason);
+        self->_connected = false;
+        self->_connHandle = 0xFFFF;
+        if (self->_connectableMode) {
+            ESP_LOGI(TAG, "Resuming connectable advertising");
+            self->startConnectableAdv();
+        }
+        return 0;
+    default:
+        return 0;
+    }
+}
+
 // --- Public API ---
 
 bool BleRidBroadcaster::begin(const char* deviceName) {
     _initialized = false;
     _advertising = false;
+    _connectableMode = false;
+    _connected = false;
+    _connHandle = 0xFFFF;
     _consecutiveFailures = 0;
     _updateFailures = 0;
     s_synced = false;
@@ -283,6 +320,41 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     return data;
 }
 
+// 可连接广播 AD Structure: Flags + Name + 16-bit GATT 服务 UUID (0xFFF0)
+// 不携带 GB 数据包 — 地面状态只做"可发现 + 可连接", 供手机 APP 写入配置。
+struct os_mbuf* BleRidBroadcaster::buildConnectableAdvData(uint16_t& outLen) {
+    // Flags(3) + Name(2+31) + 16-bit Service UUID(2+2) = 40 上限
+    uint8_t advData[3 + (2 + 31) + (2 + 2)];
+    uint8_t* p = advData;
+
+    *p++ = 0x02; *p++ = 0x01; *p++ = 0x06;  // AD Flags
+
+    size_t nameLen = strlen(_deviceName);
+    *p++ = (uint8_t)(1 + nameLen);          // AD Complete Local Name
+    *p++ = 0x09;
+    memcpy(p, _deviceName, nameLen);
+    p += nameLen;
+
+    *p++ = 0x03;                            // len = 1(type) + 2(uuid)
+    *p++ = 0x03;                            // Complete List of 16-bit Service Class UUIDs
+    *p++ = RID_GATT_SVC_UUID16 & 0xFF;
+    *p++ = (RID_GATT_SVC_UUID16 >> 8) & 0xFF;
+
+    outLen = p - advData;
+
+    struct os_mbuf* data = os_msys_get_pkthdr(outLen, 0);
+    if (!data) {
+        ESP_LOGE(TAG, "os_msys_get_pkthdr OOM (connectable)");
+        return NULL;
+    }
+    if (os_mbuf_append(data, advData, outLen) != 0) {
+        ESP_LOGE(TAG, "os_mbuf_append failed (connectable)");
+        os_mbuf_free_chain(data);
+        return NULL;
+    }
+    return data;
+}
+
 // --- Broadcast control ---
 
 bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
@@ -294,6 +366,24 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
     if (!gb46750_packetVerify(pkt)) {
         ESP_LOGE(TAG, "startBroadcast: packet verify failed — refusing to send");
         return false;
+    }
+
+    _connectableMode = false;
+
+    // 若正在可连接广播 (地面模式), 先停止实例再重配为空中广播
+    if (_advertising) {
+        ble_gap_ext_adv_stop(0);
+        _advertising = false;
+    }
+
+    // 起飞: 终止残留配置连接, 保证广播无线电资源独占 (GB 46750 持续广播不受干扰)
+    if (_connected) {
+        ESP_LOGI(TAG, "Terminating config connection (handle=%d) before broadcast",
+                 _connHandle);
+        ble_gap_terminate(_connHandle, BLE_ERR_REM_USER_CONN_TERM);
+        _connected = false;
+        _connHandle = 0xFFFF;
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 
     uint16_t advDataLen;
@@ -310,7 +400,7 @@ bool BleRidBroadcaster::startBroadcast(const GB46750Packet& pkt) {
     params.channel_map = 0x07;
     params.sid = 0;
 
-    int rc = ble_gap_ext_adv_configure(0, &params, NULL, NULL, NULL);
+    int rc = ble_gap_ext_adv_configure(0, &params, NULL, &BleRidBroadcaster::onGapEvent, this);
     if (rc != 0) {
         os_mbuf_free_chain(data);
         ESP_LOGE(TAG, "ext_adv_configure failed, rc=%d", rc);
@@ -376,4 +466,61 @@ void BleRidBroadcaster::stopBroadcast() {
     ble_gap_ext_adv_stop(0);
     _advertising = false;
     ESP_LOGI(TAG, "Broadcast stopped");
+}
+
+// 可连接广播 (地面模式): 不携带 GB 数据, 仅 Flags + Name + 16-bit GATT 服务 UUID,
+// 供手机 APP 发现并建立 GATT 连接写入配置。连接建立后广播自动停止 (onGapEvent)。
+bool BleRidBroadcaster::startConnectableAdv() {
+    if (!_initialized || !s_synced) {
+        ESP_LOGE(TAG, "startConnectableAdv: not ready");
+        return false;
+    }
+
+    _connectableMode = true;
+
+    // 若正在空中广播, 先停止
+    if (_advertising) {
+        ble_gap_ext_adv_stop(0);
+        _advertising = false;
+    }
+
+    uint16_t advDataLen;
+    struct os_mbuf *data = buildConnectableAdvData(advDataLen);
+    if (!data) return false;
+
+    struct ble_gap_ext_adv_params params = {};
+    params.own_addr_type = _ownAddrType;
+    params.connectable = 1;   // 可连接
+    params.scannable  = 1;    // 可扫描 (legacy 可连接广播需 scannable)
+    params.legacy_pdu = 1;    // Legacy IND — GATT 连接走 legacy PDU
+    params.primary_phy = BLE_HCI_LE_PHY_1M;
+    params.secondary_phy = BLE_HCI_LE_PHY_1M;
+    params.itvl_min = (uint16_t)(BLE_ADV_INTERVAL_MS * 1000 / 625);
+    params.itvl_max = (uint16_t)(BLE_ADV_INTERVAL_MS * 1000 / 625);
+    params.channel_map = 0x07;
+    params.sid = 0;
+
+    int rc = ble_gap_ext_adv_configure(0, &params, NULL, &BleRidBroadcaster::onGapEvent, this);
+    if (rc != 0) {
+        os_mbuf_free_chain(data);
+        ESP_LOGE(TAG, "ext_adv_configure (connectable) failed, rc=%d", rc);
+        return false;
+    }
+
+    rc = ble_gap_ext_adv_set_data(0, data);
+    if (rc != 0) {
+        os_mbuf_free_chain(data);
+        ESP_LOGE(TAG, "ext_adv_set_data (connectable) failed, rc=%d", rc);
+        return false;
+    }
+
+    rc = ble_gap_ext_adv_start(0, 0, 0);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "ext_adv_start (connectable) failed, rc=%d", rc);
+        return false;
+    }
+
+    _advertising = true;
+    ESP_LOGI(TAG, "Connectable advertising started — %d bytes (GATT 0xFFF0)", advDataLen);
+    return true;
 }

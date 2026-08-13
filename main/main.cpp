@@ -22,6 +22,8 @@
 #include "config.h"
 #include "broadcast_manager.h"
 #include "ble_rid_broadcaster.h"
+#include "rid_config_store.h"
+#include "rid_gatt_server.h"
 #include "flight_data.h"
 #include "indicators.h"
 #include "flight_log.h"
@@ -34,6 +36,8 @@ static BleRidBroadcaster    broadcaster;
 static FlightLog            flightLog;
 static StatusLed            statusLed;
 static StubFcInterlink      fcInterlink;   // 测试阶段后端, 量产时替换为真实交联实现
+static RidConfigStore       configStore;
+static RidGattServer        gattServer;
 static RIDBroadcastManager* manager = nullptr;
 
 extern "C" void app_main(void) {
@@ -65,8 +69,18 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM");
 
     // --- Subsystems ---
+    if (!configStore.init()) {
+        ESP_LOGE(TAG, "FATAL: Config store init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
     if (!broadcaster.begin("GBI_RID_001")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    if (!gattServer.init(configStore)) {
+        ESP_LOGE(TAG, "FATAL: GATT server init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
@@ -81,10 +95,16 @@ extern "C" void app_main(void) {
     ConsoleCmd::init(flightLog);
 
     // --- Broadcast Manager (all safety + orchestration logic) ---
-    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink);
+    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink, configStore, gattServer);
     if (!manager->init()) {
         ESP_LOGE(TAG, "FATAL: Broadcast manager init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // --- 地面初始态: 可连接广播 (等待手机 GATT 配置) ---
+    // manager->init() 内的 selfTest 会做一次 start/stop broadcast, 故在其后启动
+    if (!broadcaster.startConnectableAdv()) {
+        ESP_LOGW(TAG, "Connectable advertising start failed — GATT config unavailable");
     }
 
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");

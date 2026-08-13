@@ -8,7 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from rid.ble_scanner import extract_packet, format_mac, is_target
+from rid.ble_scanner import EXPECTED_NAME, extract_packet, format_mac, is_target
 from rid.decoder import decode_gb_packet
 from rid.serial_dump import dump_flight_log, records_to_csv, verify_record
 
@@ -89,6 +89,96 @@ class BleScanWorker(QThread):
             source="ble",
         )
         self.sig_packet.emit(pkt)
+
+
+class ConfigScanWorker(QThread):
+    """Scans for connectable RID modules (ground mode: no GB packet, name intact)."""
+
+    sig_device = Signal(str)   # MAC address (upper-cased)
+    sig_log = Signal(str)
+    sig_done = Signal()
+
+    def __init__(self, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        self._stop.clear()
+        try:
+            asyncio.run(self._scan_loop())
+        except Exception as e:  # noqa: BLE001
+            self.sig_log.emit(f"扫描异常: {e}")
+        finally:
+            self.sig_done.emit()
+
+    async def _scan_loop(self) -> None:
+        from bleak import BleakScanner
+
+        self.sig_log.emit("扫描可配置模块（名称 GBI_RID_001 / 服务 0xFFF0）...")
+        scanner = BleakScanner(detection_callback=self._on_detect)
+        await scanner.start()
+        try:
+            for _ in range(60):  # up to ~6s
+                if self._stop.is_set():
+                    break
+                await asyncio.sleep(0.1)
+        finally:
+            await scanner.stop()
+            self.sig_log.emit("扫描结束")
+
+    def _on_detect(self, device: Any, adv: Any) -> None:
+        name = (device.name or "") or (getattr(adv, "local_name", "") or "")
+        if name.strip() != EXPECTED_NAME:
+            return
+        self.sig_device.emit(format_mac(str(device.address)))
+
+
+class GattConfigWorker(QThread):
+    """Connects to a module and reads or writes the four config fields."""
+
+    sig_read = Signal(object)     # RidConfig
+    sig_written = Signal(object)  # RidConfig (read-back after write)
+    sig_log = Signal(str)
+    sig_error = Signal(str)
+
+    def __init__(self, address: str, action: str, cfg: Any = None, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._address = address
+        self._action = action      # "read" | "write"
+        self._cfg = cfg
+
+    def run(self) -> None:
+        try:
+            asyncio.run(self._run())
+        except Exception as e:  # noqa: BLE001 - surface connection/protocol errors
+            self.sig_error.emit(f"{e}")
+
+    async def _run(self) -> None:
+        from bleak import BleakClient
+
+        from rid.gatt_config import read_config, write_config
+
+        self.sig_log.emit(f"连接 {self._address} ...")
+        async with BleakClient(self._address, timeout=15.0) as client:
+            self.sig_log.emit("已连接，读取当前配置与状态")
+            if self._action == "read":
+                cfg = await read_config(client)
+                self.sig_read.emit(cfg)
+                self.sig_log.emit(f"读取完成 — 状态: {cfg.state_name}")
+                return
+
+            # write: guard against airborne lock before touching any field
+            state = await read_config(client)
+            if state.is_airborne:
+                self.sig_error.emit("模块处于空中状态（写锁定），拒绝写入")
+                return
+            await write_config(client, self._cfg)
+            back = await read_config(client)
+            self.sig_written.emit(back)
+            self.sig_log.emit("写入完成并已读回确认")
 
 
 class SerialDumpWorker(QThread):

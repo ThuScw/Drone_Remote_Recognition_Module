@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include "rid_messages.h"
 #include "ble_rid_broadcaster.h"
+#include "rid_config_store.h"
+#include "rid_gatt_server.h"
 #include "flight_log.h"
 #include "indicators.h"
 #include "status_machine.h"
@@ -29,7 +31,9 @@ public:
         BleRidBroadcaster& broadcaster,
         FlightLog& flightLog,
         StatusLed& statusLed,
-        IFcInterlink& interlink);
+        IFcInterlink& interlink,
+        RidConfigStore& configStore,
+        RidGattServer& gattServer);
 
     // 配置校验、BLE 自检
     bool init();
@@ -60,6 +64,8 @@ private:
     FlightLog&         _flightLog;
     StatusLed&         _statusLed;
     IFcInterlink&      _interlink;   // 飞控交联 (GB 46750-2025 5.1.7)
+    RidConfigStore&    _configStore; // GATT 配置存储 (身份字段 + 状态机)
+    RidGattServer&     _gattServer;  // GATT 服务 (状态通知)
 
     // --- 内部状态 ---
     GB46750Packet _currentPacket;

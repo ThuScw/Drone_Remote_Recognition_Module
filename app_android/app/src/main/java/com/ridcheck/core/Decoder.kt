@@ -14,7 +14,6 @@ object Decoder {
     const val DID_REL_HEIGHT = 0x10 // 011 相对高度
     const val DID_VERT_SPEED = 0x08 // 012 垂直速度
     const val DID_BARO_ALT = 0x02 // 014 气压高度
-    const val ASTM_APP_CODE = 0x0D // ASTM F3411 Open Drone ID application code
 
     // 编码器写入的哨兵值（表示"未知/不可用"）
     const val SENT_SPEED_HEADING = 0xFFFF // speed / heading
@@ -118,37 +117,14 @@ object Decoder {
      * 把粘贴的字节规范化为原始 GB 数据包：
      * - 以 0xFF 开头的裸数据包直接返回
      * - 否则当作完整 BLE 广播帧，从 Service Data AD 中抽取
-     * - 支持 ASTM F3411 头 (0x0D + message counter) 的剥离
      */
     fun extractGbFromAdv(raw: ByteArray): ByteArray {
         if (raw.isEmpty() || (raw[0].toInt() and 0xFF) == 0xFF) return raw
         for (payload in parseAdServiceData(raw).values) {
             if (payload.isEmpty()) continue
             if ((payload[0].toInt() and 0xFF) == 0xFF) return payload
-            // ASTM F3411 header: skip 2 bytes (0x0D + counter)
-            if (payload.size > 2 &&
-                (payload[0].toInt() and 0xFF) == ASTM_APP_CODE &&
-                (payload[2].toInt() and 0xFF) == 0xFF
-            ) {
-                return payload.copyOfRange(2, payload.size)
-            }
         }
         return raw
-    }
-
-    /**
-     * 剥离 ASTM F3411 头 (0x0D + message counter)。
-     * 与 PC 版 ble_scanner._strip_astm_header 一致：仅当 data[0]==0x0D 且
-     * data[2]==0xFF (GB dataType) 时剥前 2 字节，避免误剥恰好以 0x0D 开头的载荷。
-     */
-    fun stripAstmHeader(data: ByteArray): ByteArray {
-        if (data.size > 2 &&
-            (data[0].toInt() and 0xFF) == ASTM_APP_CODE &&
-            (data[2].toInt() and 0xFF) == GB46750_DATA_TYPE
-        ) {
-            return data.copyOfRange(2, data.size)
-        }
-        return data
     }
 
     /** 解码一个 GB 46750 数据包。 */

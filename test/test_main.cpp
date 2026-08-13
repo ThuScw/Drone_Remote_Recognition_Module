@@ -12,6 +12,7 @@ void test_rid_messages();
 void test_fault_log();
 void test_status_machine();
 void test_flight_log();
+void test_rid_config();
 
 int main() {
     printf("ESP32-S3 RID -- Host Test Suite\n\n");
@@ -22,6 +23,7 @@ int main() {
     test_fault_log();
     test_status_machine();
     test_flight_log();
+    test_rid_config();
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;

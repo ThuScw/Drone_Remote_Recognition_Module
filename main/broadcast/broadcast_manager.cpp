@@ -21,11 +21,15 @@ RIDBroadcastManager::RIDBroadcastManager(
     BleRidBroadcaster& broadcaster,
     FlightLog& flightLog,
     StatusLed& statusLed,
-    IFcInterlink& interlink)
+    IFcInterlink& interlink,
+    RidConfigStore& configStore,
+    RidGattServer& gattServer)
     : _broadcaster(broadcaster)
     , _flightLog(flightLog)
     , _statusLed(statusLed)
     , _interlink(interlink)
+    , _configStore(configStore)
+    , _gattServer(gattServer)
     , _broadcastActive(false)
     , _nextBroadcastMs(0)
     , _lastBroadcastSuccessMs(0)
@@ -41,25 +45,18 @@ RIDBroadcastManager::RIDBroadcastManager(
 }
 
 bool RIDBroadcastManager::init() {
-    // 1. 配置校验
+    // 1. 配置校验 (从 GATT 配置存储读取 — 占位值或已持久化的上次配置)
     // UAS ID: 20 字符 ASCII [0-9A-HJ-NP-Z] (GB 46860-2025)
-    if (strlen(UAS_ID) != 20) {
-        ESP_LOGE(TAG, "UAS_ID must be 20 chars (current: %d)", (int)strlen(UAS_ID));
+    RidConfig cfg;
+    _configStore.get(cfg);
+    if (!ridConfigValidateUasId(cfg.uasId, RID_CONFIG_UAS_ID_LEN)) {
+        ESP_LOGE(TAG, "UAS_ID invalid (current: %.20s) — only 20x[0-9A-Z] without O/I",
+                 cfg.uasId);
         return false;
     }
-    for (int i = 0; i < 20; i++) {
-        char c = UAS_ID[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) {
-            ESP_LOGE(TAG, "UAS_ID[%d]='%c' — only [0-9A-Z] allowed", i, c);
-            return false;
-        }
-        if (c == 'O' || c == 'I') {
-            ESP_LOGE(TAG, "UAS_ID[%d]='%c' — O/I prohibited by GB 46860", i, c);
-            return false;
-        }
-    }
-    if (strlen(REALNAME_ID) != 8) {
-        ESP_LOGE(TAG, "REALNAME_ID must be 8 chars (current: %d)", (int)strlen(REALNAME_ID));
+    if (!ridConfigValidateRealName(cfg.realNameId, RID_CONFIG_REALNAME_LEN)) {
+        ESP_LOGE(TAG, "REALNAME_ID invalid (current: %.8s) — only 8 digits",
+                 cfg.realNameId);
         return false;
     }
     if (BROADCAST_INTERVAL_MS > 1000) {
@@ -200,8 +197,12 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
 
     uint8_t tsAcc = (broadcastFd.unixTimestampMs == 0) ? 0 : TS_ACC;
 
-    gb46750_buildPacket(_currentPacket, broadcastFd, UAS_ID, REALNAME_ID,
-                        OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
+    // 身份字段从 GATT 配置存储读取 (占位值或上次 GATT 写入值) — 无硬门槛
+    RidConfig cfg;
+    _configStore.get(cfg);
+
+    gb46750_buildPacket(_currentPacket, broadcastFd, cfg.uasId, cfg.realNameId,
+                        cfg.opCategory, cfg.uaClass, OP_LOCATION_TYPE, COORD_SYS,
                         horizAcc, vertAcc, SPEED_ACC, tsAcc,
                         broadcastFd.unixTimestampMs);
 }
@@ -301,17 +302,22 @@ void RIDBroadcastManager::applyStatusChange(uint8_t newStatus) {
 
     if (shouldBroadcast && !_broadcastActive) {
         ESP_LOGI(TAG, "Broadcast START (status=%d)", newStatus);
+        _configStore.setState(RID_STATE_AIRBORNE);  // 起飞: 配置写锁定
         if (_broadcaster.startBroadcast(_currentPacket)) {
             _broadcastActive = true;
             _statusLed.setState(LedState::BROADCASTING);
         } else {
             ESP_LOGE(TAG, "Failed to start broadcast");
         }
+        _gattServer.notifyState();  // 推送 AIRBORNE 到已连接手机
     } else if (!shouldBroadcast && _broadcastActive) {
         ESP_LOGI(TAG, "Broadcast STOP (status=%d, ground)", newStatus);
         _broadcaster.stopBroadcast();
         _broadcastActive = false;
+        _configStore.setState(RID_STATE_CONFIGURED);  // 落地: 解除写锁定
+        _broadcaster.startConnectableAdv();           // 恢复可连接广播, 等待下次配置
         _statusLed.setState(LedState::STANDBY);
+        _gattServer.notifyState();  // 推送 CONFIGURED 到已连接手机
     }
 }
 

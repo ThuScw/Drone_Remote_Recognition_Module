@@ -4,6 +4,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from .ble_panel import BlePanel
+from .config_panel import ConfigPanel
 from .serial_panel import SerialPanel
 
 
@@ -15,8 +16,10 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         self.ble_panel = BlePanel()
+        self.config_panel = ConfigPanel()
         self.serial_panel = SerialPanel()
         tabs.addTab(self.ble_panel, "BLE 接收 / 解码 / 自检")
+        tabs.addTab(self.config_panel, "GATT 双向配置")
         tabs.addTab(self.serial_panel, "串口飞行日志提取")
         self.setCentralWidget(tabs)
 
@@ -24,5 +27,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         self.ble_panel.shutdown()
+        self.config_panel.shutdown()
         self.serial_panel.shutdown()
         super().closeEvent(event)

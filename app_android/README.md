@@ -6,7 +6,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 实时抓包监听 | BLE 5 扩展广播扫描（Service UUID `0xFFFA`），全接受扫描 + 回调内过滤；支持 ASTM F3411 头（0x0D + 计数器）自动剥离；多设备按 MAC 区分 |
+| 实时抓包监听 | BLE 5 扩展广播扫描（Service UUID `0xFFFF`，纯 GB 46750 包），全接受扫描 + 回调内过滤；多设备按 MAC 区分 |
 | 后台持续扫描 | 前台服务（connectedDevice 类型）常驻：切到 QGC 等其他前台应用记录不中断，常驻通知显示设备数；返回 App 数据仍在 |
 | 一键彻底退出 | 底部栏「退出」键：停止后台扫描服务、结束本次记录并关闭进程，彻底退出（START_STICKY 服务不会复活） |
 | 逐字段解码 | 按 GB 46750-2025 表 3 解析全部 21 项字段（含 M/O 可选标志与原始字节 HEX 对照） |
@@ -15,6 +15,7 @@
 | 记录与分析 | RSSI / 速率 1Hz 采样曲线；表 3 全 21 项会话统计；问题出现时段（时间轴）；生成 8 章 Word 合规报告（内嵌 RSSI/速率曲线 + 相对轨迹图）；导出逐帧 CSV |
 | 内容分享 | 文本 / CSV / Word 报告经系统分享面板发出（自建 FileProvider，无 AndroidX） |
 | 内置说明页 | RID 简介、表 3 字段表、判定标准、使用方法 |
+| GATT 双向配置 | 「配置」标签页扫描地面态模块（名称 `GBI_RID_001` / 服务 `0xFFF0`），读取/写入 001~004 身份字段 + 状态，写成功即持久化到模块 NVS |
 
 ## 目录结构
 
@@ -25,15 +26,17 @@ app_android/
 ├── gradle/                    # Gradle Wrapper（腾讯镜像发行版）
 ├── local.properties           # 本机 sdk.dir（不入库，模板见 local.properties.example）
 └── app/
-    ├── build.gradle.kts       # versionName 1.7 / versionCode 8；minSdk 26 / targetSdk 34
+    ├── build.gradle.kts       # versionName 2.0 / versionCode 9；minSdk 26 / targetSdk 34
     └── src/
         ├── main/
         │   ├── AndroidManifest.xml        # BLE 权限（12+ 用 BLUETOOTH_SCAN/CONNECT）
         │   └── java/com/ridcheck/
-        │       ├── MainActivity.kt        # 主界面：设备列表 + 详情页 + 底部导航（只读展示，扫描在服务里；底部「退出」彻底关闭）
+        │       ├── MainActivity.kt        # 主界面：设备列表 + 详情页 + 底部导航（主界面/配置/说明 + 退出；扫描在服务里）
         │       ├── ble/
-        │       │   ├── BleScanner.kt      # BLE 扫描 + 0xFFFA 提取 + 同包去重
-        │       │   └── RidScanService.kt  # 前台扫描服务：后台常驻 + 1Hz 采样 + 常驻通知
+        │       │   ├── BleScanner.kt      # BLE 扫描 + 0xFFFF 提取 + 同包去重
+        │       │   ├── RidScanService.kt  # 前台扫描服务：后台常驻 + 1Hz 采样 + 常驻通知
+        │       │   ├── ConfigScanner.kt   # 地面态可配置模块扫描（名称 GBI_RID_001 / 服务 0xFFF0）
+        │       │   └── GattConfigClient.kt# GATT 双向配置客户端（读 FFF1~FFF5 / 写 FFF1~FFF4 + 读回确认）
         │       ├── core/                  # 纯逻辑，可 JVM 单元测试
         │       │   ├── AppState.kt        # 全局共享：注册表 + 扫描标志 + 日志缓冲（服务与 UI 共用）
         │       │   ├── Decoder.kt         # GB 46750 解码器（移植自 PC 版 decoder.py）
@@ -46,15 +49,17 @@ app_android/
         │       │   ├── Health.kt          # 健康判定 + 整改建议 advice(code)
         │       │   ├── ReportBuilder.kt   # 文本报告 + 逐帧 CSV + 8 章 Word 报告（北京时间）
         │       │   ├── DocxBuilder.kt     # 零依赖 Word(.docx) 生成器（OOXML）
-        │       │   └── RidFileProvider.kt # 文件分享用自建 content URI
+        │       │   ├── RidFileProvider.kt # 文件分享用自建 content URI
+        │       │   └── GattConfig.kt      # GATT 配置服务 UUID + 4 字段校验 + RidConfigData 模型
         │       └── ui/                    # 程序化 View（零 XML 布局）
         │           ├── Theme.kt           # 紫色系色板
         │           ├── DeviceListAdapter.kt
         │           ├── RidChartView.kt    # 实时采样曲线
         │           ├── ChartPng.kt        # 报告内嵌曲线位图 + 相对轨迹图
         │           ├── ShareUtil.kt       # 分享封装 + 导出文件清理
+        │           ├── ConfigPage.kt      # GATT 双向配置页（扫描/连接/读/写身份字段 + 日志）
         │           └── ExplainPage.kt     # 说明页
-        └── test/java/com/ridcheck/        # JVM 单元测试（63 个全部通过）
+        └── test/java/com/ridcheck/        # JVM 单元测试（71 个全部通过）
 ```
 
 ## 构建与安装
@@ -77,11 +82,12 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 ## 使用
 
-1. 主界面点 **开始扫描**，信号源列表实时出现所有广播 UUID `0xFFFA` 的设备（按 MAC 区分）。
+1. 主界面点 **开始扫描**，信号源列表实时出现所有广播 UUID `0xFFFF` 的设备（按 MAC 区分）。
 2. 点某台设备进详情：查看逐字段解码、问题清单、RSSI / 速率曲线；可复制或分享原始 HEX。
 3. 详情页可生成该设备 **Word 合规报告**，或导出 **历史采样 CSV**（Excel / WPS 可打开）。
 4. **粘贴解码**：粘贴 nRF Connect 抓到的完整 Raw 广播帧、或从 `FF` 开始的 GB 数据包，做单包静态判定（不参与扫描统计）。
 5. **后台持续记录（现场飞行推荐）**：点「开始扫描」→ 按 Home 或直接切到 QGC 等前台应用，本 APP 在前台服务里持续扫描记录，通知栏出现「RID 检测 · 后台扫描中」常驻通知。飞完切回本 APP，数据仍在，直接生成报告；点「停止扫描」只结束记录（服务仍常驻），点底部「退出」则停止后台服务并**彻底关闭程序**（开始新的测试前用）。
+6. **GATT 双向配置（起飞前写身份）**：底部「配置」标签页 →「扫描设备」找到地面态模块（名称 `GBI_RID_001`）→「连接读取」读回当前值 → 填写 001~004 字段 →「写入配置」。写入成功后即持久化到模块 NVS，起飞后广播这些值；空中态模块写锁定（拒绝写入）。
 
 > 判定基准：GB 46750-2025 5.1.2 全程连续广播 / 5.1.3 广播间隔 ≤1s / 表 3 字段要求。判定结果仅供合规自查参考，不构成官方检测结论。
 
@@ -121,7 +127,8 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 | 版本 | 提交 | 内容 |
 |------|------|------|
-| S3-v5.6.5 | （待提交） | 修复飞行日志跨扇区损坏（记录 96→128B 扇区对齐，4096B/32 条整，消除约 1/43 静默丢失）；航迹角/地速改向下取整（表 3-009/010）；主循环临界区快照化防死锁；PC 套件 82044 例通过 |
+| V6 / 2.0 | （本次提交） | 广播纯 GB 包（Service UUID `0xFFFF`，移除 ASTM F3411 字头）；新增 GATT 双向配置（地面态反写 001~004 身份字段，空中态广播 + 写锁定），固件 / PC / 安卓三端同步；安卓 APP 升级 v2.0（versionCode 9） |
+| S3-v5.6.5 | 6b73e6b | 修复飞行日志跨扇区损坏（记录 96→128B 扇区对齐，4096B/32 条整，消除约 1/43 静默丢失）；航迹角/地速改向下取整（表 3-009/010）；主循环临界区快照化防死锁；PC 套件 82044 例通过 |
 | S3-v5.6.4 | 9022fdf | 更新技术报告（docx/md/pdf），删除旧迁移/即插即用文档；数据更新间隔缩短至 400ms |
 | S3-v5.6.3 | d843477 | 广播间隔缩短至 400ms；BLE 设备名改为 `GBI_RID_001` |
 | S3-v5.6.2 | dd5043f | 修复导出问题；底部栏新增「退出」键，停止后台扫描服务并结束进程（版本 v1.7/8） |
@@ -136,11 +143,12 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 ## 测试
 
-`app/src/test/java/com/ridcheck/` 下 **64 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
+`app/src/test/java/com/ridcheck/` 下 **71 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
 
 | 测试文件 | 数量 | 覆盖内容 |
 |----------|------|----------|
-| DecoderTest | 11 | 数据包解码、AD Service Data 提取、HEX 解析、广播帧抽包（含 ASTM F3411 头剥离 + 旧格式兼容） |
+| DecoderTest | 11 | 数据包解码、AD Service Data 提取、HEX 解析、广播帧抽包（纯 GB 包，UUID 0xFFFF） |
+| GattConfigTest | 7 | GATT 配置校验：UAS_ID / 实名号 / 运行类别 / 无人机分类、RidConfigData 校验聚合与状态属性、类别标签 |
 | HealthTest | 9 | 单包判定、流式窗口（速率 / 停滞 / 冻结） |
 | DeviceRegistryTest | 14 | 多设备注册、采样 / 帧存档截断、字段携带计数、状态日志、轨迹、问题时段喂入 |
 | ReportBuilderTest | 11 | 文本报告、逐帧 CSV、8 章 Word 报告、会话统计列、建议与时间线、公式注入防护 |

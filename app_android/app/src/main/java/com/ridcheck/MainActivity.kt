@@ -38,6 +38,7 @@ import com.ridcheck.core.DeviceEntry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
+import com.ridcheck.ui.ConfigPage
 import com.ridcheck.ui.DeviceListAdapter
 import com.ridcheck.ui.ExplainPage
 import com.ridcheck.ui.RidChartView
@@ -47,7 +48,7 @@ import java.util.Locale
 
 /**
  * 安卓版 RID 检测工具：设备列表 + 详情页（自用，界面从简）。
- * 主界面列出所有广播 UUID 0xFFFA 的信号源，点进某台设备实时查看判定/字段/原始数据。
+ * 主界面列出所有广播 UUID 0xFFFF 的信号源，点进某台设备实时查看判定/字段/原始数据。
  */
 class MainActivity : Activity() {
 
@@ -98,12 +99,21 @@ class MainActivity : Activity() {
     private lateinit var recordSection: LinearLayout
     private lateinit var chartView: RidChartView
 
+    // GATT 双向配置页
+    private lateinit var configPage: ConfigPage
+    private lateinit var configRoot: ScrollView
+
     // 底部导航
+    private enum class Tab { MAIN, CONFIG, EXPLAIN }
+
     private lateinit var tabMain: LinearLayout
+    private lateinit var tabConfig: LinearLayout
     private lateinit var tabExplain: LinearLayout
     private lateinit var tabMainStripe: View
+    private lateinit var tabConfigStripe: View
     private lateinit var tabExplainStripe: View
     private lateinit var tabMainText: TextView
+    private lateinit var tabConfigText: TextView
     private lateinit var tabExplainText: TextView
     private lateinit var btnQuit: TextView
 
@@ -142,10 +152,16 @@ class MainActivity : Activity() {
         ticker.removeCallbacks(tickRunnable)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        configPage.shutdown()
+    }
+
     override fun onBackPressed() {
         when {
             detailRoot.visibility == View.VISIBLE -> showList()
             explainRoot.visibility == View.VISIBLE -> showMainTab()
+            configRoot.visibility == View.VISIBLE -> showMainTab()
             else -> super.onBackPressed()
         }
     }
@@ -158,11 +174,15 @@ class MainActivity : Activity() {
         val content = FrameLayout(this)
         listRoot = buildListPage()
         detailRoot = buildDetailPage()
+        configPage = ConfigPage(this)
+        configRoot = configPage.root
         explainRoot = ExplainPage.build(this)
         content.addView(listRoot, lpFill())
         content.addView(detailRoot, lpFill())
+        content.addView(configRoot, lpFill())
         content.addView(explainRoot, lpFill())
         detailRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         explainRoot.visibility = View.GONE
 
         // 内容区占满底部导航以上空间；宽 MATCH_PARENT + 高 0 + weight 1
@@ -385,13 +405,15 @@ class MainActivity : Activity() {
         bar.setBackgroundColor(Color.rgb(250, 250, 250))
         bar.setElevation(dp(8).toFloat())
 
-        tabMain = buildTab("主界面", isMain = true) { showMainTab() }
-        tabExplain = buildTab("说明", isMain = false) { showExplainTab() }
+        tabMain = buildTab(Tab.MAIN, "主界面") { showMainTab() }
+        tabConfig = buildTab(Tab.CONFIG, "配置") { showConfigTab() }
+        tabExplain = buildTab(Tab.EXPLAIN, "说明") { showExplainTab() }
         btnQuit = buildQuitButton()
         bar.addView(tabMain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        bar.addView(tabConfig, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         bar.addView(tabExplain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         bar.addView(btnQuit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        setTabActive(true)
+        setTabActive(Tab.MAIN)
         return bar
     }
 
@@ -426,7 +448,7 @@ class MainActivity : Activity() {
     }
 
     /** 每个 tab = 顶部 3dp 色条 + 居中文字，点击切换。 */
-    private fun buildTab(label: String, isMain: Boolean, onClick: () -> Unit): LinearLayout {
+    private fun buildTab(tab: Tab, label: String, onClick: () -> Unit): LinearLayout {
         val container = LinearLayout(this)
         container.orientation = LinearLayout.VERTICAL
         val stripe = View(this)
@@ -442,31 +464,47 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
         container.setOnClickListener { onClick() }
-        if (isMain) {
-            tabMain = container
-            tabMainStripe = stripe
-            tabMainText = text
-        } else {
-            tabExplain = container
-            tabExplainStripe = stripe
-            tabExplainText = text
+        when (tab) {
+            Tab.MAIN -> {
+                tabMain = container; tabMainStripe = stripe; tabMainText = text
+            }
+            Tab.CONFIG -> {
+                tabConfig = container; tabConfigStripe = stripe; tabConfigText = text
+            }
+            Tab.EXPLAIN -> {
+                tabExplain = container; tabExplainStripe = stripe; tabExplainText = text
+            }
         }
         return container
     }
 
-    private fun setTabActive(main: Boolean) {
-        tabMainStripe.visibility = if (main) View.VISIBLE else View.GONE
-        tabExplainStripe.visibility = if (main) View.GONE else View.VISIBLE
-        tabMainText.setTextColor(if (main) Theme.PRIMARY else Color.rgb(120, 120, 120))
-        tabMainText.setTypeface(null, if (main) Typeface.BOLD else Typeface.NORMAL)
-        tabExplainText.setTextColor(if (main) Color.rgb(120, 120, 120) else Theme.PRIMARY)
-        tabExplainText.setTypeface(null, if (main) Typeface.NORMAL else Typeface.BOLD)
+    private fun setTabActive(active: Tab) {
+        setTabState(tabMainStripe, tabMainText, active == Tab.MAIN)
+        setTabState(tabConfigStripe, tabConfigText, active == Tab.CONFIG)
+        setTabState(tabExplainStripe, tabExplainText, active == Tab.EXPLAIN)
+    }
+
+    private fun setTabState(stripe: View, text: TextView, active: Boolean) {
+        stripe.visibility = if (active) View.VISIBLE else View.GONE
+        text.setTextColor(if (active) Theme.PRIMARY else Color.rgb(120, 120, 120))
+        text.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
     }
 
     private fun showMainTab() {
         explainRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         showList()
-        setTabActive(true)
+        setTabActive(Tab.MAIN)
+    }
+
+    private fun showConfigTab() {
+        currentDetailAddress = null
+        currentDetailPkt = null
+        detailRoot.visibility = View.GONE
+        listRoot.visibility = View.GONE
+        explainRoot.visibility = View.GONE
+        configRoot.visibility = View.VISIBLE
+        setTabActive(Tab.CONFIG)
     }
 
     private fun showExplainTab() {
@@ -474,8 +512,9 @@ class MainActivity : Activity() {
         currentDetailPkt = null
         detailRoot.visibility = View.GONE
         listRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         explainRoot.visibility = View.VISIBLE
-        setTabActive(false)
+        setTabActive(Tab.EXPLAIN)
         adapter.notifyDataSetChanged()
     }
 
@@ -484,6 +523,7 @@ class MainActivity : Activity() {
         currentDetailAddress = null
         currentDetailPkt = null
         detailRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         listRoot.visibility = View.VISIBLE
         adapter.notifyDataSetChanged()
     }
@@ -492,9 +532,10 @@ class MainActivity : Activity() {
         currentDetailAddress = address
         currentDetailPkt = null // BLE 实时数据在 renderDetail 里从 entry 读取
         listRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         detailRoot.visibility = View.VISIBLE
         explainRoot.visibility = View.GONE
-        setTabActive(true)
+        setTabActive(Tab.MAIN)
         renderDetail()
     }
 
@@ -648,6 +689,7 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        configPage.onRequestPermissionsResult(requestCode)
         if (requestCode != REQ_PERMISSIONS) return
         if (hasPermissions()) {
             startScanFlow()
@@ -744,9 +786,10 @@ class MainActivity : Activity() {
         currentDetailAddress = MANUAL_ADDRESS
         currentDetailPkt = pkt
         listRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
         detailRoot.visibility = View.VISIBLE
         explainRoot.visibility = View.GONE
-        setTabActive(true)
+        setTabActive(Tab.MAIN)
         renderDetail()
     }
 
