@@ -10,6 +10,9 @@ object AppState {
 
     val registry = DeviceRegistry()
 
+    /** 可 GATT 配置的模块（地面态，广播 0xFFF0），按 MAC 有序。 */
+    private val configDevices = LinkedHashMap<String, ConfigDevice>()
+
     /** 是否正在扫描（由 RidScanService 维护）。 */
     var scanning = false
 
@@ -21,4 +24,17 @@ object AppState {
         logLines.addLast(line)
         while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
     }
+
+    /** 收录/更新一个可配置模块。 */
+    fun onConfigDevice(address: String, rssi: Int, name: String?) {
+        val d = configDevices.getOrPut(address) { ConfigDevice(address) }
+        d.rssi = rssi
+        if (name != null) d.name = name
+        val now = System.currentTimeMillis()
+        if (d.firstSeenMs == 0L) d.firstSeenMs = now
+        d.lastSeenMs = now
+    }
+
+    val configDeviceList: List<ConfigDevice>
+        get() = configDevices.values.toList()
 }

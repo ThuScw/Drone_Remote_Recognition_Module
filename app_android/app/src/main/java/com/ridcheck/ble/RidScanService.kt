@@ -66,6 +66,10 @@ class RidScanService : Service() {
             AppState.registry.onPacket(pkt, System.currentTimeMillis())
         }
 
+        override fun onConfigDevice(address: String, rssi: Int, name: String?) {
+            AppState.onConfigDevice(address, rssi, name)
+        }
+
         override fun onScanState(scanning: Boolean) {
             AppState.scanning = scanning
         }
@@ -150,9 +154,9 @@ class RidScanService : Service() {
     private fun buildNotification(): Notification {
         val count = AppState.registry.size
         val text = if (count == 0) {
-            "等待 RID 广播设备（UUID 0xFFFF）..."
+            "等待 RID 广播（0xFFFF）或可配置模块（0xFFF0）..."
         } else {
-            "已记录 $count 台设备，后台持续收集中"
+            "已记录 $count 台广播设备，后台持续收集中"
         }
         val contentIntent = PendingIntent.getActivity(
             this, 0,

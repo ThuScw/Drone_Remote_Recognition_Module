@@ -1,13 +1,11 @@
 package com.ridcheck.ui
 
-import android.Manifest
 import android.app.Activity
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
-import android.os.Build
 import android.text.InputFilter
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
@@ -17,38 +15,37 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
-import com.ridcheck.ble.ConfigScanner
 import com.ridcheck.ble.GattConfigClient
 import com.ridcheck.core.GattConfig
 import com.ridcheck.core.RidConfigData
 
 /**
- * GATT 双向配置页：扫描地面态模块，读取/写入 4 个身份字段 + 状态。
- * 与 PC 版 app/gui/config_panel.py 行为对齐。
+ * GATT 双向配置页：针对主界面选中的某一台可配置模块（按 MAC 地址绑定），
+ * 读取/写入 4 个身份字段 + 状态。与 PC 版 app/gui/config_panel.py 行为对齐。
+ * 设备识别由统一扫描器按报文字节（0xFFF0）完成，本页不再自行扫描。
  */
-class ConfigPage(private val activity: Activity) {
+class ConfigPage(
+    private val activity: Activity,
+    private val address: String,
+    private val onBack: () -> Unit
+) {
 
     companion object {
-        const val REQ_CONFIG_PERMISSIONS = 1003
         private const val MAX_LOG_LINES = 200
     }
 
     val root: ScrollView
 
-    private lateinit var deviceSpinner: Spinner
-    private lateinit var btnScan: Button
-    private lateinit var btnRead: Button
     private lateinit var lblState: TextView
     private lateinit var editUas: EditText
     private lateinit var editRealname: EditText
     private lateinit var spinnerOp: Spinner
     private lateinit var spinnerUa: Spinner
+    private lateinit var btnRead: Button
     private lateinit var btnWrite: Button
     private lateinit var logView: TextView
 
-    private val devices = ArrayList<String>()
     private val logLines = ArrayDeque<String>()
-    private var scanner: ConfigScanner? = null
     private var gattClient: GattConfigClient? = null
     private var connectedCfg: RidConfigData? = null
     private var busy = false
@@ -68,23 +65,31 @@ class ConfigPage(private val activity: Activity) {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ))
 
-        col.addView(title("GATT 双向配置"))
+        // 顶部：返回 + 标题
+        val topRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnBack = button("← 返回列表")
+        btnBack.setOnClickListener { onBack() }
+        topRow.addView(btnBack)
+        topRow.addView(title("GATT 配置").apply {
+            setPadding(dp(10), 0, 0, 0)
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(topRow)
 
-        // 设备行
-        val deviceRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-        deviceSpinner = Spinner(activity)
-        deviceRow.addView(deviceSpinner, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        btnScan = button("扫描设备")
-        btnScan.setOnClickListener { startScan() }
-        btnRead = button("连接读取")
-        btnRead.setOnClickListener { readConfig() }
-        deviceRow.addView(btnScan)
-        deviceRow.addView(btnRead)
-        refreshDeviceSpinner()
-        col.addView(deviceRow)
-
+        col.addView(label("设备: $address"))
         lblState = label("状态: --")
         col.addView(lblState)
+
+        // 操作行
+        val actRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        btnRead = button("连接读取")
+        btnRead.setOnClickListener { readConfig() }
+        actRow.addView(btnRead, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        btnWrite = button("写入配置")
+        btnWrite.isEnabled = false
+        btnWrite.setOnClickListener { writeConfig() }
+        actRow.addView(btnWrite, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(actRow)
 
         col.addView(sectionLabel("身份字段（起飞前写入，起飞后广播）"))
 
@@ -121,15 +126,11 @@ class ConfigPage(private val activity: Activity) {
         col.addView(spinnerUa, lpMatch())
 
         // 操作行
-        val actRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
-        btnWrite = button("写入配置")
-        btnWrite.isEnabled = false
-        btnWrite.setOnClickListener { writeConfig() }
+        val writeRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         val btnClear = button("清空输入")
         btnClear.setOnClickListener { clearFields() }
-        actRow.addView(btnWrite, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        actRow.addView(btnClear, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        col.addView(actRow)
+        writeRow.addView(btnClear, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(writeRow)
 
         col.addView(body(
             "说明：模块仅在地面态接受写入；空中态写锁定。写入成功后即持久化到 NVS，" +
@@ -194,48 +195,13 @@ class ConfigPage(private val activity: Activity) {
 
     private fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
 
-    // ------------------------------------------------------------- device
-    private fun selectedDevice(): String? = if (devices.isEmpty()) null
-    else devices[deviceSpinner.selectedItemPosition.coerceIn(0, devices.size - 1)]
-
-    private fun remoteDevice(address: String) =
+    private fun remoteDevice(): BluetoothDevice? =
         (activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
             ?.adapter?.getRemoteDevice(address)
 
-    private fun refreshDeviceSpinner() {
-        deviceSpinner.adapter = ArrayAdapter(
-            activity, android.R.layout.simple_spinner_item,
-            if (devices.isEmpty()) listOf("（未发现模块）") else devices
-        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        btnRead.isEnabled = devices.isNotEmpty()
-    }
-
     // ------------------------------------------------------------ actions
-    private fun startScan() {
-        if (!hasPermissions()) {
-            activity.requestPermissions(neededPermissions(), REQ_CONFIG_PERMISSIONS)
-            return
-        }
-        doScan()
-    }
-
-    private fun doScan() {
-        if (scanner != null) return
-        devices.clear()
-        refreshDeviceSpinner()
-        btnScan.isEnabled = false
-        val sc = ConfigScanner(scanListener)
-        scanner = sc
-        if (!sc.start(activity)) {
-            log("扫描启动失败：无蓝牙或权限不足")
-            btnScan.isEnabled = true
-            scanner = null
-        }
-    }
-
     private fun readConfig() {
-        val addr = selectedDevice() ?: return
-        val device = remoteDevice(addr) ?: run { log("蓝牙不可用"); return }
+        val device = remoteDevice() ?: run { log("蓝牙不可用"); return }
         val client = GattConfigClient(device, gattListener)
         gattClient = client
         setBusy(true)
@@ -243,8 +209,7 @@ class ConfigPage(private val activity: Activity) {
     }
 
     private fun writeConfig() {
-        val addr = selectedDevice() ?: return
-        val device = remoteDevice(addr) ?: run { log("蓝牙不可用"); return }
+        val device = remoteDevice() ?: run { log("蓝牙不可用"); return }
         val cfg = collectFields()
         val errs = cfg.validate()
         if (errs.isNotEmpty()) {
@@ -283,27 +248,11 @@ class ConfigPage(private val activity: Activity) {
 
     private fun setBusy(b: Boolean) {
         busy = b
-        btnScan.isEnabled = !b
-        btnRead.isEnabled = !b && devices.isNotEmpty()
+        btnRead.isEnabled = !b
         btnWrite.isEnabled = !b && connectedCfg != null
     }
 
     // ---------------------------------------------------------- callbacks
-    private val scanListener = object : ConfigScanner.Listener {
-        override fun onDevice(address: String) {
-            devices.add(address)
-            refreshDeviceSpinner()
-        }
-
-        override fun onLog(text: String) = log(text)
-
-        override fun onDone() {
-            if (!busy) btnScan.isEnabled = true
-            scanner = null
-            if (devices.isEmpty()) log("未发现可配置模块（确认模块处于地面可连接态）")
-        }
-    }
-
     private val gattListener = object : GattConfigClient.Listener {
         override fun onLog(text: String) = log(text)
 
@@ -327,25 +276,6 @@ class ConfigPage(private val activity: Activity) {
         }
     }
 
-    // -------------------------------------------------------- permissions
-    private fun neededPermissions(): Array<String> =
-        if (Build.VERSION.SDK_INT >= 31) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-
-    private fun hasPermissions(): Boolean =
-        neededPermissions().all {
-            activity.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
-        }
-
-    /** 由 MainActivity.onRequestPermissionsResult 转发，授权后继续扫描。 */
-    fun onRequestPermissionsResult(requestCode: Int) {
-        if (requestCode != REQ_CONFIG_PERMISSIONS) return
-        if (hasPermissions()) doScan() else log("缺少蓝牙/定位权限，无法扫描")
-    }
-
     // -------------------------------------------------------------- log
     private fun log(msg: String) {
         logLines.addLast(msg)
@@ -354,8 +284,6 @@ class ConfigPage(private val activity: Activity) {
     }
 
     fun shutdown() {
-        scanner?.stop()
-        scanner = null
         gattClient?.close()
         gattClient = null
     }

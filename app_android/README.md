@@ -15,7 +15,7 @@
 | 记录与分析 | RSSI / 速率 1Hz 采样曲线；表 3 全 21 项会话统计；问题出现时段（时间轴）；生成 8 章 Word 合规报告（内嵌 RSSI/速率曲线 + 相对轨迹图）；导出逐帧 CSV |
 | 内容分享 | 文本 / CSV / Word 报告经系统分享面板发出（自建 FileProvider，无 AndroidX） |
 | 内置说明页 | RID 简介、表 3 字段表、判定标准、使用方法 |
-| GATT 双向配置 | 「配置」标签页扫描地面态模块（名称 `GBI_RID_001` / 服务 `0xFFF0`），读取/写入 001~004 身份字段 + 状态，写成功即持久化到模块 NVS |
+| GATT 双向配置 | 主界面「可 GATT 配置的信号源」栏目（按报文字节 16-bit Service UUID `0xFFF0` 识别，不依赖广播名），点某台进入配置页读取/写入 001~004 身份字段 + 状态，写成功即持久化到模块 NVS |
 
 ## 目录结构
 
@@ -31,11 +31,10 @@ app_android/
         ├── main/
         │   ├── AndroidManifest.xml        # BLE 权限（12+ 用 BLUETOOTH_SCAN/CONNECT）
         │   └── java/com/ridcheck/
-        │       ├── MainActivity.kt        # 主界面：设备列表 + 详情页 + 底部导航（主界面/配置/说明 + 退出；扫描在服务里）
+        │       ├── MainActivity.kt        # 主界面：广播信号源 + 可配置信号源两栏目 + 详情页/配置页 + 底部导航（主界面/说明 + 退出；扫描在服务里）
         │       ├── ble/
-        │       │   ├── BleScanner.kt      # BLE 扫描 + 0xFFFF 提取 + 同包去重
+        │       │   ├── BleScanner.kt      # 统一 BLE 扫描 + 报文字节分类（广播 0xFFFF / 可配置 0xFFF0）+ 同包去重
         │       │   ├── RidScanService.kt  # 前台扫描服务：后台常驻 + 1Hz 采样 + 常驻通知
-        │       │   ├── ConfigScanner.kt   # 地面态可配置模块扫描（名称 GBI_RID_001 / 服务 0xFFF0）
         │       │   └── GattConfigClient.kt# GATT 双向配置客户端（读 FFF1~FFF5 / 写 FFF1~FFF4 + 读回确认）
         │       ├── core/                  # 纯逻辑，可 JVM 单元测试
         │       │   ├── AppState.kt        # 全局共享：注册表 + 扫描标志 + 日志缓冲（服务与 UI 共用）
@@ -54,10 +53,11 @@ app_android/
         │       └── ui/                    # 程序化 View（零 XML 布局）
         │           ├── Theme.kt           # 紫色系色板
         │           ├── DeviceListAdapter.kt
+        │           ├── ConfigDeviceAdapter.kt # 可配置模块列表行
         │           ├── RidChartView.kt    # 实时采样曲线
         │           ├── ChartPng.kt        # 报告内嵌曲线位图 + 相对轨迹图
         │           ├── ShareUtil.kt       # 分享封装 + 导出文件清理
-        │           ├── ConfigPage.kt      # GATT 双向配置页（扫描/连接/读/写身份字段 + 日志）
+        │           ├── ConfigPage.kt      # GATT 双向配置页（绑定单台模块地址：连接/读/写身份字段 + 日志）
         │           └── ExplainPage.kt     # 说明页
         └── test/java/com/ridcheck/        # JVM 单元测试（71 个全部通过）
 ```
@@ -87,7 +87,7 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 3. 详情页可生成该设备 **Word 合规报告**，或导出 **历史采样 CSV**（Excel / WPS 可打开）。
 4. **粘贴解码**：粘贴 nRF Connect 抓到的完整 Raw 广播帧、或从 `FF` 开始的 GB 数据包，做单包静态判定（不参与扫描统计）。
 5. **后台持续记录（现场飞行推荐）**：点「开始扫描」→ 按 Home 或直接切到 QGC 等前台应用，本 APP 在前台服务里持续扫描记录，通知栏出现「RID 检测 · 后台扫描中」常驻通知。飞完切回本 APP，数据仍在，直接生成报告；点「停止扫描」只结束记录（服务仍常驻），点底部「退出」则停止后台服务并**彻底关闭程序**（开始新的测试前用）。
-6. **GATT 双向配置（起飞前写身份）**：底部「配置」标签页 →「扫描设备」找到地面态模块（名称 `GBI_RID_001`）→「连接读取」读回当前值 → 填写 001~004 字段 →「写入配置」。写入成功后即持久化到模块 NVS，起飞后广播这些值；空中态模块写锁定（拒绝写入）。
+6. **GATT 双向配置（起飞前写身份）**：主界面扫描后，在「可 GATT 配置的信号源」栏目（按报文字节 16-bit Service UUID `0xFFF0` 识别，不依赖广播名）点某台地面态模块 →「连接读取」读回当前值 → 填写 001~004 字段 →「写入配置」。写入成功后即持久化到模块 NVS，起飞后广播这些值；空中态模块写锁定（拒绝写入）。
 
 > 判定基准：GB 46750-2025 5.1.2 全程连续广播 / 5.1.3 广播间隔 ≤1s / 表 3 字段要求。判定结果仅供合规自查参考，不构成官方检测结论。
 

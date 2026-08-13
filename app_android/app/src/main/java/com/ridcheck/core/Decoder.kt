@@ -114,6 +114,33 @@ object Decoder {
     }
 
     /**
+     * 解析原始广播字节中的 AD type 0x02/0x03（16-bit Service Class UUID 列表）。
+     * 返回出现的全部 16-bit UUID。用于字节级识别可 GATT 配置的模块（0xFFF0），
+     * 不依赖广播名。
+     */
+    fun parseAdServiceUuids(raw: ByteArray): Set<Int> {
+        val out = LinkedHashSet<Int>()
+        var i = 0
+        val n = raw.size
+        while (i < n) {
+            val length = raw[i].toInt() and 0xFF
+            if (length == 0 || i + 1 + length > n) break
+            val typ = raw[i + 1].toInt() and 0xFF
+            val data = raw.copyOfRange(i + 2, i + 1 + length)
+            if ((typ == 0x02 || typ == 0x03) && data.size >= 2) {
+                var j = 0
+                while (j + 1 < data.size) {
+                    val uuid16 = ((data[j + 1].toInt() and 0xFF) shl 8) or (data[j].toInt() and 0xFF)
+                    out.add(uuid16)
+                    j += 2
+                }
+            }
+            i += 1 + length
+        }
+        return out
+    }
+
+    /**
      * 把粘贴的字节规范化为原始 GB 数据包：
      * - 以 0xFF 开头的裸数据包直接返回
      * - 否则当作完整 BLE 广播帧，从 Service Data AD 中抽取

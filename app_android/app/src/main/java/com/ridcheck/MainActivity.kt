@@ -38,6 +38,7 @@ import com.ridcheck.core.DeviceEntry
 import com.ridcheck.core.Health
 import com.ridcheck.core.HealthLevel
 import com.ridcheck.core.HealthReport
+import com.ridcheck.ui.ConfigDeviceAdapter
 import com.ridcheck.ui.ConfigPage
 import com.ridcheck.ui.DeviceListAdapter
 import com.ridcheck.ui.ExplainPage
@@ -99,21 +100,19 @@ class MainActivity : Activity() {
     private lateinit var recordSection: LinearLayout
     private lateinit var chartView: RidChartView
 
-    // GATT 双向配置页
-    private lateinit var configPage: ConfigPage
-    private lateinit var configRoot: ScrollView
+    // GATT 双向配置（按选中的可配置模块地址动态构建）
+    private var configPage: ConfigPage? = null
+    private lateinit var configRoot: FrameLayout
+    private lateinit var configAdapter: ConfigDeviceAdapter
 
     // 底部导航
-    private enum class Tab { MAIN, CONFIG, EXPLAIN }
+    private enum class Tab { MAIN, EXPLAIN }
 
     private lateinit var tabMain: LinearLayout
-    private lateinit var tabConfig: LinearLayout
     private lateinit var tabExplain: LinearLayout
     private lateinit var tabMainStripe: View
-    private lateinit var tabConfigStripe: View
     private lateinit var tabExplainStripe: View
     private lateinit var tabMainText: TextView
-    private lateinit var tabConfigText: TextView
     private lateinit var tabExplainText: TextView
     private lateinit var btnQuit: TextView
 
@@ -126,7 +125,8 @@ class MainActivity : Activity() {
         override fun run() {
             renderScanState()
             adapter.notifyDataSetChanged()
-            txtCount.text = "已发现 ${AppState.registry.size} 台设备"
+            configAdapter.notifyDataSetChanged()
+            txtCount.text = "广播 ${AppState.registry.size} · 可配置 ${AppState.configDeviceList.size}"
             renderLog()
             if (currentDetailAddress != null) renderDetail()
             ticker.postDelayed(this, 1000)
@@ -136,7 +136,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        log("就绪。点击“开始扫描”收集所有 RID 广播设备，点设备进详情；或粘贴 nRF Connect 抓到的 HEX。")
+        log("就绪。点“开始扫描”收集广播（0xFFFF）与可配置模块（0xFFF0），点信号源进详情或配置；或粘贴 HEX。")
     }
 
     override fun onResume() {
@@ -154,14 +154,14 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        configPage.shutdown()
+        configPage?.shutdown()
     }
 
     override fun onBackPressed() {
         when {
             detailRoot.visibility == View.VISIBLE -> showList()
             explainRoot.visibility == View.VISIBLE -> showMainTab()
-            configRoot.visibility == View.VISIBLE -> showMainTab()
+            configRoot.visibility == View.VISIBLE -> showList()
             else -> super.onBackPressed()
         }
     }
@@ -174,8 +174,7 @@ class MainActivity : Activity() {
         val content = FrameLayout(this)
         listRoot = buildListPage()
         detailRoot = buildDetailPage()
-        configPage = ConfigPage(this)
-        configRoot = configPage.root
+        configRoot = FrameLayout(this)
         explainRoot = ExplainPage.build(this)
         content.addView(listRoot, lpFill())
         content.addView(detailRoot, lpFill())
@@ -246,7 +245,7 @@ class MainActivity : Activity() {
         txtCount.gravity = Gravity.END
         statusRow.addView(txtCount)
 
-        col.addView(sectionLabel("信号源（点击查看详情）"))
+        col.addView(sectionLabel("正在广播的信号源（点击查看详情）"))
 
         adapter = DeviceListAdapter(this) { AppState.registry.list }
         val listView = ListView(this)
@@ -260,6 +259,18 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
 
+        col.addView(sectionLabel("可 GATT 配置的信号源（点击进入配置）"))
+
+        configAdapter = ConfigDeviceAdapter(this) { AppState.configDeviceList }
+        val configList = ListView(this)
+        configList.adapter = configAdapter
+        configList.setOnItemClickListener { _, _, position, _ ->
+            showConfig(configAdapter.getItem(position).address)
+        }
+        col.addView(configList, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(130)
+        ))
+
         col.addView(sectionLabel("日志"))
         val logScroll = ScrollView(this)
         txtLog = TextView(this)
@@ -267,7 +278,7 @@ class MainActivity : Activity() {
         txtLog.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
         txtLog.setTextColor(Color.rgb(80, 80, 80))
         logScroll.addView(txtLog, lpFill())
-        col.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)))
+        col.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(130)))
 
         return col
     }
@@ -406,11 +417,9 @@ class MainActivity : Activity() {
         bar.setElevation(dp(8).toFloat())
 
         tabMain = buildTab(Tab.MAIN, "主界面") { showMainTab() }
-        tabConfig = buildTab(Tab.CONFIG, "配置") { showConfigTab() }
         tabExplain = buildTab(Tab.EXPLAIN, "说明") { showExplainTab() }
         btnQuit = buildQuitButton()
         bar.addView(tabMain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        bar.addView(tabConfig, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         bar.addView(tabExplain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         bar.addView(btnQuit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         setTabActive(Tab.MAIN)
@@ -468,9 +477,6 @@ class MainActivity : Activity() {
             Tab.MAIN -> {
                 tabMain = container; tabMainStripe = stripe; tabMainText = text
             }
-            Tab.CONFIG -> {
-                tabConfig = container; tabConfigStripe = stripe; tabConfigText = text
-            }
             Tab.EXPLAIN -> {
                 tabExplain = container; tabExplainStripe = stripe; tabExplainText = text
             }
@@ -480,7 +486,6 @@ class MainActivity : Activity() {
 
     private fun setTabActive(active: Tab) {
         setTabState(tabMainStripe, tabMainText, active == Tab.MAIN)
-        setTabState(tabConfigStripe, tabConfigText, active == Tab.CONFIG)
         setTabState(tabExplainStripe, tabExplainText, active == Tab.EXPLAIN)
     }
 
@@ -497,14 +502,18 @@ class MainActivity : Activity() {
         setTabActive(Tab.MAIN)
     }
 
-    private fun showConfigTab() {
+    private fun showConfig(address: String) {
         currentDetailAddress = null
         currentDetailPkt = null
+        configPage?.shutdown()
+        configPage = ConfigPage(this, address) { showList() }
+        configRoot.removeAllViews()
+        configRoot.addView(configPage!!.root, lpFill())
         detailRoot.visibility = View.GONE
         listRoot.visibility = View.GONE
         explainRoot.visibility = View.GONE
         configRoot.visibility = View.VISIBLE
-        setTabActive(Tab.CONFIG)
+        setTabActive(Tab.MAIN)
     }
 
     private fun showExplainTab() {
@@ -689,7 +698,6 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        configPage.onRequestPermissionsResult(requestCode)
         if (requestCode != REQ_PERMISSIONS) return
         if (hasPermissions()) {
             startScanFlow()

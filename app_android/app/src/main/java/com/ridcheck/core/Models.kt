@@ -156,6 +156,14 @@ data class TrackPoint(
 /** 运行状态变化记录：opStatus 变化时追加一条。 */
 data class StatusLogEntry(val timeMs: Long, val opStatus: Int)
 
+/** 可 GATT 配置的模块（地面态，广播 16-bit Service Class UUID 0xFFF0）。按 MAC 区分。 */
+class ConfigDevice(val address: String) {
+    var rssi: Int = 0
+    var name: String? = null
+    var firstSeenMs: Long = 0
+    var lastSeenMs: Long = 0
+}
+
 /** 一次流式判定结果。 */
 class HealthReport {
     var level: HealthLevel = HealthLevel.PASS
