@@ -4,9 +4,10 @@
 #include <stdint.h>
 #include "rid_messages.h"
 
-// RID BLE Service UUID (16-bit SIG-assigned for ASTM/OpenDroneID Remote ID)
-// GB 46750-2025 未定义传输 UUID; 0xFFFA 是业界通用 (ArduRemoteID / CUAV / 安擎 DroneID)
-#define RID_SERVICE_UUID 0xFFFA
+// RID BLE Service UUID (16-bit)
+// GB 46750-2025 未定义 BLE Service Data 的帧级封装; 采用中性未分配 UUID 0xFFFF
+// 承载纯 GB 数据包 (不带 ASTM/OpenDroneID 的 0xFFFA/0x0D 字头)
+#define RID_SERVICE_UUID 0xFFFF
 
 class BleRidBroadcaster {
 public:
@@ -55,7 +56,6 @@ private:
     uint8_t  _updateFailures = 0;
     bool     _degraded = false;
     bool     _useAltPhy = false;
-    uint8_t  _msgCounter = 0;  // ASTM F3411 message counter (wraps at 255)
 };
 
 #endif // BLE_RID_BROADCASTER_H

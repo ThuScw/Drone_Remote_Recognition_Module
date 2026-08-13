@@ -4,26 +4,20 @@ from __future__ import annotations
 from packet_builder import build_packet
 
 from rid.ble_scanner import (
-    ASTM_APP_CODE,
     _match_uuid,
     extract_gb_from_adv,
     extract_packet,
     is_target,
 )
 
-# firmware writes RID_SERVICE_UUID (0xFFFA) little-endian:
-#   *p++ = RID_SERVICE_UUID & 0xFF      -> 0xFA
+# firmware writes RID_SERVICE_UUID (0xFFFF) little-endian:
+#   *p++ = RID_SERVICE_UUID & 0xFF      -> 0xFF
 #   *p++ = (RID_SERVICE_UUID >> 8) & 0xFF -> 0xFF
-UUID_LE = b"\xfa\xff"
+UUID_LE = b"\xff\xff"
 
 
 def _ad_struct(typ: int, payload: bytes) -> bytes:
     return bytes([len(payload) + 1, typ]) + payload
-
-
-def _astm_service_data(raw: bytes, counter: int = 0x01) -> bytes:
-    """Build Service Data payload with ASTM F3411 header (as firmware now emits)."""
-    return bytes([ASTM_APP_CODE, counter]) + raw
 
 
 def _fake_adv(sd=None, data=None, uuids=None, name="", platform_data=None):
@@ -40,11 +34,11 @@ def _fake_adv(sd=None, data=None, uuids=None, name="", platform_data=None):
 
 
 def test_match_uuid_forms():
-    assert _match_uuid("fffa")
-    assert _match_uuid("0000fffa")
-    assert _match_uuid("0000fffa-0000-1000-8000-00805f9b34fb")
-    assert _match_uuid(0xFFFA)
-    assert _match_uuid(65530)
+    assert _match_uuid("ffff")
+    assert _match_uuid("0000ffff")
+    assert _match_uuid("0000ffff-0000-1000-8000-00805f9b34fb")
+    assert _match_uuid(0xFFFF)
+    assert _match_uuid(65535)
     assert not _match_uuid("1234")
     assert not _match_uuid("00001234-0000-1000-8000-00805f9b34fb")
     assert not _match_uuid(0x1234)
@@ -52,17 +46,17 @@ def test_match_uuid_forms():
 
 def test_extract_from_service_data_dict():
     raw = build_packet()
-    adv = _fake_adv(sd={"0000fffa-0000-1000-8000-00805f9b34fb": raw})
+    adv = _fake_adv(sd={"0000ffff-0000-1000-8000-00805f9b34fb": raw})
     assert extract_packet(adv) == raw
 
 
 def test_extract_from_raw_ad_bytes():
-    """Raw AD bytes with ASTM F3411 header (new firmware format)."""
+    """Raw AD bytes: flags + name + service data (pure GB packet, no header)."""
     raw = build_packet()
     ad = (
         _ad_struct(0x01, b"\x06")
         + _ad_struct(0x09, b"GBI_RID_001")
-        + _ad_struct(0x16, UUID_LE + _astm_service_data(raw))
+        + _ad_struct(0x16, UUID_LE + raw)
     )
     assert extract_packet(_fake_adv(data=ad)) == raw
 
@@ -73,16 +67,16 @@ def test_extract_from_winrt_platform_data():
     ad = (
         _ad_struct(0x01, b"\x06")
         + _ad_struct(0x09, b"GBI_RID_001")
-        + _ad_struct(0x16, UUID_LE + _astm_service_data(raw))
+        + _ad_struct(0x16, UUID_LE + raw)
     )
     assert extract_packet(_fake_adv(platform_data=("sender", ad))) == raw
 
 
 def test_extract_from_fragmented_raw_ad():
-    """Fragmented Service Data with ASTM header across two AD structures."""
+    """Fragmented Service Data across two AD structures."""
     raw = build_packet()
     ad = (
-        _ad_struct(0x16, UUID_LE + _astm_service_data(raw[:40]))
+        _ad_struct(0x16, UUID_LE + raw[:40])
         + _ad_struct(0x16, UUID_LE + raw[40:])
     )
     assert extract_packet(_fake_adv(data=ad)) == raw
@@ -90,8 +84,8 @@ def test_extract_from_fragmented_raw_ad():
 
 def test_is_target_by_name_and_uuid():
     assert is_target("GBI_RID_001", _fake_adv())
-    assert is_target("", _fake_adv(uuids=["0000fffa-0000-1000-8000-00805f9b34fb"]))
-    assert is_target("", _fake_adv(sd={"fffa": build_packet()}))
+    assert is_target("", _fake_adv(uuids=["0000ffff-0000-1000-8000-00805f9b34fb"]))
+    assert is_target("", _fake_adv(sd={"ffff": build_packet()}))
     assert not is_target("OTHER_DEV", _fake_adv(uuids=["0000aaaa-0000-1000-8000-00805f9b34fb"]))
     assert not is_target("", _fake_adv())
 
@@ -112,21 +106,21 @@ def test_extract_gb_from_bare_packet_passthrough():
 
 
 def test_extract_gb_from_full_ad_frame():
-    """nRF Connect 'Raw' field: flags + name + service data with ASTM header."""
+    """nRF Connect 'Raw' field: flags + name + service data."""
     raw = build_packet()
     ad = (
         _ad_struct(0x01, b"\x06")
         + _ad_struct(0x09, b"ESP32C5_RIDQ")
-        + _ad_struct(0x16, UUID_LE + _astm_service_data(raw))
+        + _ad_struct(0x16, UUID_LE + raw)
     )
     assert extract_gb_from_adv(ad) == raw
 
 
 def test_extract_gb_from_fragmented_ad():
-    """Fragmented AD with ASTM header spanning two Service Data structures."""
+    """Fragmented AD spanning two Service Data structures."""
     raw = build_packet()
     ad = (
-        _ad_struct(0x16, UUID_LE + _astm_service_data(raw[:40]))
+        _ad_struct(0x16, UUID_LE + raw[:40])
         + _ad_struct(0x16, UUID_LE + raw[40:])
     )
     assert extract_gb_from_adv(ad) == raw
@@ -141,24 +135,3 @@ def test_extract_gb_from_non_ff_service_data_passthrough():
     # service data present but payload doesn't start with dataType 0xFF
     ad = _ad_struct(0x16, b"\x34\x12" + b"\x01\x02\x03")
     assert extract_gb_from_adv(ad) == ad
-
-
-# --- backward compatibility: old format without ASTM header ---
-
-
-def test_extract_packet_old_format_without_astm_header():
-    """Old firmware (no ASTM header): service_data contains raw GB packet."""
-    raw = build_packet()
-    adv = _fake_adv(sd={"0000fffa-0000-1000-8000-00805f9b34fb": raw})
-    assert extract_packet(adv) == raw
-
-
-def test_extract_gb_from_adv_old_format():
-    """Old firmware: AD frame with raw GB packet (no ASTM header)."""
-    raw = build_packet()
-    ad = (
-        _ad_struct(0x01, b"\x06")
-        + _ad_struct(0x09, b"ESP32C5_RIDQ")
-        + _ad_struct(0x16, UUID_LE + raw)
-    )
-    assert extract_gb_from_adv(ad) == raw

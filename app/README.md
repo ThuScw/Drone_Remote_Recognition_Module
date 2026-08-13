@@ -6,7 +6,7 @@
 
 | # | 功能 | 说明 |
 |---|------|------|
-| 1 | 开启电脑蓝牙并扫描 | 主动扫描，匹配模块广播（Service Data / UUID `0xFFFA`，名称 `GBI_RID_001`） |
+| 1 | 开启电脑蓝牙并扫描 | 主动扫描，匹配模块广播（Service Data / UUID `0xFFFF`，名称 `GBI_RID_001`） |
 | 2 | 接收模块信号 | 接收广播并解析出 GB 46750-2025 数据包 |
 | 3 | 解码 + 内置判断器 | 逐字段解码；自动检查结构/字段/速率/新鲜度，判定模块“正常 / 警告 / 故障” |
 | 4 | 串口提取内部数据 | 通过 `DUMP` 协议导出模块 Flash 中的飞行日志 → CSV |
@@ -86,7 +86,7 @@ app/
   rid/                 # 后端（纯逻辑，可单测）
     decoder.py         # GB 46750 数据包解码（与固件 rid_messages.cpp 一致）
     health.py          # 内置判断器
-    ble_scanner.py     # bleak 扫描 + 0xFFFA 载荷提取
+    ble_scanner.py     # bleak 扫描 + 0xFFFF 载荷提取
     serial_dump.py     # DUMP 协议 + CSV 导出
     models.py          # 数据模型
   gui/                 # PySide6 界面
@@ -99,6 +99,6 @@ app/
 ## 相关
 
 - 解码与字段顺序与固件 `main/protocol/rid_messages.cpp` 一致（版本字节 `0x20` = V1.0）
-- 数据包在广播中的位置：AD Service Data（类型 `0x16`）→ UUID `0xFFFA` → ASTM F3411 头（`0x0D` + 计数器）→ 原始 GB 数据包
+- 数据包在广播中的位置：AD Service Data（类型 `0x16`）→ UUID `0xFFFF` → 原始 GB 数据包（国标未定义帧级封装，故不带 ASTM 字头）
 - 命令行版串口导出工具见 `../tools/flight_log_dump.py`
 - 手机端检测 APP（`../app_android/`）与本软件共用同一套解码器 / 判定器（逐行移植），现场 BLE 抓包 + 报告导出，见 [app_android/README.md](../app_android/README.md)

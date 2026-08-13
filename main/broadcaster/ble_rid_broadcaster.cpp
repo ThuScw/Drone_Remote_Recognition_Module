@@ -237,9 +237,9 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     }
 
     // 编译期保证 ADV data 不超 buffer
-    // AD Flags(3) + AD Name(2+maxName) + AD ServiceData(2+2+payload) ≤ buffer
-    constexpr size_t kAdvOverhead = 3 + (2 + 31) + (2 + 2);  // 40
-    uint8_t advData[kAdvOverhead + GB46750_MAX_PACKET];       // 40 + 128 = 168
+    // AD Flags(3) + AD Name(2+maxName) + AD ServiceData(Len1+Type1+UUID2) ≤ buffer
+    constexpr size_t kAdvOverhead = 3 + (2 + 31) + (1 + 1 + 2);  // 40
+    uint8_t advData[kAdvOverhead + GB46750_MAX_PACKET];          // 40 + 128 = 168
     static_assert(sizeof(advData) >= kAdvOverhead + GB46750_MAX_PACKET,
                   "ADV data exceeds buffer");
     uint8_t *p = advData;
@@ -256,14 +256,13 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
     memcpy(p, _deviceName, nameLen);
     p += nameLen;
 
-    // AD Service Data (16-bit UUID) with ASTM F3411 header + GB46750 payload
-    // ASTM F3411/OpenDroneID: Service Data = [UUID 2B][AppCode 1B][MsgCounter 1B][payload...]
-    *p++ = 1 + 2 + 2 + (uint8_t)payloadLen;  // length = UUID(2) + AppCode(1) + Counter(1) + payload
+    // AD Service Data (16-bit UUID): 直接承载 GB 46750 数据包
+    // 国标未定义 BLE Service Data 的帧级封装; 采用中性未分配 UUID 0xFFFF,
+    // 不带任何 ASTM/OpenDroneID 字头 (0x0D/计数器), 载荷即纯 GB 包 (dataType 0xFF 开头)
+    *p++ = 1 + 2 + (uint8_t)payloadLen;  // len = Type(1)+UUID(2)+payload
     *p++ = 0x16;
     *p++ = RID_SERVICE_UUID & 0xFF;
     *p++ = (RID_SERVICE_UUID >> 8) & 0xFF;
-    *p++ = 0x0D;           // ASTM F3411 application code for Open Drone ID
-    *p++ = _msgCounter++;  // message counter (wraps at 255)
     memcpy(p, payload, payloadLen);
     p += payloadLen;
 

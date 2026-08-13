@@ -9,11 +9,11 @@
 // 结构: 厂商识别码(4) + 产品型号代码(4) + 序列号(12) = 20字符 ASCII
 // 字符范围: 0-9 及除 O/I 外的大写字母 A-Z
 // 产品化时替换为 UOM 平台备案的真实编码
-#define UAS_ID "CNGBLSDR2026AP240167"
+#define UAS_ID "1581FA6QC25B500C2H74"
 
 // 实名登记标志 (GB 46750-2025 Table 3-002)
 // 在 UOM 实名登记系统获取的登记号码后 8 位字符，ASCII 编码，未填写时以 NULL 填充
-#define REALNAME_ID "99498179"
+#define REALNAME_ID "07564244"
 
 // 运行类别 (GB 46750-2025 Table 3-003)
 // 0=未定义, 1=开放类, 2=特定类, 3=审定类

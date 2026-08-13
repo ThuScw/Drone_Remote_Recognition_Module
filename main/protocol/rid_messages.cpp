@@ -45,22 +45,23 @@ static void encodeLatLon(uint8_t* buf, float lat, float lon) {
 
 // 大地/气压高度: uint16 LE, (val + 1000) * 2, 分辨率 0.5m
 // GB 46750-2025 Table 3: 编码值 0 表示 "未知或不可用"
+// 整数编码向下取整 (与表3-009/010 的取整约定一致)
 // NaN/Inf → 0 (未知), 避免 NaN 比较全假导致钳位失效、强转未定义行为
 static uint16_t encodeAlt1000(float alt) {
     if (!isfinite(alt)) return 0;
     float encoded = (alt + 1000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
-    return (uint16_t)(encoded + 0.5f);
+    return (uint16_t)encoded;
 }
 
-// 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m
+// 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m (向下取整)
 static uint16_t encodeRelHeight(float h) {
     if (!isfinite(h)) return 0;
     float encoded = (h + 9000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
-    return (uint16_t)(encoded + 0.5f);
+    return (uint16_t)encoded;
 }
 
 // 航迹角: uint16 LE, val * 10, 范围 0~3599, 分辨率 0.1°
@@ -85,7 +86,7 @@ static uint16_t encodeSpeed(float mps) {
     return (uint16_t)(mps * 10.0f);
 }
 
-// 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2
+// 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2 (向下取整)
 // NaN/Inf → 0xFF (未知哨兵, 表3-012)
 static uint8_t encodeVSpeed(float mps) {
     if (!isfinite(mps)) return 0xFF;
@@ -93,7 +94,7 @@ static uint8_t encodeVSpeed(float mps) {
     float absVal = (mps < 0.0f) ? -mps : mps;
     float encoded = absVal * 2.0f;
     if (encoded > 127.0f) encoded = 127.0f;
-    uint8_t val = (uint8_t)(encoded + 0.5f);
+    uint8_t val = (uint8_t)encoded;
     return dir | val;
 }
 
