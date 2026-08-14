@@ -29,20 +29,11 @@ public:
 
     uint32_t getRecordCount() const { return _recordCount; }
     uint32_t getMaxRecords() const { return _partitionSize / kRecordSize; }
-    uint32_t getWriteOffset() const { return _writeOffset; }
-    float estimateRemainingHours() const;
-
-    // 读取单条记录（index: 0=最旧, N-1=最新）
-    // 返回读取字节数（kRecordSize 成功, 0 失败/越界）
-    uint16_t readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 
     // 读取单条记录完整原始 kRecordSize 字节（index: 0=最旧, N-1=最新）
     // 校验 magic + CRC 后整体拷贝到 outBuf，供 DUMP 原样导出。
     // 返回读取字节数（kRecordSize 成功, 0 失败/越界/校验不通过）
     uint16_t readRecordRaw(uint32_t index, uint8_t* outBuf);
-
-    // 读取最新一条记录
-    uint16_t readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs);
 
     // 记录格式 (128B): 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload + 32B 填充零
     // kRecordSize=128 为 4096B 扇区整数因子 (4096/128=32): 记录永不跨扇区边界,

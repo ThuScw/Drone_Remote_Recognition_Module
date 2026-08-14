@@ -39,9 +39,6 @@ public:
     // 状态机驱动: 空中广播切换时调用。AIRBORNE 拒绝后续 setField。
     void setState(RidConfigState s);
 
-    // 是否已配置 (状态 != UNCONFIGURED)
-    bool isConfigured() const;
-
 private:
     RidConfig      _cfg;
     RidConfigState _state = RID_STATE_UNCONFIGURED;

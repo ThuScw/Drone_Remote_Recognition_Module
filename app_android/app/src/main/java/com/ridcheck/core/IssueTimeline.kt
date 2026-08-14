@@ -28,8 +28,6 @@ class IssueTimeline(
     private val episodes = ArrayList<IssueEpisode>()
     private val openByCode = LinkedHashMap<String, IssueEpisode>()
 
-    val size: Int get() = episodes.size
-
     /** 以当前快照的问题集合开/闭时段。 */
     fun update(issues: List<HealthIssue>, nowMs: Long = nowFunc()) {
         val present = HashSet<String>()
@@ -73,13 +71,7 @@ class IssueTimeline(
         openByCode.clear()
     }
 
-    fun clear() {
-        episodes.clear()
-        openByCode.clear()
-    }
-
-    private fun trim() {
-        while (episodes.size > cap) {
+    private fun trim() {        while (episodes.size > cap) {
             val removed = episodes.removeAt(0)
             if (removed.isOpen && openByCode[removed.code] === removed) {
                 openByCode.remove(removed.code)

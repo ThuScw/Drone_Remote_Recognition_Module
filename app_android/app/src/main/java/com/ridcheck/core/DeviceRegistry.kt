@@ -117,8 +117,6 @@ class DeviceRegistry {
     val size: Int
         get() = devices.size
 
-    fun clear() = devices.clear()
-
     /**
      * 移除指定地址的广播信号源条目。当地面态可配置模块被识别出来时调用
      * （该模块此刻不广播 GB 包），避免其残留在「正在广播的信号源」列表。

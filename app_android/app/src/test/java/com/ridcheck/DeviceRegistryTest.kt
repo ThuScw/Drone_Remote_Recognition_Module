@@ -69,14 +69,6 @@ class DeviceRegistryTest {
     }
 
     @Test
-    fun clearEmptiesList() {
-        val reg = DeviceRegistry()
-        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
-        reg.clear()
-        assertEquals(0, reg.size)
-    }
-
-    @Test
     fun removeDropsSingleAddressAndIgnoresMissing() {
         val reg = DeviceRegistry()
         reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
@@ -219,6 +211,6 @@ class DeviceRegistryTest {
         val a = reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
         reg.sampleAll(2000)
         // 健康包无问题 → 时段为空
-        assertEquals(0, a.issueTimeline.size)
+        assertEquals(0, a.issueTimeline.snapshot().size)
     }
 }

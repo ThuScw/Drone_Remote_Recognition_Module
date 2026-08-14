@@ -24,20 +24,21 @@ CONFIG_UUID_16BIT = 0xFFF0
 CONFIG_MAGIC = b"GBRID\x01"
 
 
-def _match_config_uuid(key: str | int) -> bool:
-    """匹配配置服务 16-bit UUID 0xFFF0（bleak 后端 key 可能是 int 或 str）。"""
-    if isinstance(key, int):
-        return key == CONFIG_UUID_16BIT
+def _match_uuid(key: str | int, uuid16: int) -> bool:
+    """匹配 16-bit 服务 UUID（bleak 后端 key 可能是 int 或 str）。"""
+    if isinstance(key, int):  # bleak may expose uuid as an int on some backends
+        return key == uuid16
     k = str(key).strip().lower()
-    if k in ("fff0", "0000fff0"):
+    h = f"{uuid16:04x}"
+    if k in (h, f"0000{h}"):
         return True
     try:
-        return int(k, 16) == CONFIG_UUID_16BIT
+        return int(k, 16) == uuid16
     except ValueError:
         pass
-    # canonical 128-bit form: 0000fff0-0000-1000-8000-00805f9b34fb
+    # canonical 128-bit form: 0000ffff-0000-1000-8000-00805f9b34fb
     if len(k) == 36 and k.endswith("-0000-1000-8000-00805f9b34fb"):
-        return k[:8].lstrip("0") == "fff0"
+        return k[:8].lstrip("0") == h
     return False
 
 
@@ -49,7 +50,7 @@ def is_config_target(adv: Any) -> bool:
     sd = getattr(adv, "service_data", None)
     if sd:
         for key, data in sd.items():
-            if _match_config_uuid(key) and data and bytes(data) == CONFIG_MAGIC:
+            if _match_uuid(key, CONFIG_UUID_16BIT) and data and bytes(data) == CONFIG_MAGIC:
                 return True
 
     raw = getattr(adv, "data", None)
@@ -64,22 +65,6 @@ def is_config_target(adv: Any) -> bool:
     if raw:
         if _parse_ad_service_data(bytes(raw)).get(CONFIG_UUID_16BIT) == CONFIG_MAGIC:
             return True
-    return False
-
-
-def _match_uuid(key: str | int) -> bool:
-    if isinstance(key, int):  # bleak may expose uuid as an int on some backends
-        return key == SERVICE_UUID_16BIT
-    k = key.strip().lower()
-    if k in ("ffff", "0000ffff"):
-        return True
-    try:
-        return int(k, 16) == SERVICE_UUID_16BIT
-    except ValueError:
-        pass
-    # canonical 128-bit form: 0000ffff-0000-1000-8000-00805f9b34fb
-    if len(k) == 36 and k.endswith("-0000-1000-8000-00805f9b34fb"):
-        return k[:8].lstrip("0") == "ffff"
     return False
 
 
@@ -106,10 +91,10 @@ def is_target(device_name: str, adv: Any) -> bool:
     if name == EXPECTED_NAME:
         return True
     if hasattr(adv, "service_data"):
-        if any(_match_uuid(k) for k in adv.service_data):
+        if any(_match_uuid(k, SERVICE_UUID_16BIT) for k in adv.service_data):
             return True
     if hasattr(adv, "service_uuids"):
-        if any(_match_uuid(str(u)) for u in adv.service_uuids):
+        if any(_match_uuid(str(u), SERVICE_UUID_16BIT) for u in adv.service_uuids):
             return True
     return False
 
@@ -120,7 +105,7 @@ def extract_packet(adv: Any) -> bytes | None:
     sd = getattr(adv, "service_data", None)
     if sd:
         for key, data in sd.items():
-            if _match_uuid(str(key)) and data:
+            if _match_uuid(str(key), SERVICE_UUID_16BIT) and data:
                 return bytes(data)
 
     # 2. raw AD bytes: `adv.data` (older bleak) or winrt `platform_data`

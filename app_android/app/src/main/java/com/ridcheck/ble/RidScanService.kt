@@ -60,8 +60,7 @@ class RidScanService : Service() {
                 raw,
                 address = address,
                 rssi = rssi,
-                receivedAtMs = System.nanoTime() / 1_000_000,
-                source = "ble"
+                receivedAtMs = System.nanoTime() / 1_000_000
             )
             AppState.registry.onPacket(pkt, System.currentTimeMillis())
         }
@@ -164,7 +163,7 @@ class RidScanService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("RID 检测 · 后台扫描中")
             .setContentText(text)
             .setOngoing(true)

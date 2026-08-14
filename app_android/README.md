@@ -31,7 +31,7 @@ app_android/
         ├── main/
         │   ├── AndroidManifest.xml        # BLE 权限（12+ 用 BLUETOOTH_SCAN/CONNECT）
         │   └── java/com/ridcheck/
-        │       ├── MainActivity.kt        # 主界面：广播信号源 + 可配置信号源两栏目 + 详情页/配置页 + 底部导航（主界面/说明 + 退出；扫描在服务里）
+        │       ├── MainActivity.kt        # 主界面：信号源列表 + 扫描控制 + 粘贴解码 + 页面切换 + 日志
         │       ├── ble/
         │       │   ├── BleScanner.kt      # 统一 BLE 扫描 + 报文字节分类（广播 0xFFFF / 可配置 0xFFF0）+ 同包去重
         │       │   ├── RidScanService.kt  # 前台扫描服务：后台常驻 + 1Hz 采样 + 常驻通知
@@ -39,19 +39,23 @@ app_android/
         │       ├── core/                  # 纯逻辑，可 JVM 单元测试
         │       │   ├── AppState.kt        # 全局共享：注册表 + 扫描标志 + 日志缓冲（服务与 UI 共用）
         │       │   ├── Decoder.kt         # GB 46750 解码器（移植自 PC 版 decoder.py）
-        │       │   ├── Health.kt          # 健康判定（单包 + 10s 流式窗口）
+        │       │   ├── Hex.kt             # ByteArray 十六进制格式化（toHexSpaced/toHexJoined）
         │       │   ├── Models.kt          # 数据模型 + 表 3 字段表 + 采样/帧记录 + 轨迹/状态日志
         │       │   ├── DeviceRegistry.kt  # 多设备注册表 + 采样/逐帧存档 + 问题时段/会话统计
         │       │   ├── IssueTimeline.kt   # 问题出现时段记录器（每问题开/闭时间区间）
         │       │   ├── SessionStats.kt    # 表 3 全 21 项会话统计（范围/占比/跨度/恒定）
         │       │   ├── Geo.kt             # 等距圆柱投影（相对轨迹 N/E 米换算）
-        │       │   ├── Health.kt          # 健康判定 + 整改建议 advice(code)
+        │       │   ├── Health.kt          # 健康判定（单包 + 10s 流式窗口）+ 整改建议 advice(code)
         │       │   ├── ReportBuilder.kt   # 文本报告 + 逐帧 CSV + 8 章 Word 报告（北京时间）
         │       │   ├── DocxBuilder.kt     # 零依赖 Word(.docx) 生成器（OOXML）
         │       │   ├── RidFileProvider.kt # 文件分享用自建 content URI
         │       │   └── GattConfig.kt      # GATT 配置服务 UUID + 4 字段校验 + RidConfigData 模型
         │       └── ui/                    # 程序化 View（零 XML 布局）
-        │           ├── Theme.kt           # 紫色系色板
+        │           ├── Theme.kt           # 紫色系色板 + 文本色阶
+        │           ├── UiKit.kt           # Context 扩展：按钮/分节标签/布局参数/圆角卡片/密度
+        │           ├── CardListAdapter.kt # 卡片列表行基类（设备/可配置模块列表复用）
+        │           ├── BottomBar.kt       # 底部导航（主界面/说明/退出；退出确认后彻底关闭）
+        │           ├── DetailPage.kt      # 设备详情页：字段/问题/判定/记录与曲线/原始数据 + 报告导出
         │           ├── DeviceListAdapter.kt
         │           ├── ConfigDeviceAdapter.kt # 可配置模块列表行
         │           ├── RidChartView.kt    # 实时采样曲线
@@ -59,7 +63,7 @@ app_android/
         │           ├── ShareUtil.kt       # 分享封装 + 导出文件清理
         │           ├── ConfigPage.kt      # GATT 双向配置页（绑定单台模块地址：连接/读/写身份字段 + 日志）
         │           └── ExplainPage.kt     # 说明页
-        └── test/java/com/ridcheck/        # JVM 单元测试（71 个全部通过）
+        └── test/java/com/ridcheck/        # JVM 单元测试（72 个全部通过）
 ```
 
 ## 构建与安装
@@ -127,7 +131,8 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 | 版本 | 提交 | 内容 |
 |------|------|------|
-| V6 / 2.0 | （本次提交） | 广播纯 GB 包（Service UUID `0xFFFF`，移除 ASTM F3411 字头）；新增 GATT 双向配置（地面态反写 001~004 身份字段，空中态广播 + 写锁定），固件 / PC / 安卓三端同步；安卓 APP 升级 v2.0（versionCode 9） |
+| S3-V6.0.3 | （本次提交） | 收尾重构：删除死代码与磁盘垃圾，抽取 Hex/UiKit/CardListAdapter/DetailPage/BottomBar 公共件，主题统一紫色 + 单色通知图标；功能与界面行为完全不变（测试 72 通过） |
+| V6 / 2.0 | 9bbd968 | 广播纯 GB 包（Service UUID `0xFFFF`，移除 ASTM F3411 字头）；新增 GATT 双向配置（地面态反写 001~004 身份字段，空中态广播 + 写锁定），固件 / PC / 安卓三端同步；安卓 APP 升级 v2.0（versionCode 9） |
 | S3-v5.6.5 | 6b73e6b | 修复飞行日志跨扇区损坏（记录 96→128B 扇区对齐，4096B/32 条整，消除约 1/43 静默丢失）；航迹角/地速改向下取整（表 3-009/010）；主循环临界区快照化防死锁；PC 套件 82044 例通过 |
 | S3-v5.6.4 | 9022fdf | 更新技术报告（docx/md/pdf），删除旧迁移/即插即用文档；数据更新间隔缩短至 400ms |
 | S3-v5.6.3 | d843477 | 广播间隔缩短至 400ms；BLE 设备名改为 `GBI_RID_001` |
@@ -143,13 +148,13 @@ gradle testDebugUnitTest      # 运行 JVM 单元测试
 
 ## 测试
 
-`app/src/test/java/com/ridcheck/` 下 **71 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
+`app/src/test/java/com/ridcheck/` 下 **72 个 JVM 单元测试全部通过**（无需 Android 设备，`gradle testDebugUnitTest`）：
 
 | 测试文件 | 数量 | 覆盖内容 |
 |----------|------|----------|
 | DecoderTest | 11 | 数据包解码、AD Service Data 提取、HEX 解析、广播帧抽包（纯 GB 包，UUID 0xFFFF） |
 | GattConfigTest | 7 | GATT 配置校验：UAS_ID / 实名号 / 运行类别 / 无人机分类、RidConfigData 校验聚合与状态属性、类别标签 |
-| HealthTest | 9 | 单包判定、流式窗口（速率 / 停滞 / 冻结） |
+| HealthTest | 10 | 单包判定、流式窗口（速率 / 停滞 / 冻结）、手动报告汇总 |
 | DeviceRegistryTest | 14 | 多设备注册、采样 / 帧存档截断、字段携带计数、状态日志、轨迹、问题时段喂入 |
 | ReportBuilderTest | 11 | 文本报告、逐帧 CSV、8 章 Word 报告、会话统计列、建议与时间线、公式注入防护 |
 | IssueTimelineTest | 7 | 问题时段开 / 闭 / 重开、最新描述、closeOpen、容量上限 |

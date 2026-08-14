@@ -13,6 +13,10 @@ object Health {
 
     const val GB_MIN_RATE_HZ = 1.0 // GB 46750-2025 5.1.3: 广播间隔 ≤ 1s
     const val FRESH_THRESHOLD_S = 2.0 // DATA_FRESH_THRESHOLD_MS = 2000
+    const val TS_DRIFT_LIMIT_MS = 5 * 60 * 1000 // 时间戳与手机时钟偏差超 5 分钟 → 警告
+    const val RATE_MIN_ELAPSED_S = 3.0 // 累计不足 3s 不做速率判定
+    const val STALE_FAIL_S = 5.0 // 超过 5s 无新数据 → 停滞故障
+    const val FROZEN_IDENT_SEQ = 5 // 连续 5 包内容相同 → 冻结警告
 
     /** 判定单个解码包，返回问题列表（空 = 健康）。 */
     fun assessPacket(pkt: DecodedPacket): List<HealthIssue> {
@@ -156,7 +160,7 @@ object Health {
         } else {
             val now = System.currentTimeMillis()
             val drift = Math.abs(now - pkt.timestampMs)
-            if (drift > 5 * 60 * 1000) {
+            if (drift > TS_DRIFT_LIMIT_MS) {
                 issues.add(HealthIssue(HealthLevel.WARN, "TS_DRIFT",
                     String.format(Locale.US, "时间戳与手机时钟偏差 %.0fs，GPS 授时可能异常", drift / 1000.0),
                     clause = "表3-020"))
@@ -201,6 +205,19 @@ object Health {
         "FROZEN" -> "广播内容长时间不变，数据源可能冻结；检查飞控数据输出与模块缓存。"
         else -> ""
     }
+
+    /** 手动粘贴包没有流式统计，退化为单包静态判定。 */
+    fun manualReport(pkt: DecodedPacket): HealthReport {
+        val rep = HealthReport()
+        rep.issues.addAll(assessPacket(pkt))
+        rep.level = rep.issues.maxOfOrNull { it.level } ?: HealthLevel.PASS
+        rep.note = when (rep.level) {
+            HealthLevel.PASS -> "设备工作正常，广播符合 GB 46750-2025 要求"
+            HealthLevel.WARN -> "存在可改善项，不影响基本广播"
+            else -> "存在故障，请根据下方问题清单排查"
+        }
+        return rep
+    }
 }
 
 /**
@@ -235,14 +252,6 @@ class StreamAssessor(
         lastPkt = pkt
     }
 
-    fun reset() {
-        times.clear()
-        lastPkt = null
-        lastRaw = ByteArray(0)
-        identSeq = 0
-        startMs = null
-    }
-
     fun report(): HealthReport {
         val now = nowFunc()
         val rep = HealthReport()
@@ -262,10 +271,9 @@ class StreamAssessor(
         // --- 最新包的单包问题 ---
         val pktIssues = Health.assessPacket(last)
         rep.issues.addAll(pktIssues)
-        rep.packetsOk = if (pktIssues.isEmpty()) 1 else 0
 
         // --- 速率 (GB 5.1.3: ≥ 1/s) ---
-        if (elapsedS >= 3.0) {
+        if (elapsedS >= Health.RATE_MIN_ELAPSED_S) {
             if (rep.packetsSeen == 0) {
                 rep.issues.add(HealthIssue(HealthLevel.FAIL, "RATE_ZERO",
                     "近 ${windowS.toInt()}s 内未收到数据包",
@@ -282,7 +290,7 @@ class StreamAssessor(
         }
 
         // --- 停滞 (5.1.2 全程连续广播) ---
-        if (rep.staleSeconds > 5.0) {
+        if (rep.staleSeconds > Health.STALE_FAIL_S) {
             rep.issues.add(HealthIssue(HealthLevel.FAIL, "STALE",
                 String.format(Locale.US, "已 %.0fs 无新数据", rep.staleSeconds),
                 clause = "5.1.2 全程连续广播"))
@@ -293,18 +301,14 @@ class StreamAssessor(
         }
 
         // --- 内容冻结（数据源停滞，而非射频静默；5.1.2 全程连续广播） ---
-        if (identSeq >= 5 && last.timestampMs != 0L) {
+        if (identSeq >= Health.FROZEN_IDENT_SEQ && last.timestampMs != 0L) {
             rep.issues.add(HealthIssue(HealthLevel.WARN, "FROZEN",
                 "广播内容长时间未变化 — 数据源可能停滞",
                 clause = "5.1.2 全程连续广播"))
         }
 
         // --- 判定 = 最严重问题 ---
-        var worst = HealthLevel.PASS
-        for (i in rep.issues) {
-            if (i.level.ordinal > worst.ordinal) worst = i.level
-        }
-        rep.level = worst
+        rep.level = rep.issues.maxOfOrNull { it.level } ?: HealthLevel.PASS
 
         rep.note = when (rep.level) {
             HealthLevel.PASS -> "设备工作正常，广播符合 GB 46750-2025 要求"

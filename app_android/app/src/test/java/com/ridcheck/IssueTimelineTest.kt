@@ -81,7 +81,7 @@ class IssueTimelineTest {
             tl.update(listOf(issue("C$i")), nowMs = i * 1000L)
             tl.update(emptyList(), nowMs = i * 1000L + 500)
         }
-        assertEquals(3, tl.size)
+        assertEquals(3, tl.snapshot().size)
     }
 
     @Test

@@ -9,7 +9,7 @@
 // V1.0 = 0b001_00000 = 0x20
 #define GB46750_VERSION     0x20  // V1.0
 
-// 最大数据包长度: 1(type)+1(ver)+1(len)+3(id)+71(content) = 77
+// 最大数据包长度: 128 (1 type + 1 ver + 1 len + 8 dataId + 117 content)
 #define GB46750_MAX_PACKET  128
 
 // 数据标识位映射 (Section 5.2.3 Table 2)

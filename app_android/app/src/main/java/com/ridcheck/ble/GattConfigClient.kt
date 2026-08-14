@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.ridcheck.core.Decoder
 import com.ridcheck.core.GattConfig
 import com.ridcheck.core.RidConfigData
 import java.util.UUID
@@ -236,8 +237,8 @@ class GattConfigClient(
     private fun applyRead(characteristic: BluetoothGattCharacteristic) {
         val v = characteristic.value ?: ByteArray(0)
         collected = when (characteristic.uuid.toString()) {
-            GattConfig.CHAR_UAS_ID -> collected.copy(uasId = asciiNoNull(v))
-            GattConfig.CHAR_REALNAME -> collected.copy(realname = asciiNoNull(v))
+            GattConfig.CHAR_UAS_ID -> collected.copy(uasId = Decoder.asciiNoNull(v))
+            GattConfig.CHAR_REALNAME -> collected.copy(realname = Decoder.asciiNoNull(v))
             GattConfig.CHAR_OP_CATEGORY ->
                 collected.copy(opCategory = if (v.isNotEmpty()) v[0].toInt() and 0xFF else -1)
             GattConfig.CHAR_UA_CLASS ->
@@ -246,12 +247,6 @@ class GattConfigClient(
                 collected.copy(state = if (v.isNotEmpty()) v[0].toInt() and 0xFF else -1)
             else -> collected
         }
-    }
-
-    private fun asciiNoNull(bytes: ByteArray): String {
-        var end = bytes.size
-        while (end > 0 && (bytes[end - 1].toInt() and 0xFF) == 0) end--
-        return String(bytes.copyOfRange(0, end), Charsets.US_ASCII)
     }
 
     private fun fail(message: String) {

@@ -46,14 +46,15 @@ object Decoder {
     fun fmtCoord(v: Double): String =
         if (v.isNaN() || Math.abs(v) > 360) "未知" else String.format(Locale.US, "%.7f", v)
 
-    fun fmtAlt(v: Double): String =
-        if (v.isNaN()) "未知" else String.format(Locale.US, "%.1f", v)
+    fun fmtAlt(v: Double): String = fmt1(v)
 
-    fun fmtSpeed(v: Double): String =
+    fun fmtSpeed(v: Double): String = fmt1(v)
+
+    private fun fmt1(v: Double): String =
         if (v.isNaN()) "未知" else String.format(Locale.US, "%.1f", v)
 
     /** 去除尾部 NUL 字节后按 ASCII 解码（对应 Python rstrip(b"\x00").decode）。 */
-    private fun asciiNoNull(bytes: ByteArray): String {
+    fun asciiNoNull(bytes: ByteArray): String {
         var end = bytes.size
         while (end > 0 && (bytes[end - 1].toInt() and 0xFF) == 0) end--
         return String(bytes.copyOfRange(0, end), Charsets.US_ASCII)
@@ -114,33 +115,6 @@ object Decoder {
     }
 
     /**
-     * 解析原始广播字节中的 AD type 0x02/0x03（16-bit Service Class UUID 列表）。
-     * 返回出现的全部 16-bit UUID。用于字节级识别可 GATT 配置的模块（0xFFF0），
-     * 不依赖广播名。
-     */
-    fun parseAdServiceUuids(raw: ByteArray): Set<Int> {
-        val out = LinkedHashSet<Int>()
-        var i = 0
-        val n = raw.size
-        while (i < n) {
-            val length = raw[i].toInt() and 0xFF
-            if (length == 0 || i + 1 + length > n) break
-            val typ = raw[i + 1].toInt() and 0xFF
-            val data = raw.copyOfRange(i + 2, i + 1 + length)
-            if ((typ == 0x02 || typ == 0x03) && data.size >= 2) {
-                var j = 0
-                while (j + 1 < data.size) {
-                    val uuid16 = ((data[j + 1].toInt() and 0xFF) shl 8) or (data[j].toInt() and 0xFF)
-                    out.add(uuid16)
-                    j += 2
-                }
-            }
-            i += 1 + length
-        }
-        return out
-    }
-
-    /**
      * 把粘贴的字节规范化为原始 GB 数据包：
      * - 以 0xFF 开头的裸数据包直接返回
      * - 否则当作完整 BLE 广播帧，从 Service Data AD 中抽取
@@ -159,15 +133,13 @@ object Decoder {
         data: ByteArray,
         address: String = "",
         rssi: Int = 0,
-        receivedAtMs: Long = 0,
-        source: String = "ble"
+        receivedAtMs: Long = 0
     ): DecodedPacket {
         val pkt = DecodedPacket()
         pkt.raw = data.copyOf()
         pkt.address = address
         pkt.rssi = rssi
         pkt.receivedAtMs = receivedAtMs
-        pkt.source = source
 
         if (data.size < 6) {
             pkt.structureError = "数据包过短 (${data.size}B < 6B 头部)"
@@ -215,9 +187,7 @@ object Decoder {
         /** 记录 [from, pos) 这段内容字节的 HEX 到 fieldHex[表3序号]。 */
         fun recordHex(num: String, from: Int) {
             if (from in 0..pos && from < pos) {
-                pkt.fieldHex[num] = c.copyOfRange(from, pos).joinToString(" ") {
-                    String.format("%02X", it.toInt() and 0xFF)
-                }
+                pkt.fieldHex[num] = c.copyOfRange(from, pos).toHexSpaced()
             }
         }
 

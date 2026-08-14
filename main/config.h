@@ -2,6 +2,7 @@
 #define CONFIG_H
 
 #include <driver/gpio.h>
+#include <esp_bt.h>
 
 // ================= 用户配置区 =================
 
@@ -56,7 +57,6 @@
 // GB 46750-2025 6.1.3: 轻型无人机 EIRP ≥ 4 dBm (360°) 或 ≥ 6 dBm (平均)
 // ESP32-S3 最大 +9 dBm (ESP_PWR_LVL_P9), 加 PCB 天线 ~2 dBi → EIRP ≈ 11 dBm
 // 可选用: ESP_PWR_LVL_P3(+3), ESP_PWR_LVL_P6(+6), ESP_PWR_LVL_P9(+9)
-#include <esp_bt.h>
 #define BLE_TX_POWER_LEVEL ESP_PWR_LVL_P9
 
 // 数据更新间隔 (毫秒) — 飞行数据刷新频率
@@ -98,7 +98,6 @@
 
 // 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload + 32B 填充 = 128B
 // 128 为 4096B 扇区整数因子 (32 条/扇区), 记录永不跨扇区, 消除跨扇区擦除损坏
-#define FLIGHT_LOG_MAGIC        0x5249444C  // "RIDL"
 
 // 飞行日志异步写入任务
 #define FLIGHT_LOG_TASK_STACK       3072   // 任务栈 (bytes)
@@ -138,10 +137,6 @@
 // USB Host 任务配置
 #define USB_HOST_TASK_STACK     4096
 #define USB_HOST_TASK_PRIO      10  // 较高优先级, 确保及时处理 USB 事件
-
-// MAVLink 解析配置
-#define MAVLINK_MAX_PAYLOAD_LEN  255   // MAVLink v2 最大 payload
-#define MAVLINK_PARSER_STACK     4096  // MAVLink 解析任务栈
 
 // 数据超时配置
 // 如果超过此时间未收到有效位置数据, 标记为 STALE

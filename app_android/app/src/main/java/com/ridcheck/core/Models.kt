@@ -55,9 +55,7 @@ data class HealthIssue(
     val code: String,
     val message: String,
     val clause: String = ""
-) {
-    val label: String get() = level.label()
-}
+)
 
 /**
  * 解码后的 GB 46750-2025 数据包 + 接收元信息。
@@ -68,7 +66,6 @@ class DecodedPacket {
     var address: String = ""
     var rssi: Int = 0
     var receivedAtMs: Long = 0
-    var source: String = "ble"
 
     // --- 原始 ---
     var raw: ByteArray = ByteArray(0)
@@ -169,12 +166,7 @@ class HealthReport {
     var level: HealthLevel = HealthLevel.PASS
     val issues: MutableList<HealthIssue> = ArrayList()
     var packetsSeen: Int = 0
-    var packetsOk: Int = 0
     var avgRateHz: Double = 0.0
     var staleSeconds: Double = 0.0
     var note: String = ""
-
-    val verdictLabel: String get() = level.verdictLabel()
-
-    fun worstIssue(): HealthIssue? = issues.firstOrNull()
 }

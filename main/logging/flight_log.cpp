@@ -8,6 +8,11 @@
 
 static const char* TAG = "FLOG";
 
+// 日志任务栈高水位告警阈值 (bytes)
+static constexpr uint32_t kLogStackHwmAlert = 512;
+// 哨兵扇区号: 超出有效扇区范围 [0, _partitionSize/_sectorSize)，触发整扇区擦除
+static constexpr uint32_t kSectorSentinel = 0xFFFFFFFF;
+
 // Record layout (128 bytes):
 //   [0..3]   Magic "RIDL" LE
 //   [4..5]   CRC16 LE  (over bytes 6..127)
@@ -91,7 +96,7 @@ bool FlightLog::init() {
     // 扇区状态: 写指针所在扇区若从写指针起已是空白(擦除态), 无需擦除直接续写;
     // 若停在损坏/未知数据, 或已写满到分区末尾(待回卷), 则下次写入前必须整扇区擦除。
     if (_writeOffset >= _partitionSize) {
-        _currentSector = _partitionSize / _sectorSize + 1;  // 哨兵: 回卷后强制擦除扇区0
+        _currentSector = kSectorSentinel;  // 回卷后强制擦除扇区0
         _sectorDirty   = false;
     } else {
         _currentSector = _writeOffset / _sectorSize;
@@ -182,7 +187,7 @@ void FlightLog::logTaskLoop() {
 
         // P1: Stack watermark monitoring
         uint32_t watermark = uxTaskGetStackHighWaterMark(_taskHandle) * sizeof(StackType_t);
-        if (watermark < 512) {
+        if (watermark < kLogStackHwmAlert) {
             ESP_LOGW(TAG, "Log task stack watermark LOW: %lu bytes", (unsigned long)watermark);
         }
     }
@@ -248,14 +253,6 @@ uint16_t FlightLog::writeRecord(const uint8_t* data, uint16_t len, uint64_t time
     return kRecordSize;
 }
 
-float FlightLog::estimateRemainingHours() const {
-    if (_wlHandle == WL_INVALID_HANDLE) return 0.0f;
-
-    uint32_t remainingBytes = _partitionSize - _writeOffset;
-    uint32_t remainingRecords = remainingBytes / kRecordSize;
-    return (float)remainingRecords * (float)FLIGHT_LOG_INTERVAL_S / 3600.0f;
-}
-
 // --- 环形缓冲区逻辑地址 → 物理地址映射 ---
 // _recordCount 是累计写入数，_partitionSize/kRecordSize 是总容量
 // 未绕回: 记录从 offset 0 线性排列，最旧=0，最新=offset-kRecordSize
@@ -288,32 +285,6 @@ uint16_t FlightLog::readRecordRaw(uint32_t index, uint8_t* outBuf) {
     if (storedCrc != calcCrc) return 0;
 
     return kRecordSize;
-}
-
-uint16_t FlightLog::readRecord(uint32_t index, uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
-    if (!outData || !outLen || !outTimestampMs) return 0;
-
-    uint8_t buf[kRecordSize];
-    if (readRecordRaw(index, buf) == 0) return 0;
-
-    *outTimestampMs = 0;
-    for (int i = 0; i < 8; i++) *outTimestampMs |= ((uint64_t)buf[6 + i] << (i * 8));
-
-    *outLen = (uint16_t)buf[14] | ((uint16_t)buf[15] << 8);
-    if (*outLen > kMaxDataLen) *outLen = kMaxDataLen;
-
-    memcpy(outData, buf + 16, *outLen);
-    return kRecordSize;
-}
-
-uint16_t FlightLog::readLatestRecord(uint8_t* outData, uint16_t* outLen, uint64_t* outTimestampMs) {
-    portENTER_CRITICAL_SAFE(&_spinlock);
-    uint32_t capacity = _partitionSize / kRecordSize;
-    uint32_t total = _recordCount;
-    portEXIT_CRITICAL_SAFE(&_spinlock);
-    uint32_t available = (total < capacity) ? total : capacity;
-    if (available == 0) return 0;
-    return readRecord(available - 1, outData, outLen, outTimestampMs);
 }
 
 uint16_t FlightLog::crc16(const uint8_t* data, size_t len) {

@@ -28,7 +28,6 @@ DID_VERT_SPEED = 0x08  # 012 垂直速度
 DID_BARO_ALT = 0x02    # 014 气压高度
 
 # Sentinel values the encoder writes for "unknown / unavailable"
-SENT_LATLON = 0xFFFFFFFF  # positions (int32 -1)
 SENT_SPEED_HEADING = 0xFFFF  # speed / heading
 SENT_VSPEED = 0xFF  # vertical speed
 
@@ -62,7 +61,7 @@ def _fmt_alt(v: float) -> str:
 
 
 def _fmt_speed(v: float) -> str:
-    return "未知" if v != v else f"{v:.1f}"
+    return _fmt_alt(v)
 
 
 def parse_hex(text: str) -> bytes:

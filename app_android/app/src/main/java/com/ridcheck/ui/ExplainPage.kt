@@ -114,6 +114,5 @@ object ExplainPage {
         setPadding(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
     }
 
-    private fun dp(context: Context, v: Int): Int =
-        (v * context.resources.displayMetrics.density).toInt()
+    private fun dp(context: Context, v: Int): Int = context.dp(v)
 }

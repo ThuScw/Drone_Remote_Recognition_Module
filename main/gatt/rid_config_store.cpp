@@ -79,10 +79,6 @@ RidConfigState RidConfigStore::state() const {
     return s;
 }
 
-bool RidConfigStore::isConfigured() const {
-    return state() != RID_STATE_UNCONFIGURED;
-}
-
 void RidConfigStore::setState(RidConfigState s) {
     if (_mutex) xSemaphoreTake((SemaphoreHandle_t)_mutex, portMAX_DELAY);
     _state = s;

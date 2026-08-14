@@ -5,7 +5,8 @@ from packet_builder import build_packet
 
 from rid.ble_scanner import (
     CONFIG_MAGIC,
-    _match_config_uuid,
+    CONFIG_UUID_16BIT,
+    SERVICE_UUID_16BIT,
     _match_uuid,
     extract_gb_from_adv,
     extract_packet,
@@ -37,14 +38,14 @@ def _fake_adv(sd=None, data=None, uuids=None, name="", platform_data=None):
 
 
 def test_match_uuid_forms():
-    assert _match_uuid("ffff")
-    assert _match_uuid("0000ffff")
-    assert _match_uuid("0000ffff-0000-1000-8000-00805f9b34fb")
-    assert _match_uuid(0xFFFF)
-    assert _match_uuid(65535)
-    assert not _match_uuid("1234")
-    assert not _match_uuid("00001234-0000-1000-8000-00805f9b34fb")
-    assert not _match_uuid(0x1234)
+    assert _match_uuid("ffff", SERVICE_UUID_16BIT)
+    assert _match_uuid("0000ffff", SERVICE_UUID_16BIT)
+    assert _match_uuid("0000ffff-0000-1000-8000-00805f9b34fb", SERVICE_UUID_16BIT)
+    assert _match_uuid(0xFFFF, SERVICE_UUID_16BIT)
+    assert _match_uuid(65535, SERVICE_UUID_16BIT)
+    assert not _match_uuid("1234", SERVICE_UUID_16BIT)
+    assert not _match_uuid("00001234-0000-1000-8000-00805f9b34fb", SERVICE_UUID_16BIT)
+    assert not _match_uuid(0x1234, SERVICE_UUID_16BIT)
 
 
 def test_extract_from_service_data_dict():
@@ -116,14 +117,14 @@ def _config_ad(name=b"GBI_RID_001") -> bytes:
 
 
 def test_match_config_uuid_forms():
-    assert _match_config_uuid("fff0")
-    assert _match_config_uuid("0000fff0")
-    assert _match_config_uuid("0000fff0-0000-1000-8000-00805f9b34fb")
-    assert _match_config_uuid(0xFFF0)
-    assert _match_config_uuid(65520)
-    assert not _match_config_uuid("ffff")
-    assert not _match_config_uuid(0xFFFF)
-    assert not _match_config_uuid("1234")
+    assert _match_uuid("fff0", CONFIG_UUID_16BIT)
+    assert _match_uuid("0000fff0", CONFIG_UUID_16BIT)
+    assert _match_uuid("0000fff0-0000-1000-8000-00805f9b34fb", CONFIG_UUID_16BIT)
+    assert _match_uuid(0xFFF0, CONFIG_UUID_16BIT)
+    assert _match_uuid(65520, CONFIG_UUID_16BIT)
+    assert not _match_uuid("ffff", CONFIG_UUID_16BIT)
+    assert not _match_uuid(0xFFFF, CONFIG_UUID_16BIT)
+    assert not _match_uuid("1234", CONFIG_UUID_16BIT)
 
 
 def test_is_config_target_via_service_data_dict():

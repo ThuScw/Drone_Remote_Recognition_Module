@@ -149,6 +149,20 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     uint8_t* c = pkt.content;
     uint16_t pos = 0;
 
+    // 字段缺失 → 写表3哨兵值并 LOGW。日志文案与哨兵值逐字保持原样；pos 由调用方统一推进。
+    auto encodeMissing = [](uint8_t* dst, uint32_t sentinel, uint8_t width,
+                            const char* field, const char* enc) {
+        if (width == 1) {
+            *dst = (uint8_t)sentinel;
+        } else if (width == 2) {
+            writeU16LE(dst, (uint16_t)sentinel);
+        } else {  // 位置类 8 字节 (两组 I32LE)
+            writeI32LE(dst, (int32_t)sentinel);
+            writeI32LE(dst + 4, (int32_t)sentinel);
+        }
+        ESP_LOGW(TAG, "%s missing, encoding %s", field, enc);
+    };
+
     // 001 唯一产品识别码 (20 bytes, M, always)
     size_t uasLen = strlen(uasId);
     for (int i = 0; i < 20; i++) {
@@ -174,9 +188,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_OP_POS) {
         encodeLatLon(c + pos, fd.opLat, fd.opLon);
     } else {
-        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
-        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
-        ESP_LOGW(TAG, "OP_POS missing, encoding unknown (0xFFFFFFFF)");
+        encodeMissing(c + pos, 0xFFFFFFFF, 8, "OP_POS", "unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
@@ -184,8 +196,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_OP_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.opAlt));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "OP_ALT missing, encoding 0");
+        encodeMissing(c + pos, 0, 2, "OP_ALT", "0");
     }
     pos += 2;
 
@@ -193,9 +204,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_POS) {
         encodeLatLon(c + pos, fd.lat, fd.lon);
     } else {
-        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
-        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
-        ESP_LOGW(TAG, "UA_POS missing, encoding unknown (0xFFFFFFFF)");
+        encodeMissing(c + pos, 0xFFFFFFFF, 8, "UA_POS", "unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
@@ -203,8 +212,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_HEADING) {
         writeU16LE(c + pos, encodeHeading(fd.heading));
     } else {
-        writeU16LE(c + pos, 0xFFFF);  // unknown
-        ESP_LOGW(TAG, "HEADING missing, encoding unknown (0xFFFF)");
+        encodeMissing(c + pos, 0xFFFF, 2, "HEADING", "unknown (0xFFFF)");
     }
     pos += 2;
 
@@ -212,8 +220,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_SPEED) {
         writeU16LE(c + pos, encodeSpeed(fd.speed));
     } else {
-        writeU16LE(c + pos, 0xFFFF);  // unknown
-        ESP_LOGW(TAG, "SPEED missing, encoding unknown (0xFFFF)");
+        encodeMissing(c + pos, 0xFFFF, 2, "SPEED", "unknown (0xFFFF)");
     }
     pos += 2;
 
@@ -232,8 +239,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_GEO_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.geoAlt));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "GEO_ALT missing, encoding 0");
+        encodeMissing(c + pos, 0, 2, "GEO_ALT", "0");
     }
     pos += 2;
 
@@ -249,8 +255,8 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_OP_STATUS) {
         c[pos++] = fd.opStatus;
     } else {
-        c[pos++] = STATUS_UNREPORTED;  // 0: 未报告
-        ESP_LOGW(TAG, "OP_STATUS missing, encoding UNREPORTED");
+        encodeMissing(c + pos, STATUS_UNREPORTED, 1, "OP_STATUS", "UNREPORTED");
+        pos += 1;
     }
 
     // 016 坐标系类型 (1 byte, M, always)

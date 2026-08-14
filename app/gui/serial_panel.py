@@ -4,10 +4,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from datetime import datetime
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,

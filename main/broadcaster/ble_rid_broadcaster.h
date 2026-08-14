@@ -55,7 +55,6 @@ public:
     bool needsRecovery() const;
 
     uint8_t getUpdateFailures() const { return _updateFailures; }
-    bool isDegraded() const { return _degraded; }
 
 private:
     // 构建 BLE5 AD Structure 并写入 os_mbuf, 返回 mbuf 指针

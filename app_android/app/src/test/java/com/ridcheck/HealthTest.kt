@@ -103,6 +103,18 @@ class HealthTest {
     }
 
     @Test
+    fun manualReportSummarizesWorstIssue() {
+        val rep = Health.manualReport(
+            Decoder.decodeGbPacket(
+                PacketBuilder.buildPacket(opStatus = 5, timestampMs = System.currentTimeMillis())
+            )
+        )
+        assertEquals(HealthLevel.FAIL, rep.level)
+        assertTrue("STATUS_FAIL 应在问题中: ${rep.issues}", rep.issues.any { it.code == "STATUS_FAIL" })
+        assertTrue(rep.note.isNotEmpty())
+    }
+
+    @Test
     fun streamAssessorRateAndStaleness() {
         var clockMs = 1_000_000L
         val ass = StreamAssessor(windowS = 10.0, nowFunc = { clockMs })

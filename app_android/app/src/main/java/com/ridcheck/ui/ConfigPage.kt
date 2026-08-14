@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import com.ridcheck.ble.GattConfigClient
+import com.ridcheck.core.AppState
 import com.ridcheck.core.GattConfig
 import com.ridcheck.core.RidConfigData
 
@@ -31,7 +32,7 @@ class ConfigPage(
 ) {
 
     companion object {
-        private const val MAX_LOG_LINES = 200
+        private const val DEFAULT_SELECTION = 1 // 运行类别/无人机分类默认选中「开放类/轻型」
     }
 
     val root: ScrollView
@@ -113,7 +114,7 @@ class ConfigPage(
             activity, android.R.layout.simple_spinner_item,
             GattConfig.OP_CATEGORY_NAMES.toSortedMap().map { (k, v) -> "$k — $v" }
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        spinnerOp.setSelection(1) // 开放类
+        spinnerOp.setSelection(DEFAULT_SELECTION) // 开放类
         col.addView(spinnerOp, lpMatch())
 
         col.addView(fieldLabel("无人机分类"))
@@ -122,15 +123,14 @@ class ConfigPage(
             activity, android.R.layout.simple_spinner_item,
             GattConfig.UA_CLASS_NAMES.toSortedMap().map { (k, v) -> "$k — $v" }
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        spinnerUa.setSelection(1) // 轻型
+        spinnerUa.setSelection(DEFAULT_SELECTION) // 轻型
         col.addView(spinnerUa, lpMatch())
 
-        // 操作行
-        val writeRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         val btnClear = button("清空输入")
         btnClear.setOnClickListener { clearFields() }
-        writeRow.addView(btnClear, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        col.addView(writeRow)
+        col.addView(btnClear, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
 
         col.addView(body(
             "说明：模块仅在地面态接受写入；空中态写锁定。写入成功后即持久化到 NVS，" +
@@ -141,7 +141,7 @@ class ConfigPage(
         logView = TextView(activity).apply {
             textSize = 12f
             setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-            setTextColor(Color.rgb(80, 80, 80))
+            setTextColor(Theme.TEXT_SECONDARY)
         }
         col.addView(logView, lpMatch())
 
@@ -155,13 +155,7 @@ class ConfigPage(
         setTextColor(Theme.PRIMARY)
     }
 
-    private fun sectionLabel(text: String): TextView = TextView(activity).apply {
-        this.text = text
-        textSize = 14f
-        setTypeface(null, Typeface.BOLD)
-        setTextColor(Theme.PRIMARY)
-        setPadding(0, dp(10), 0, dp(2))
-    }
+    private fun sectionLabel(text: String): TextView = activity.sectionLabel(text)
 
     private fun fieldLabel(text: String): TextView = TextView(activity).apply {
         this.text = text
@@ -185,15 +179,11 @@ class ConfigPage(
         setPadding(0, dp(4), 0, dp(4))
     }
 
-    private fun button(text: String): Button = Button(activity).apply {
-        this.text = text
-        isAllCaps = false
-    }
+    private fun button(text: String): Button = activity.button(text)
 
-    private fun lpMatch(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    private fun lpMatch(): LinearLayout.LayoutParams = activity.lpMatch()
 
-    private fun dp(v: Int): Int = (v * activity.resources.displayMetrics.density).toInt()
+    private fun dp(v: Int): Int = activity.dp(v)
 
     private fun remoteDevice(): BluetoothDevice? =
         (activity.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
@@ -241,8 +231,8 @@ class ConfigPage(
     private fun clearFields() {
         editUas.setText("")
         editRealname.setText("")
-        spinnerOp.setSelection(1)
-        spinnerUa.setSelection(1)
+        spinnerOp.setSelection(DEFAULT_SELECTION)
+        spinnerUa.setSelection(DEFAULT_SELECTION)
         lblState.text = "状态: --"
     }
 
@@ -279,7 +269,7 @@ class ConfigPage(
     // -------------------------------------------------------------- log
     private fun log(msg: String) {
         logLines.addLast(msg)
-        while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
+        while (logLines.size > AppState.MAX_LOG_LINES) logLines.removeFirst()
         logView.text = logLines.joinToString("\n")
     }
 

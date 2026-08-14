@@ -159,7 +159,7 @@ class SessionStats {
             2 -> realnameSummary(a)
             3 -> enumPercent(a, OP_CATEGORY_LABELS)
             4 -> enumPercent(a, UA_CLASS_LABELS)
-            5 -> opLocTypeSummary(a)
+            5 -> enumPercent(a, OP_LOC_TYPE_LABELS)
             6 -> opPosSummary(a)
             7 -> numericRange(a, "m")
             8 -> uaPosSummary(a)
@@ -247,18 +247,6 @@ class SessionStats {
         for ((v, c) in a.enumCounts) {
             val pct = Math.round(c * 100.0 / total)
             parts.add("${labels[v] ?: "未定义($v)"} $pct%")
-        }
-        if (a.unknown > 0) parts.add("未知 ${a.unknown} 次")
-        return parts.joinToString("；")
-    }
-
-    private fun opLocTypeSummary(a: FieldAccum): String {
-        val total = a.enumCounts.values.sum()
-        if (total == 0) return "无有效值"
-        val parts = ArrayList<String>()
-        for ((v, c) in a.enumCounts) {
-            val pct = Math.round(c * 100.0 / total)
-            parts.add("${OP_LOC_TYPE_LABELS[v] ?: "未定义($v)"} $pct%")
         }
         if (a.unknown > 0) parts.add("未知 ${a.unknown} 次")
         return parts.joinToString("；")

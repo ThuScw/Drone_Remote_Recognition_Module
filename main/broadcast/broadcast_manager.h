@@ -43,8 +43,6 @@ public:
     // nowMs: 当前系统时间 (ms)
     void update(const FlightData& fd, uint64_t nowMs);
 
-    bool isBroadcasting() const { return _broadcastActive; }
-
 private:
     // --- 内部方法 ---
     void handleBleRecovery();

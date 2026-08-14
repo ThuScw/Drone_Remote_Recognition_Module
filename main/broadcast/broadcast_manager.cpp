@@ -15,6 +15,10 @@
 
 static const char* TAG = "BCAST";
 
+// 堆/栈告警阈值 (bytes) — handleHeapMonitor 监测
+static constexpr size_t   kHeapMinFreeAlert = 10000;  // 最小可用堆
+static constexpr uint32_t kStackHwmAlert    = 1024;   // 主任务栈高水位
+
 // ======================== 构造 / 初始化 ========================
 
 RIDBroadcastManager::RIDBroadcastManager(
@@ -435,7 +439,7 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
     ESP_LOGI(TAG, "Heap monitor: min_free=%u bytes, broadcast_count=%lu",
              (unsigned)freeHeap, (unsigned long)_broadcastCount);
 
-    if (freeHeap < 10000) {
+    if (freeHeap < kHeapMinFreeAlert) {
         ESP_LOGW(TAG, "LOW HEAP WARNING: only %u bytes remaining", (unsigned)freeHeap);
         faultLogRecord(FAULT_LOW_HEAP, nowMs);
     }
@@ -444,7 +448,7 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
     // StackType_t 在 ESP32 上为 1 字节, 乘以 sizeof 以保持跨端口一致
     uint32_t stackHwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL) * (uint32_t)sizeof(StackType_t);
     ESP_LOGI(TAG, "Main stack high-water: %lu bytes", (unsigned long)stackHwm);
-    if (stackHwm < 1024) {
+    if (stackHwm < kStackHwmAlert) {
         ESP_LOGW(TAG, "Main stack LOW (HWM=%lu) — consider increasing CONFIG_ESP_MAIN_TASK_STACK_SIZE",
                  (unsigned long)stackHwm);
     }
