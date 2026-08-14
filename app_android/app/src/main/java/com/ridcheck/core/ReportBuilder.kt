@@ -322,8 +322,7 @@ object ReportBuilder {
         "-"
     }
 
-    private fun rawHex(raw: ByteArray): String =
-        raw.joinToString(" ") { String.format("%02X", it.toInt() and 0xFF) }
+    private fun rawHex(raw: ByteArray): String = raw.toHexSpaced()
 
     private fun clauseSuffix(issue: HealthIssue): String =
         if (issue.clause.isEmpty()) "" else " (${issue.clause})"

@@ -37,7 +37,7 @@ object ExplainPage {
         ))
         col.addView(body(
             context,
-            "技术讲：本 APP 监听蓝牙 BLE 5.0 扩展广播（Service UUID 0x0D50，dataType 0xFF，" +
+            "技术讲：本 APP 监听蓝牙 BLE 5.0 扩展广播（Service UUID 0xFFFF，dataType 0xFF，" +
                 "版本字节 0x20 即 V1.0），从广播帧中提取并解析 GB 46750-2025 规定的数据包。"
         ))
 
@@ -114,6 +114,5 @@ object ExplainPage {
         setPadding(dp(context, 4), dp(context, 4), dp(context, 4), dp(context, 4))
     }
 
-    private fun dp(context: Context, v: Int): Int =
-        (v * context.resources.displayMetrics.density).toInt()
+    private fun dp(context: Context, v: Int): Int = context.dp(v)
 }

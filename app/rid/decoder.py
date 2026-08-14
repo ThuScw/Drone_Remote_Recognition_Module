@@ -28,7 +28,6 @@ DID_VERT_SPEED = 0x08  # 012 垂直速度
 DID_BARO_ALT = 0x02    # 014 气压高度
 
 # Sentinel values the encoder writes for "unknown / unavailable"
-SENT_LATLON = 0xFFFFFFFF  # positions (int32 -1)
 SENT_SPEED_HEADING = 0xFFFF  # speed / heading
 SENT_VSPEED = 0xFF  # vertical speed
 
@@ -62,7 +61,7 @@ def _fmt_alt(v: float) -> str:
 
 
 def _fmt_speed(v: float) -> str:
-    return "未知" if v != v else f"{v:.1f}"
+    return _fmt_alt(v)
 
 
 def parse_hex(text: str) -> bytes:
@@ -162,26 +161,26 @@ def _parse_content(pkt: DecodedPacket, c: bytes, data_id_1: int) -> None:
     if need(1):
         pkt.op_loc_type = c[pos]; pos += 1
 
-    # 006 遥控站位置 (int32 LE x2, deg*1e7)
+    # 006 遥控站位置 (int32 LE x2, deg*1e7) — GB 表3-006: 32位经度|32位纬度
     if need(8):
-        lat_i, lon_i = struct.unpack_from("<ii", c, pos); pos += 8
+        lon_i, lat_i = struct.unpack_from("<ii", c, pos); pos += 8
         if lat_i == -1 or lon_i == -1:
             pkt.op_lat = pkt.op_lon = float("nan")
         else:
-            pkt.op_lat, pkt.op_lon = lat_i / 1e7, lon_i / 1e7
+            pkt.op_lon, pkt.op_lat = lon_i / 1e7, lat_i / 1e7
 
     # 007 遥控站高度 (uint16 LE, (val+1000)*2)
     if need(2):
         v = struct.unpack_from("<H", c, pos)[0]; pos += 2
         pkt.op_alt = v / 2.0 - 1000.0 if v else float("nan")
 
-    # 008 无人机位置
+    # 008 无人机位置 — GB 表3-008: 32位经度|32位纬度
     if need(8):
-        lat_i, lon_i = struct.unpack_from("<ii", c, pos); pos += 8
+        lon_i, lat_i = struct.unpack_from("<ii", c, pos); pos += 8
         if lat_i == -1 or lon_i == -1:
             pkt.ua_lat = pkt.ua_lon = float("nan")
         else:
-            pkt.ua_lat, pkt.ua_lon = lat_i / 1e7, lon_i / 1e7
+            pkt.ua_lon, pkt.ua_lat = lon_i / 1e7, lat_i / 1e7
 
     # 009 航迹角 (uint16 LE, *0.1 deg), 010 地速 (uint16 LE, *0.1 m/s)
     if need(2):

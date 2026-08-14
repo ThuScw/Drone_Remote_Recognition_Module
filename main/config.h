@@ -2,28 +2,30 @@
 #define CONFIG_H
 
 #include <driver/gpio.h>
+#include <esp_bt.h>
 
 // ================= 用户配置区 =================
 
-// 唯一产品识别码 (GB 46860-2025 Section 4.1 — 厂商生产格式)
+// 唯一产品识别码占位值 (GB 46860-2025 Section 4.1 — 厂商生产格式)
 // 结构: 厂商识别码(4) + 产品型号代码(4) + 序列号(12) = 20字符 ASCII
 // 字符范围: 0-9 及除 O/I 外的大写字母 A-Z
-// 产品化时替换为 UOM 平台备案的真实编码
-#define UAS_ID "CNGBLSDR2026AP240167"
+// 产品化时替换为 UOM 平台备案的真实编码; GATT 双向配置可起飞前反写覆盖并持久化到 NVS
+// (CFG_ 前缀避免与 RidConfigField 枚举成员同名)
+#define CFG_UAS_ID "1581FA6QC25B500C2H74"
 
-// 实名登记标志 (GB 46750-2025 Table 3-002)
+// 实名登记标志占位值 (GB 46750-2025 Table 3-002)
 // 在 UOM 实名登记系统获取的登记号码后 8 位字符，ASCII 编码，未填写时以 NULL 填充
-#define REALNAME_ID "99498179"
+#define CFG_REALNAME_ID "07564244"
 
-// 运行类别 (GB 46750-2025 Table 3-003)
+// 运行类别占位值 (GB 46750-2025 Table 3-003)
 // 0=未定义, 1=开放类, 2=特定类, 3=审定类
 // 表演型 35cm 轻型无人机通常属于开放类
-#define OP_CATEGORY 1  // 开放类
+#define CFG_OP_CATEGORY 1  // 开放类
 
-// 无人机分类 (GB 46750-2025 Table 3-004)
+// 无人机分类占位值 (GB 46750-2025 Table 3-004)
 // 0=微型, 1=轻型, 2=小型, 3=中型, 4=大型
 // 35cm*35cm*10cm 表演无人机属于轻型
-#define UA_CLASS 1  // 轻型
+#define CFG_UA_CLASS 1  // 轻型
 
 // 遥控站位置类型 (GB 46750-2025 Table 3-005)
 // 0=起飞点位置, 1=遥控站位置
@@ -34,9 +36,9 @@
 #define COORD_SYS 0
 
 // 精度取值 (GB 46750-2025 Table 3-017/018/019)
-// 广播时精度由 GPS eph/epv 实时映射（不可用如实上报 unknown=0），以下仅供 BLE 自检包使用
-#define HORIZ_ACC 10  // <10m
-#define VERT_ACC  5   // <3m
+// 广播时精度由 GPS eph/epv 实时映射；eph/epv 不可用时 fallback 到以下硬编码值
+#define HORIZ_ACC 12  // <1m (±1~3cm 水平精度)
+#define VERT_ACC  6   // <1m (±2~5cm 垂直精度)
 #define SPEED_ACC 3   // <1m/s
 
 // 时间戳精度 (GB 46750-2025 Table 3-021) — GPS 授时后的动态值; 未授时设为 0 (未知)
@@ -55,12 +57,11 @@
 // GB 46750-2025 6.1.3: 轻型无人机 EIRP ≥ 4 dBm (360°) 或 ≥ 6 dBm (平均)
 // ESP32-S3 最大 +9 dBm (ESP_PWR_LVL_P9), 加 PCB 天线 ~2 dBi → EIRP ≈ 11 dBm
 // 可选用: ESP_PWR_LVL_P3(+3), ESP_PWR_LVL_P6(+6), ESP_PWR_LVL_P9(+9)
-#include <esp_bt.h>
 #define BLE_TX_POWER_LEVEL ESP_PWR_LVL_P9
 
 // 数据更新间隔 (毫秒) — 飞行数据刷新频率
 // 独立于广播间隔，避免广播分片被打断
-#define DATA_UPDATE_INTERVAL_MS 1000
+#define DATA_UPDATE_INTERVAL_MS 400
 
 // 数据新鲜度阈值 (毫秒) — 超过此时间未更新的数据标记为"过期"
 // GB 46750-2025 要求实时性，超过 2s 的数据视为不可靠
@@ -95,8 +96,8 @@
 // Flash 分区名 (在 partitions.csv 中定义)
 #define FLIGHT_LOG_PARTITION    "flight_log"
 
-// 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload = 96B
-#define FLIGHT_LOG_MAGIC        0x5249444C  // "RIDL"
+// 每条记录: 4B magic + 2B CRC + 8B timestamp + 2B len + 80B payload + 32B 填充 = 128B
+// 128 为 4096B 扇区整数因子 (32 条/扇区), 记录永不跨扇区, 消除跨扇区擦除损坏
 
 // 飞行日志异步写入任务
 #define FLIGHT_LOG_TASK_STACK       3072   // 任务栈 (bytes)
@@ -122,8 +123,7 @@
 //   - CH340 芯片: 0x1A86 / 0x7523
 //   - CP2102 芯片: 0x10C4 / 0xEA60
 
-// 用户无人机飞控的 VID/PID (已确认所有同型号无人机一致)
-// VID = 0x1B8C, PID = 0x0036
+// GBI无人机VID = 0x1B8C, PID = 0x0036
 // 通过设备管理器硬件 ID 确认: USB\VID_1B8C&PID_0036&REV_0101
 #define FC_USB_VID          0x1B8C
 #define FC_USB_PID          0x0036
@@ -138,16 +138,11 @@
 #define USB_HOST_TASK_STACK     4096
 #define USB_HOST_TASK_PRIO      10  // 较高优先级, 确保及时处理 USB 事件
 
-// MAVLink 解析配置
-#define MAVLINK_MAX_PAYLOAD_LEN  255   // MAVLink v2 最大 payload
-#define MAVLINK_PARSER_STACK     4096  // MAVLink 解析任务栈
-
 // 数据超时配置
 // 如果超过此时间未收到有效位置数据, 标记为 STALE
 #define FC_DATA_TIMEOUT_MS     2000
 
 // MAVLink 连续 CRC 失败阈值 — 超过此值触发 USB 恢复
-// 正常运行时约 47% 的帧通过 CRC，但有效帧间最多几十个未知帧
 // 200 个连续失败 ≈ 约 1 秒无任何已知消息类型通过，表明数据流损坏
 #define MAVLINK_CONSECUTIVE_CRC_LIMIT 200
 

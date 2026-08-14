@@ -347,10 +347,14 @@ bool mavlink_parseByte(MavlinkParser& p, uint8_t byte, uint64_t nowMs) {
                 } else {
                     p.crcErrors++;
                     p.consecutiveCrcErrors++;
-                    #if CONFIG_RID_VERBOSE_LOG
-                    ESP_LOGW(TAG, "CRC fail: %s msgid=%d recv=0x%04X calc=0x%04X",
-                             p.isV2 ? "v2" : "v1", msgid, crcReceived, crcCalc);
-                    #endif
+                    // 只暂存详情、不在锁内打印: ESP_LOGW 内部取锁, 若本函数在关中断
+                    // 临界区内被调用会死锁 (ESP32-S3 双核, 临界区互斥另一核)。
+                    // 由 flight_data onUsbData 在临界区外读取 crcFail* 并补打日志。
+                    p.crcFailPending = 1;
+                    p.crcFailIsV2    = p.isV2;
+                    p.crcFailMsgId   = (uint32_t)msgid;
+                    p.crcFailRecv    = crcReceived;
+                    p.crcFailCalc    = crcCalc;
                     // 立即复位, 不等签名尾部
                     p.state = PARSE_STATE_IDLE;
                 }

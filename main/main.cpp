@@ -22,6 +22,8 @@
 #include "config.h"
 #include "broadcast_manager.h"
 #include "ble_rid_broadcaster.h"
+#include "rid_config_store.h"
+#include "rid_gatt_server.h"
 #include "flight_data.h"
 #include "indicators.h"
 #include "flight_log.h"
@@ -34,6 +36,8 @@ static BleRidBroadcaster    broadcaster;
 static FlightLog            flightLog;
 static StatusLed            statusLed;
 static StubFcInterlink      fcInterlink;   // 测试阶段后端, 量产时替换为真实交联实现
+static RidConfigStore       configStore;
+static RidGattServer        gattServer;
 static RIDBroadcastManager* manager = nullptr;
 
 extern "C" void app_main(void) {
@@ -65,8 +69,27 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Light show drone | BLE5 Extended Advertising | USB Host CDC-ACM");
 
     // --- Subsystems ---
-    if (!broadcaster.begin("GBI_RID_001")) {
+    if (!configStore.init()) {
+        ESP_LOGE(TAG, "FATAL: Config store init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // NimBLE 主机初始化 (此时 host 未启动)。GATT 服务注册必须插在 initNimble 与
+    // startNimbleHost 之间: ble_gatts_add_svcs() 只排队, 真正进入 ATT 库的
+    // ble_gatts_start() 仅在 host 启动时运行一次, 跑完即释放排队区 — 此前曾因
+    // begin() 先启动 host 导致 0xFFF0 服务从未注册, Android 发现不到配置服务。
+    if (!broadcaster.initNimble("GBI_RID_001")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    if (!gattServer.init(configStore)) {
+        ESP_LOGE(TAG, "FATAL: GATT server init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    if (!broadcaster.startNimbleHost()) {
+        ESP_LOGE(TAG, "FATAL: BLE host start failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
@@ -81,10 +104,16 @@ extern "C" void app_main(void) {
     ConsoleCmd::init(flightLog);
 
     // --- Broadcast Manager (all safety + orchestration logic) ---
-    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink);
+    manager = new RIDBroadcastManager(broadcaster, flightLog, statusLed, fcInterlink, configStore, gattServer);
     if (!manager->init()) {
         ESP_LOGE(TAG, "FATAL: Broadcast manager init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    // --- 地面初始态: 可连接广播 (等待手机 GATT 配置) ---
+    // manager->init() 内的 selfTest 会做一次 start/stop broadcast, 故在其后启动
+    if (!broadcaster.startConnectableAdv()) {
+        ESP_LOGW(TAG, "Connectable advertising start failed — GATT config unavailable");
     }
 
     ESP_LOGI(TAG, "Ready. Monitor with nRF Connect.\n");

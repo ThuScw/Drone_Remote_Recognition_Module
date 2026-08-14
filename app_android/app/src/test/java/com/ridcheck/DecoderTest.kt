@@ -55,12 +55,12 @@ class DecoderTest {
         assertEquals(5, pkt.tsAcc)
     }
 
-    /** 黄金向量：直接从 Python 解码器生成的完整包字节解码。 */
+    /** 黄金向量：直接从 Python 解码器生成的完整包字节解码（经度在前）。 */
     @Test
     fun fullHexGoldenVector() {
         val raw = Decoder.parseHex(
             "FF2048FFFFFE43504E594D444C303031323334353637383930413132333435363738" +
-                "01010080619D12686A6748340868659D12506E6748C8012300404783FC08FA0802000A" +
+                "010100686A674880619D123408506E674868659D12C8012300404783FC08FA0802000A" +
                 "05030068E5CF8B0105"
         )
         val pkt = Decoder.decodeGbPacket(raw)
@@ -155,14 +155,14 @@ class DecoderTest {
         }
     }
 
-    /** 从完整 BLE 广播帧中提取 GB 包（nRF Connect 粘贴场景）。 */
+    /** 从完整 BLE 广播帧中提取 GB 包（nRF Connect 粘贴场景）。
+     *  广播为纯 GB 包：Service Data (0x16, UUID 0xFFFF LE + GB 包)。 */
     @Test
     fun extractGbFromRawFrame() {
         val gb = PacketBuilder.buildPacket()
-        // 伪广播帧：AD Flags + Service Data (0x16, UUID 0x0D50 LE + 载荷)
         val ad = ByteArrayOutputStream()
         ad.write(byteArrayOf(0x02, 0x01, 0x06))
-        val payload = byteArrayOf(0x50, 0x0D) + gb
+        val payload = byteArrayOf(0xFF.toByte(), 0xFF.toByte()) + gb
         ad.write(byteArrayOf((payload.size + 1).toByte(), 0x16))
         ad.write(payload)
         val frame = ad.toByteArray()
@@ -193,5 +193,17 @@ class DecoderTest {
         assertTrue(!pkt2.fieldHex.containsKey("011"))
         assertTrue(!pkt2.fieldHex.containsKey("012"))
         assertTrue(!pkt2.fieldHex.containsKey("014"))
+    }
+
+    /** 实机链路回归：Service Data 值 = [GB 包]（固件纯 GB 广播，无 ASTM 头）。
+     *  提取后直接解码，dataType=0xFF，字段不错位。 */
+    @Test
+    fun liveScanPacketPureGbDecodesCleanly() {
+        val gb = PacketBuilder.buildPacket()
+
+        val pkt = Decoder.decodeGbPacket(gb, address = "AA:BB:CC:DD:EE:FF", rssi = -50)
+        assertEquals("", pkt.structureError)
+        assertEquals(PacketBuilder.DATA_TYPE, pkt.dataType)
+        assertEquals("CPNYMDL001234567890A", pkt.uasId)
     }
 }

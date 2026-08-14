@@ -60,10 +60,13 @@ class RidScanService : Service() {
                 raw,
                 address = address,
                 rssi = rssi,
-                receivedAtMs = System.nanoTime() / 1_000_000,
-                source = "ble"
+                receivedAtMs = System.nanoTime() / 1_000_000
             )
             AppState.registry.onPacket(pkt, System.currentTimeMillis())
+        }
+
+        override fun onConfigDevice(address: String, rssi: Int, name: String?) {
+            AppState.onConfigDevice(address, rssi, name)
         }
 
         override fun onScanState(scanning: Boolean) {
@@ -150,9 +153,9 @@ class RidScanService : Service() {
     private fun buildNotification(): Notification {
         val count = AppState.registry.size
         val text = if (count == 0) {
-            "等待 RID 广播设备（UUID 0x0D50）..."
+            "等待 RID 广播（0xFFFF）或可配置模块（0xFFF0）..."
         } else {
-            "已记录 $count 台设备，后台持续收集中"
+            "已记录 $count 台广播设备，后台持续收集中"
         }
         val contentIntent = PendingIntent.getActivity(
             this, 0,
@@ -160,7 +163,7 @@ class RidScanService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("RID 检测 · 后台扫描中")
             .setContentText(text)
             .setOngoing(true)

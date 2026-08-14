@@ -6,10 +6,11 @@
 
 | # | 功能 | 说明 |
 |---|------|------|
-| 1 | 开启电脑蓝牙并扫描 | 主动扫描，匹配模块广播（Service Data / UUID `0x0D50`，名称 `GBI_RID_001`） |
+| 1 | 开启电脑蓝牙并扫描 | 主动扫描，匹配模块广播（Service Data / UUID `0xFFFF`，名称 `GBI_RID_001`） |
 | 2 | 接收模块信号 | 接收广播并解析出 GB 46750-2025 数据包 |
 | 3 | 解码 + 内置判断器 | 逐字段解码；自动检查结构/字段/速率/新鲜度，判定模块“正常 / 警告 / 故障” |
 | 4 | 串口提取内部数据 | 通过 `DUMP` 协议导出模块 Flash 中的飞行日志 → CSV |
+| 5 | GATT 双向配置 | 扫描地面态模块（服务 `0xFFF0`），读取/写入 001~004 身份字段 + 状态（起飞前反写，起飞后广播） |
 
 另提供 **“粘贴 HEX 解码”**：从任何抓包工具复制数据包十六进制即可手动解码自检，
 不依赖系统 BLE 栈解析（BLE 5 扩展广播在部分 Windows 版本上 service_data 可能拿不到）。
@@ -58,6 +59,13 @@ python main.py
 2. 选串口与波特率（默认 115200），点 **导出飞行日志**。
 3. 选择保存路径，等待完成。CSV 含全部 GB 字段 + CRC 有效性列。
 
+### GATT 双向配置（起飞前写身份字段）
+
+1. 模块处于地面态时，点「配置」标签页 → **扫描设备**（按名称 `GBI_RID_001` / 服务 `0xFFF0` 过滤）。
+2. 选中设备 → **连接读取**，读回当前 001~004 字段与状态。
+3. 填写唯一产品识别码（20 位 `[0-9A-Z]` 禁 `O/I`）、实名登记号后 8 位、运行类别、无人机分类 → **写入配置**。
+4. 写入成功即持久化到模块 NVS，起飞后广播这些值；空中态模块写锁定（拒绝写入）。
+
 ## 打包成 exe
 
 ```bash
@@ -86,19 +94,21 @@ app/
   rid/                 # 后端（纯逻辑，可单测）
     decoder.py         # GB 46750 数据包解码（与固件 rid_messages.cpp 一致）
     health.py          # 内置判断器
-    ble_scanner.py     # bleak 扫描 + 0x0D50 载荷提取
+    ble_scanner.py     # bleak 扫描 + 0xFFFF 载荷提取
     serial_dump.py     # DUMP 协议 + CSV 导出
     models.py          # 数据模型
+    gatt_config.py     # GATT 配置服务 UUID + 4 字段校验（与固件 rid_config.h 一致）
   gui/                 # PySide6 界面
     main_window.py
     ble_panel.py
     serial_panel.py
+    config_panel.py    # GATT 双向配置面板（扫描/连接/读/写身份字段）
     workers.py         # QThread 后台任务
 ```
 
 ## 相关
 
 - 解码与字段顺序与固件 `main/protocol/rid_messages.cpp` 一致（版本字节 `0x20` = V1.0）
-- 数据包在广播中的位置：AD Service Data（类型 `0x16`）→ UUID `0x0D50` → 原始 GB 数据包
+- 数据包在广播中的位置：AD Service Data（类型 `0x16`）→ UUID `0xFFFF` → 原始 GB 数据包（国标未定义帧级封装，故不带 ASTM 字头）
 - 命令行版串口导出工具见 `../tools/flight_log_dump.py`
 - 手机端检测 APP（`../app_android/`）与本软件共用同一套解码器 / 判定器（逐行移植），现场 BLE 抓包 + 报告导出，见 [app_android/README.md](../app_android/README.md)

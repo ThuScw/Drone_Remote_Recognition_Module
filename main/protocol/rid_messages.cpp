@@ -32,57 +32,61 @@ static void writeTimestamp(uint8_t* buf, uint64_t unixMs) {
 // ======================== 编码函数 (GB 46750-2025 Table 3) ========================
 
 // 经纬度: int32 LE, deg * 1e7
+// GB 46750-2025 表3-006/008: 字段为 "32位经度|32位纬度" — 经度在前, 纬度在后
 // NaN/Inf 或超出物理范围 → 表3未知哨兵 (0xFFFFFFFF), 而非未定义行为的垃圾强转
 static void encodeLatLon(uint8_t* buf, float lat, float lon) {
     int32_t lat_i = (isfinite(lat) && lat >= -90.0f && lat <= 90.0f)
                     ? (int32_t)(lat * 10000000.0f) : -1;
     int32_t lon_i = (isfinite(lon) && lon >= -180.0f && lon <= 180.0f)
                     ? (int32_t)(lon * 10000000.0f) : -1;
-    writeI32LE(buf, lat_i);
-    writeI32LE(buf + 4, lon_i);
+    writeI32LE(buf, lon_i);
+    writeI32LE(buf + 4, lat_i);
 }
 
 // 大地/气压高度: uint16 LE, (val + 1000) * 2, 分辨率 0.5m
 // GB 46750-2025 Table 3: 编码值 0 表示 "未知或不可用"
+// 整数编码向下取整 (与表3-009/010 的取整约定一致)
 // NaN/Inf → 0 (未知), 避免 NaN 比较全假导致钳位失效、强转未定义行为
 static uint16_t encodeAlt1000(float alt) {
     if (!isfinite(alt)) return 0;
     float encoded = (alt + 1000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
-    return (uint16_t)(encoded + 0.5f);
+    return (uint16_t)encoded;
 }
 
-// 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m
+// 相对高度: uint16 LE, (val + 9000) * 2, 分辨率 0.5m (向下取整)
 static uint16_t encodeRelHeight(float h) {
     if (!isfinite(h)) return 0;
     float encoded = (h + 9000.0f) * 2.0f;
     if (encoded < 0.0f)       encoded = 0.0f;
     if (encoded > 65535.0f)   encoded = 65535.0f;
-    return (uint16_t)(encoded + 0.5f);
+    return (uint16_t)encoded;
 }
 
 // 航迹角: uint16 LE, val * 10, 范围 0~3599, 分辨率 0.1°
 // NaN/Inf → 0xFFFF (未知)。解析器在无航向时置 NAN, 若不加保护会被强转为垃圾值
+// GB 46750-2025 表3-009: "取值为实际值×10 … 向下取整" — 正数强转 uint16 即向下取整
 static uint16_t encodeHeading(float deg) {
     if (!isfinite(deg)) return 0xFFFF;
     if (deg < 0.0f)      deg = 0.0f;
     if (deg >= 360.0f)   deg = 359.9f;
-    uint16_t val = (uint16_t)(deg * 10.0f + 0.5f);
+    uint16_t val = (uint16_t)(deg * 10.0f);
     if (val > 3599)      val = 3599;
     return val;
 }
 
 // 地速: uint16 LE, val * 10, 分辨率 0.1 m/s
 // NaN/Inf → 0xFFFF (未知)
+// GB 46750-2025 表3-010: "取值为实际值×10 … 向下取整" — 正数强转 uint16 即向下取整
 static uint16_t encodeSpeed(float mps) {
     if (!isfinite(mps)) return 0xFFFF;
     if (mps < 0.0f)        mps = 0.0f;
     if (mps > 6553.5f)     mps = 6553.5f;
-    return (uint16_t)(mps * 10.0f + 0.5f);
+    return (uint16_t)(mps * 10.0f);
 }
 
-// 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2
+// 垂直速度: 1 byte, bit7=direction(0=上升, 1=下降), bit6-0=val*2 (向下取整)
 // NaN/Inf → 0xFF (未知哨兵, 表3-012)
 static uint8_t encodeVSpeed(float mps) {
     if (!isfinite(mps)) return 0xFF;
@@ -90,7 +94,7 @@ static uint8_t encodeVSpeed(float mps) {
     float absVal = (mps < 0.0f) ? -mps : mps;
     float encoded = absVal * 2.0f;
     if (encoded > 127.0f) encoded = 127.0f;
-    uint8_t val = (uint8_t)(encoded + 0.5f);
+    uint8_t val = (uint8_t)encoded;
     return dir | val;
 }
 
@@ -133,7 +137,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     // O 字段: 条件置位
     if (fd.validMask & FLD_HEIGHT_AGL) pkt.dataId[1] |= DID_REL_HEIGHT;
     if (fd.validMask & FLD_VSPEED)     pkt.dataId[1] |= DID_VERT_SPEED;
-    if (fd.validMask & FLD_BARO_ALT)   pkt.dataId[1] |= DID_BARO_ALT;
+    pkt.dataId[1] |= DID_BARO_ALT;  // 014 气压高度: 始终发送，缺失时编码为0
 
     // Byte 2: 状态/精度/时间字段
     pkt.dataId[2] = DID_OP_STATUS | DID_COORD_SYS | DID_HORIZ_ACC
@@ -144,6 +148,20 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     // --- 数据内容项编码 ---
     uint8_t* c = pkt.content;
     uint16_t pos = 0;
+
+    // 字段缺失 → 写表3哨兵值并 LOGW。日志文案与哨兵值逐字保持原样；pos 由调用方统一推进。
+    auto encodeMissing = [](uint8_t* dst, uint32_t sentinel, uint8_t width,
+                            const char* field, const char* enc) {
+        if (width == 1) {
+            *dst = (uint8_t)sentinel;
+        } else if (width == 2) {
+            writeU16LE(dst, (uint16_t)sentinel);
+        } else {  // 位置类 8 字节 (两组 I32LE)
+            writeI32LE(dst, (int32_t)sentinel);
+            writeI32LE(dst + 4, (int32_t)sentinel);
+        }
+        ESP_LOGW(TAG, "%s missing, encoding %s", field, enc);
+    };
 
     // 001 唯一产品识别码 (20 bytes, M, always)
     size_t uasLen = strlen(uasId);
@@ -170,9 +188,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_OP_POS) {
         encodeLatLon(c + pos, fd.opLat, fd.opLon);
     } else {
-        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
-        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
-        ESP_LOGW(TAG, "OP_POS missing, encoding unknown (0xFFFFFFFF)");
+        encodeMissing(c + pos, 0xFFFFFFFF, 8, "OP_POS", "unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
@@ -180,8 +196,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_OP_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.opAlt));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "OP_ALT missing, encoding 0");
+        encodeMissing(c + pos, 0, 2, "OP_ALT", "0");
     }
     pos += 2;
 
@@ -189,9 +204,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_POS) {
         encodeLatLon(c + pos, fd.lat, fd.lon);
     } else {
-        writeI32LE(c + pos, -1);      // lat unknown (0xFFFFFFFF)
-        writeI32LE(c + pos + 4, -1);  // lon unknown (0xFFFFFFFF)
-        ESP_LOGW(TAG, "UA_POS missing, encoding unknown (0xFFFFFFFF)");
+        encodeMissing(c + pos, 0xFFFFFFFF, 8, "UA_POS", "unknown (0xFFFFFFFF)");
     }
     pos += 8;
 
@@ -199,8 +212,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_HEADING) {
         writeU16LE(c + pos, encodeHeading(fd.heading));
     } else {
-        writeU16LE(c + pos, 0xFFFF);  // unknown
-        ESP_LOGW(TAG, "HEADING missing, encoding unknown (0xFFFF)");
+        encodeMissing(c + pos, 0xFFFF, 2, "HEADING", "unknown (0xFFFF)");
     }
     pos += 2;
 
@@ -208,8 +220,7 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_SPEED) {
         writeU16LE(c + pos, encodeSpeed(fd.speed));
     } else {
-        writeU16LE(c + pos, 0xFFFF);  // unknown
-        ESP_LOGW(TAG, "SPEED missing, encoding unknown (0xFFFF)");
+        encodeMissing(c + pos, 0xFFFF, 2, "SPEED", "unknown (0xFFFF)");
     }
     pos += 2;
 
@@ -228,23 +239,24 @@ void gb46750_buildPacket(GB46750Packet& pkt, const FlightData& fd,
     if (fd.validMask & FLD_GEO_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.geoAlt));
     } else {
-        writeU16LE(c + pos, 0);  // unknown
-        ESP_LOGW(TAG, "GEO_ALT missing, encoding 0");
+        encodeMissing(c + pos, 0, 2, "GEO_ALT", "0");
     }
     pos += 2;
 
-    // 014 气压高度 (2 bytes, O — only present if valid)
+    // 014 气压高度 (2 bytes, always — unknown=0 if missing)
     if (fd.validMask & FLD_BARO_ALT) {
         writeU16LE(c + pos, encodeAlt1000(fd.baroAlt));
-        pos += 2;
+    } else {
+        writeU16LE(c + pos, 0);  // unknown
     }
+    pos += 2;
 
     // 015 运行状态 (1 byte, M, always — unknown=0 if missing)
     if (fd.validMask & FLD_OP_STATUS) {
         c[pos++] = fd.opStatus;
     } else {
-        c[pos++] = STATUS_UNREPORTED;  // 0: 未报告
-        ESP_LOGW(TAG, "OP_STATUS missing, encoding UNREPORTED");
+        encodeMissing(c + pos, STATUS_UNREPORTED, 1, "OP_STATUS", "UNREPORTED");
+        pos += 1;
     }
 
     // 016 坐标系类型 (1 byte, M, always)

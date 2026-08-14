@@ -96,7 +96,7 @@ void ConsoleCmd::dumpAllRecords() {
     // 预扫描统计有效记录数: 损坏记录 (readRecordRaw==0) 直接跳过, 不导出。
     // 旧的实现把损坏记录填 0 后当作有效块导出 — 接收方会把它解析成一条
     // "全部字段 unknown" 的合法广播, 污染还原出的飞行轨迹。
-    uint8_t buf[96];
+    uint8_t buf[FlightLog::kRecordSize];
     uint32_t validCount = 0;
     for (uint32_t i = 0; i < available; i++) {
         if (_flightLog->readRecordRaw(i, buf) != 0) {
@@ -117,7 +117,7 @@ void ConsoleCmd::dumpAllRecords() {
 
     uint32_t sent = 0;
     for (uint32_t i = 0; i < available && sent < validCount; i++) {
-        // readRecordRaw 把完整 96 字节原始记录拷贝到 buf (含 magic/CRC/时间戳)。
+        // readRecordRaw 把完整 kRecordSize 字节原始记录拷贝到 buf (含 magic/CRC/时间戳)。
         // 此前误用 readRecord — 它只把 payload 拷进 buf, 导致导出的是
         // "payload+栈上残留字节" 的假记录, 接收端 CRC 校验必失败。
         if (_flightLog->readRecordRaw(i, buf) == 0) {

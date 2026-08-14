@@ -72,14 +72,14 @@ static bool decodePacket(const uint8_t* buf, uint16_t len, DecodedFields& out) {
     // 001 UAS_ID (20) ... 005 OP_LOC_TYPE (1): fixed leading fields
     o += 20 + 8 + 1 + 1 + 1;
 
-    // 006 OP_POS (8)
-    out.opLat = read_i32le(c + o);  o += 4;
+    // 006 OP_POS (8): 经度在前, 纬度在后 (表3 "32位经度|32位纬度")
     out.opLon = read_i32le(c + o);  o += 4;
+    out.opLat = read_i32le(c + o);  o += 4;
     // 007 OP_ALT (2)
     out.opAlt = read_u16le(c + o);  o += 2;
-    // 008 UA_POS (8)
-    out.uaLat = read_i32le(c + o);  o += 4;
+    // 008 UA_POS (8): 经度在前, 纬度在后
     out.uaLon = read_i32le(c + o);  o += 4;
+    out.uaLat = read_i32le(c + o);  o += 4;
     // 009 TRACK_ANGLE (2)
     out.heading = read_u16le(c + o);  o += 2;
     // 010 GROUND_SPEED (2)
@@ -176,12 +176,12 @@ void test_rid_messages() {
 
         // Byte-level: all M field bits are 1, O bits are 0 when validMask=0
         CHECK_EQ(pkt.dataId[0], 0xFF);  // 8 M/O bits: UPIC+REALNAME+OP_CAT+UA_CLASS+OP_LOC_TYPE+OP_LOC+OP_ALT+EXT
-        CHECK_EQ(pkt.dataId[1], 0xE5);  // UA_POS+TRACK_ANGLE+GROUND_SPEED+GEO_ALT+EXT (no O fields: REL_HEIGHT, VSPEED, BARO_ALT)
+        CHECK_EQ(pkt.dataId[1], 0xE7);  // UA_POS+TRACK_ANGLE+GROUND_SPEED+GEO_ALT+BARO_ALT(始终)+EXT (no O: REL_HEIGHT, VSPEED)
         CHECK_EQ(pkt.dataId[2], 0xFE);  // OP_STATUS+COORD_SYS+HORIZ_ACC+VERT_ACC+SPEED_ACC+TIMESTAMP+TS_ACC
 
-        // Value encoding: M fields missing → Table 3 unknown sentinel (validMask=0 → no O fields)
+        // Value encoding: M fields missing → Table 3 unknown sentinel (validMask=0 → no O fields except BARO_ALT)
         // Content layout (validMask=0): UAS_ID(20)+REALNAME(8)+OP_CAT(1)+UA_CLASS(1)+OP_LOC_TYPE(1)
-        //   +OP_POS(8)+OP_ALT(2)+UA_POS(8)+HEADING(2)+SPEED(2)+GEO_ALT(2)+OP_STATUS(1)+COORD_SYS(1)
+        //   +OP_POS(8)+OP_ALT(2)+UA_POS(8)+HEADING(2)+SPEED(2)+GEO_ALT(2)+BARO_ALT(2)+OP_STATUS(1)+COORD_SYS(1)
         //   +HORIZ_ACC(1)+VERT_ACC(1)+SPEED_ACC(1)+TIMESTAMP(6)+TS_ACC(1)
 
         // 006 OP_POS at offset 31 — unknown = 0xFFFFFFFF
@@ -202,11 +202,11 @@ void test_rid_messages() {
         // 013 GEO_ALT at offset 53 — unknown = 0
         CHECK_EQ(read_u16le(pkt.content + 53), 0);
 
-        // 015 OP_STATUS at offset 55 — encoded as STATUS_UNREPORTED (0)
-        CHECK_EQ(pkt.content[55], (uint8_t)STATUS_UNREPORTED);
+        // 015 OP_STATUS at offset 57 — encoded as STATUS_UNREPORTED (0)
+        CHECK_EQ(pkt.content[57], (uint8_t)STATUS_UNREPORTED);
 
-        // 020 TIMESTAMP at offset 60-65 — unknown = 0
-        for (int i = 0; i < 6; i++) CHECK_EQ(pkt.content[60 + i], 0);
+        // 020 TIMESTAMP at offset 62-67 — unknown = 0
+        for (int i = 0; i < 6; i++) CHECK_EQ(pkt.content[62 + i], 0);
 
         CHECK(gb46750_packetVerify(pkt));
     }
@@ -224,7 +224,7 @@ void test_rid_messages() {
         // O fields should NOT be present when validMask bit is not set
         CHECK(!(pkt.dataId[1] & DID_REL_HEIGHT));  // 011 O
         CHECK(!(pkt.dataId[1] & DID_VERT_SPEED));  // 012 O
-        CHECK(!(pkt.dataId[1] & DID_BARO_ALT));    // 014 O
+        CHECK(pkt.dataId[1] & DID_BARO_ALT);       // 014 始终发送 (缺失时编码 0)
 
         // Now set O field bits and verify they appear
         fd.validMask = FLD_HEIGHT_AGL | FLD_VSPEED | FLD_BARO_ALT;
@@ -245,18 +245,18 @@ void test_rid_messages() {
 
         // The lat/lon appear twice in content: once for opPos, once for uaPos
         // UAS_ID (20) + REALNAME (8) + OP_CATEGORY (1) + UA_CLASS (1) + OP_LOC_TYPE (1) = 31
-        // OP_POS at offset 31: lat(4) + lon(4)
-        int32_t opLat_i = read_i32le(pkt.content + 31);
-        int32_t opLon_i = read_i32le(pkt.content + 35);
-        CHECK_CLOSE((double)opLat_i / 1e7, 34.5, 0.00001);
+        // OP_POS at offset 31: lon(4) + lat(4)  (表3 "32位经度|32位纬度": 经度在前)
+        int32_t opLon_i = read_i32le(pkt.content + 31);
+        int32_t opLat_i = read_i32le(pkt.content + 35);
         CHECK_CLOSE((double)opLon_i / 1e7, 110.25, 0.00001);
+        CHECK_CLOSE((double)opLat_i / 1e7, 34.5, 0.00001);
 
         // OP_ALT at offset 39: 2 bytes
-        // UA_POS at offset 41: lat(4) + lon(4)
-        int32_t uaLat_i = read_i32le(pkt.content + 41);
-        int32_t uaLon_i = read_i32le(pkt.content + 45);
-        CHECK_CLOSE((double)uaLat_i / 1e7, 34.5, 0.00001);
+        // UA_POS at offset 41: lon(4) + lat(4)
+        int32_t uaLon_i = read_i32le(pkt.content + 41);
+        int32_t uaLat_i = read_i32le(pkt.content + 45);
         CHECK_CLOSE((double)uaLon_i / 1e7, 110.25, 0.00001);
+        CHECK_CLOSE((double)uaLat_i / 1e7, 34.5, 0.00001);
     }
 
     // ==== 7. Altitude encoding: (alt + 1000) * 2, resolution 0.5m ----
@@ -462,12 +462,12 @@ void test_rid_messages() {
         gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
                            1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
 
-        // UA_POS at offset 41
-        int32_t lat_i = read_i32le(pkt.content + 41);
-        int32_t lon_i = read_i32le(pkt.content + 45);
+        // UA_POS at offset 41: lon(4) + lat(4)
+        int32_t lon_i = read_i32le(pkt.content + 41);
+        int32_t lat_i = read_i32le(pkt.content + 45);
 
-        CHECK_CLOSE((double)lat_i / 1e7, -33.8688, 0.0001);
         CHECK_CLOSE((double)lon_i / 1e7, 151.2093, 0.0001);
+        CHECK_CLOSE((double)lat_i / 1e7, -33.8688, 0.0001);
     }
 
     // ==== 16. Operation status encoding in content ----
@@ -639,11 +639,11 @@ void test_rid_messages() {
         CHECK_EQ(c[off], 0);
         off += 1;
 
-        // 006: OP_POS (8 bytes: lat4 + lon4)
-        int32_t opLat = read_i32le(c + off);
-        int32_t opLon = read_i32le(c + off + 4);
-        CHECK_CLOSE((double)opLat / 1e7, 34.000000, 0.00001);
+        // 006: OP_POS (8 bytes: lon4 + lat4, 经度在前)
+        int32_t opLon = read_i32le(c + off);
+        int32_t opLat = read_i32le(c + off + 4);
         CHECK_CLOSE((double)opLon / 1e7, 110.000000, 0.00001);
+        CHECK_CLOSE((double)opLat / 1e7, 34.000000, 0.00001);
         off += 8;
 
         // 007: OP_ALT (2 bytes): (10 + 1000) * 2 = 2020
@@ -651,11 +651,11 @@ void test_rid_messages() {
         CHECK_EQ(opAlt, 2020);
         off += 2;
 
-        // 008: UA_POS (8 bytes: lat4 + lon4)
-        int32_t uaLat = read_i32le(c + off);
-        int32_t uaLon = read_i32le(c + off + 4);
-        CHECK_CLOSE((double)uaLat / 1e7, 34.500000, 0.00001);
+        // 008: UA_POS (8 bytes: lon4 + lat4, 经度在前)
+        int32_t uaLon = read_i32le(c + off);
+        int32_t uaLat = read_i32le(c + off + 4);
         CHECK_CLOSE((double)uaLon / 1e7, 110.250000, 0.00001);
+        CHECK_CLOSE((double)uaLat / 1e7, 34.500000, 0.00001);
         off += 8;
 
         // 009: TRACK_ANGLE (2 bytes): 90.0 * 10 = 900
@@ -961,6 +961,40 @@ void test_rid_messages() {
         CHECK_EQ(d.uaLon, (int32_t)0xFFFFFFFF);
         CHECK_EQ(d.heading, 0xFFFF);
         CHECK_EQ(d.speed, 0xFFFF);
+    }
+
+    // ==== 25. 009/010 向下取整 (GB 46750-2025 表3-009/010 "向下取整", 非四舍五入) ----
+    {
+        // 航迹角 12.35°: 向下取整 → 123 (旧实现 +0.5f 四舍五入会是 124)
+        FlightData fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 12.35f, STATUS_GROUND);
+        GB46750Packet pkt;
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 123);  // floor(12.35*10)=123, round=124
+
+        // 航迹角 12.34°: → 123
+        fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 12.34f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 123);
+
+        // 地速 1.25 m/s: 向下取整 → 12 (旧实现四舍五入会是 13)
+        fd = makeFd(0.0f, 0.0f, 0.0f, 1.25f, 0.0f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 51), 12);  // floor(1.25*10)=12, round=13
+
+        // 地速 1.24 m/s: → 12
+        fd = makeFd(0.0f, 0.0f, 0.0f, 1.24f, 0.0f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 51), 12);
+
+        // 边界保持: 359.9° → 3599 (向下取整 3599 不变)
+        fd = makeFd(0.0f, 0.0f, 0.0f, 0.0f, 359.9f, STATUS_GROUND);
+        gb46750_buildPacket(pkt, fd, TEST_UAS, TEST_REAL,
+                           1, 1, 0, 0, 10, 5, 3, 5, 0ULL);
+        CHECK_EQ(read_u16le(pkt.content + 49), 3599);
     }
 
     printf("--- GB 46750-2025 Encoding: ALL PASSED ---\n");

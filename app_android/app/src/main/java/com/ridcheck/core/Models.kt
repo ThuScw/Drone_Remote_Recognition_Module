@@ -55,9 +55,7 @@ data class HealthIssue(
     val code: String,
     val message: String,
     val clause: String = ""
-) {
-    val label: String get() = level.label()
-}
+)
 
 /**
  * 解码后的 GB 46750-2025 数据包 + 接收元信息。
@@ -68,7 +66,6 @@ class DecodedPacket {
     var address: String = ""
     var rssi: Int = 0
     var receivedAtMs: Long = 0
-    var source: String = "ble"
 
     // --- 原始 ---
     var raw: ByteArray = ByteArray(0)
@@ -156,17 +153,20 @@ data class TrackPoint(
 /** 运行状态变化记录：opStatus 变化时追加一条。 */
 data class StatusLogEntry(val timeMs: Long, val opStatus: Int)
 
+/** 可 GATT 配置的模块（地面态，广播 16-bit Service Class UUID 0xFFF0）。按 MAC 区分。 */
+class ConfigDevice(val address: String) {
+    var rssi: Int = 0
+    var name: String? = null
+    var firstSeenMs: Long = 0
+    var lastSeenMs: Long = 0
+}
+
 /** 一次流式判定结果。 */
 class HealthReport {
     var level: HealthLevel = HealthLevel.PASS
     val issues: MutableList<HealthIssue> = ArrayList()
     var packetsSeen: Int = 0
-    var packetsOk: Int = 0
     var avgRateHz: Double = 0.0
     var staleSeconds: Double = 0.0
     var note: String = ""
-
-    val verdictLabel: String get() = level.verdictLabel()
-
-    fun worstIssue(): HealthIssue? = issues.firstOrNull()
 }

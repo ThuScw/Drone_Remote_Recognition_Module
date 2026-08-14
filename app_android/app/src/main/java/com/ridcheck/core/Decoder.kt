@@ -46,14 +46,15 @@ object Decoder {
     fun fmtCoord(v: Double): String =
         if (v.isNaN() || Math.abs(v) > 360) "未知" else String.format(Locale.US, "%.7f", v)
 
-    fun fmtAlt(v: Double): String =
-        if (v.isNaN()) "未知" else String.format(Locale.US, "%.1f", v)
+    fun fmtAlt(v: Double): String = fmt1(v)
 
-    fun fmtSpeed(v: Double): String =
+    fun fmtSpeed(v: Double): String = fmt1(v)
+
+    private fun fmt1(v: Double): String =
         if (v.isNaN()) "未知" else String.format(Locale.US, "%.1f", v)
 
     /** 去除尾部 NUL 字节后按 ASCII 解码（对应 Python rstrip(b"\x00").decode）。 */
-    private fun asciiNoNull(bytes: ByteArray): String {
+    fun asciiNoNull(bytes: ByteArray): String {
         var end = bytes.size
         while (end > 0 && (bytes[end - 1].toInt() and 0xFF) == 0) end--
         return String(bytes.copyOfRange(0, end), Charsets.US_ASCII)
@@ -121,7 +122,8 @@ object Decoder {
     fun extractGbFromAdv(raw: ByteArray): ByteArray {
         if (raw.isEmpty() || (raw[0].toInt() and 0xFF) == 0xFF) return raw
         for (payload in parseAdServiceData(raw).values) {
-            if (payload.isNotEmpty() && (payload[0].toInt() and 0xFF) == 0xFF) return payload
+            if (payload.isEmpty()) continue
+            if ((payload[0].toInt() and 0xFF) == 0xFF) return payload
         }
         return raw
     }
@@ -131,15 +133,13 @@ object Decoder {
         data: ByteArray,
         address: String = "",
         rssi: Int = 0,
-        receivedAtMs: Long = 0,
-        source: String = "ble"
+        receivedAtMs: Long = 0
     ): DecodedPacket {
         val pkt = DecodedPacket()
         pkt.raw = data.copyOf()
         pkt.address = address
         pkt.rssi = rssi
         pkt.receivedAtMs = receivedAtMs
-        pkt.source = source
 
         if (data.size < 6) {
             pkt.structureError = "数据包过短 (${data.size}B < 6B 头部)"
@@ -187,9 +187,7 @@ object Decoder {
         /** 记录 [from, pos) 这段内容字节的 HEX 到 fieldHex[表3序号]。 */
         fun recordHex(num: String, from: Int) {
             if (from in 0..pos && from < pos) {
-                pkt.fieldHex[num] = c.copyOfRange(from, pos).joinToString(" ") {
-                    String.format("%02X", it.toInt() and 0xFF)
-                }
+                pkt.fieldHex[num] = c.copyOfRange(from, pos).toHexSpaced()
             }
         }
 
@@ -213,11 +211,11 @@ object Decoder {
         if (need(1)) { pkt.opLocType = c[pos].toInt() and 0xFF; pos += 1 }
         recordHex("005", f0)
 
-        // 006 遥控站位置 (int32 LE x2, deg*1e7)
+        // 006 遥控站位置 (int32 LE x2, deg*1e7) — GB 表3-006: 32位经度|32位纬度
         f0 = pos
         if (need(8)) {
-            val latI = leInt32(c, pos)
-            val lonI = leInt32(c, pos + 4)
+            val lonI = leInt32(c, pos)
+            val latI = leInt32(c, pos + 4)
             pos += 8
             if (latI == -1 || lonI == -1) {
                 pkt.opLat = Double.NaN
@@ -238,11 +236,11 @@ object Decoder {
         }
         recordHex("007", f0)
 
-        // 008 无人机位置
+        // 008 无人机位置 — GB 表3-008: 32位经度|32位纬度
         f0 = pos
         if (need(8)) {
-            val latI = leInt32(c, pos)
-            val lonI = leInt32(c, pos + 4)
+            val lonI = leInt32(c, pos)
+            val latI = leInt32(c, pos + 4)
             pos += 8
             if (latI == -1 || lonI == -1) {
                 pkt.uaLat = Double.NaN

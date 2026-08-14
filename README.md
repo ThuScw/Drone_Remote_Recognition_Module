@@ -26,7 +26,12 @@ main/
 │                                   # 缺失编码为表3未知哨兵值（位置0xFFFFFFFF、航迹/速度0xFFFF）；O字段条件编码）
 │
 ├── broadcaster/
-│   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复）
+│   └── ble_rid_broadcaster.h/cpp   # BLE5 广播控制（NimBLE EXT_ADV，三级自修复，纯 GB 46750 包）
+│
+├── gatt/
+│   ├── rid_config.h                # 可配置身份字段 (001~004) + 校验规则 + GATT 服务/特征 UUID
+│   ├── rid_config_store.h/cpp      # 运行时配置 + NVS 持久化 + 跨任务互斥
+│   └── rid_gatt_server.h/cpp       # 双向配置 GATT 服务 (0xFFF0, 特征 FFF1~FFF5)
 │
 ├── data/
 │   ├── flight_data.h/cpp           # USB Host CDC-ACM 飞控数据读取 + CRC风暴恢复
@@ -79,12 +84,15 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **数据缺失保状态**：飞行中数据短暂丢失时不覆盖 `opStatus`，保留上次已知空中状态，防止误判为地面而停止广播
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
 - **USB 只读模式**：USB CDC 以只读模式打开（`out_buffer_size=0`），从物理层面杜绝任何数据反向注入飞控
-- **BLE 自修复合并**：三级递进恢复（原地重启 → PHY 切换 → NimBLE 重初始化）统一为一个 `triggerSelfHeal()` 方法
+- **纯 GB 46750 广播包**：Service Data 直接承载 GB 46750 数据包（`dataType=0xFF` 开头），不附加 ASTM F3411 `0x0D`/滚动计数器字头（国标未定义帧级封装，附加字头会干扰第三方解码器）；广播 Service Data UUID `0xFFFF`，与配置服务 `0xFFF0` 严格区分
+- **GATT 双向配置（地面态）**：模块地面态切换为可连接广播（服务 `0xFFF0` + Service Data 识别魔数，见「信号源识别（模块专属魔数）」），手机/PC APP 按魔数精确识别后，通过 GATT 反写 4 个身份字段（001 唯一产品识别码 / 002 实名登记标志 / 003 运行类别 / 004 无人机分类），写入即 NVS 持久化；空中态广播 `0xFFFF` 并写锁定（GB 46750 起飞后配置锁定）
+- **GATT 服务注册时序（host 启动前）**：`ble_gatts_add_svcs()` 只排队服务定义，真正进入 ATT 数据库的 `ble_gatts_start()` 仅在 NimBLE host 启动时运行一次、跑完即释放排队区。固件将广播器拆为 `initNimble()`（host 初始化）与 `startNimbleHost()`（host 启动），`gattServer.init()` 插在两者之间，确保 `0xFFF0` 服务随 host 启动注册进 ATT 库——否则手机能连接却永远发现不到配置服务（曾导致「未找到 GATT 配置服务」）
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
-- **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * 96) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
-- **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×96 bytes + `+DONE\r\n` 导出全部飞行记录
+- **环形缓冲区读取**：`readRecord(index)` 自动处理环形缓冲区回绕，通过 `(oldestOffset + index * FlightLog::kRecordSize) % partitionSize` 计算物理偏移，每次读取校验 magic + CRC16
+- **扇区对齐记录格式**：记录定长 128B（内部 4B magic + 2B CRC + 8B 时间戳 + 2B 长度 + 80B 载荷 + 32B 填充），4096B Flash 扇区恰好容纳 32 条、永不跨扇区——消除旧 96B 格式下"第 42 条跨扇区、擦除扇区时被抹尾、约 1/43 记录静默丢失"的缺陷
+- **UART 命令行导出**：`ConsoleCmd` 监听 UART0 的 `DUMP\r\n` 命令，先抑制日志输出，以二进制协议 `+OK N\r\n` + N×128 bytes + `+DONE\r\n` 导出全部飞行记录
 - **飞控重启 / boot_ms 回绕检测**：`bootMs` 显著回退（>500ms 容差 `MAVLINK_BOOT_ROLLOVER_TOLERANCE_MS`）判定飞控重启，`unixTimeValid` 作废、时间戳输出 0（未知）；新 `SYSTEM_TIME` 重锚定基线后时间戳正确重建，且 SYSTEM_TIME 先到不误判回绕
 - **过期字段老化**：广播前 `gb46750_expireStaleFields()` 将位置/大地高度/航迹/地速中超过新鲜度阈值的字段清除 validMask 位，编码侧输出表3未知哨兵值；`opStatus`/操作员位置不老化（避免误判地面停播）
 - **NaN/Inf 防御**：校验层 `isfinite` 识别非法值并置位 flags；编码层 NaN/Inf 一律编码为表3哨兵值，单一字段非法不影响其它字段
@@ -96,8 +104,8 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 
 ### 广播策略
 
-- **地面状态**：停止广播，LED 绿色慢闪(0.5Hz)
-- **空中/紧急状态**：`startBroadcast()` 启动 → `updateBroadcastData()` 原地更新（不停止广播），LED 蓝色快闪(2.5Hz)
+- **地面状态**：可连接广播（服务 `0xFFF0` + Service Data 识别魔数），等待手机 GATT 配置；LED 绿色慢闪(0.5Hz)
+- **空中/紧急状态**：`startBroadcast()` 启动纯 GB 广播（Service Data `0xFFFF`）→ `updateBroadcastData()` 原地更新（不停止广播），写锁定；LED 蓝色快闪(2.5Hz)
 - **状态切换**：消抖确认后执行（地面→空中 300ms / 空中→地面 500ms），紧急状态绕过立即切换
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
 - **数据缺失**：`FRESH_INVALID` 时保留上次有效包和状态，广播继续但标记数据过期
@@ -161,19 +169,21 @@ idf.py -p <COM口> flash monitor
 核心配置集中在 `main/config.h`，关键项：
 
 ```c
-#define UAS_ID "CPNYMDL001234567890A"  // 唯一产品识别码（20字符，量产替换为 UOM 备案编码）
-#define REALNAME_ID "00000000"         // 实名登记号后 8 位
-#define OP_CATEGORY 1                  // 运行类别：0=未定义,1=开放类,2=特定类,3=审定类
-#define UA_CLASS 1                     // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
-#define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点,1=遥控站位置
-#define COORD_SYS 0                    // 坐标系：0=WGS-84,1=CGCS2000
-#define BROADCAST_INTERVAL_MS 400      // 数据包广播间隔（GB 46750 要求 ≤1s）
-#define FLIGHT_LOG_INTERVAL_S 10       // 飞行日志记录间隔（GB 46750 要求 ≤10s）
-#define FLIGHT_LOG_PARTITION "flight_log"  // Flash 分区（见 partitions.csv）
-#define STATUS_LED_GPIO GPIO_NUM_48    // WS2812B RGB LED（RMT 驱动）
+#define CFG_UAS_ID "1581FA6QC25B500C2H74" // 唯一产品识别码占位值（20字符，量产替换为 UOM 备案编码）
+#define CFG_REALNAME_ID "07564244"        // 实名登记号后 8 位占位值
+#define CFG_OP_CATEGORY 1                 // 运行类别：0=未定义,1=开放类,2=特定类,3=审定类
+#define CFG_UA_CLASS 1                    // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
+#define OP_LOCATION_TYPE 0                // 遥控站位置类型：0=起飞点,1=遥控站位置
+#define COORD_SYS 0                       // 坐标系：0=WGS-84,1=CGCS2000
+#define BROADCAST_INTERVAL_MS 400         // 数据包广播间隔（GB 46750 要求 ≤1s）
+#define FLIGHT_LOG_INTERVAL_S 10          // 飞行日志记录间隔（GB 46750 要求 ≤10s）
+#define FLIGHT_LOG_PARTITION "flight_log" // Flash 分区（见 partitions.csv）
+#define STATUS_LED_GPIO GPIO_NUM_48       // WS2812B RGB LED（RMT 驱动）
 ```
 
 完整参数（USB Host VID/PID、精度映射、定时、看门狗、CRC 风暴阈值、日志级别等）见 `main/config.h` 内注释。
+
+> **`config.h` 中的 4 个身份字段是「占位值」**（`CFG_UAS_ID` / `CFG_REALNAME_ID` / `CFG_OP_CATEGORY` / `CFG_UA_CLASS`）。模块支持起飞前通过 GATT 反写覆盖这些值并持久化到 NVS（见下文「GATT 双向配置」）；**未配置直接起飞时广播占位值或上次存储值**（无硬门槛，不会拒绝起飞）。
 
 LED 状态指示 (GB 46750-2025, 5.1.5)：
 
@@ -184,6 +194,57 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 | `BROADCASTING` | 蓝色快闪 (2.5Hz) | 空中/紧急状态，正在广播 |
 | `DEGRADED` | 橙色快闪 (~1.7Hz) | 自修复后降级运行（PHY 切换 / NimBLE 重初始化） |
 | `FAULT` | 红色常亮 | 模块故障，三级自修复全部失败 |
+
+### GATT 双向配置（身份字段反写）
+
+起飞前，手机/PC APP 通过 GATT 反写 4 个身份字段到模块（国标未规定广播式远程识别的 GATT 服务 UUID，故采用行业通用写法 16-bit `0xFFF0` → 128-bit `0000FFF0-0000-1000-8000-00805F9B34FB`）：
+
+| 特征 UUID | 字段 | 长度/取值 | 校验依据 |
+|-----------|------|-----------|----------|
+| `0xFFF1` | 001 唯一产品识别码 | 20 字符 ASCII `[0-9A-Z]`，禁 `O/I` | GB 46860-2025 §4.1 |
+| `0xFFF2` | 002 实名登记标志 | 8 位数字（UOM 实名号后 8 位） | GB 46750-2025 表3-002 |
+| `0xFFF3` | 003 运行类别 | 1 byte：0=未定义,1=开放类,2=特定类,3=审定类 | GB 46750-2025 表3-003 |
+| `0xFFF4` | 004 无人机分类 | 1 byte：0=微型,1=轻型,2=小型,3=中型,4=大型 | GB 46750-2025 表3-004 |
+| `0xFFF5` | 状态（read/notify） | 1 byte：0=待配置,1=已配置,2=空中(写锁定) | — |
+
+配置状态机与写保护：
+
+- **待配置（0）**：首次启动，NVS 无记录，使用 `config.h` 占位值。
+- **已配置（1）**：至少一次成功 GATT 写入（或上次会话已持久化）。
+- **空中（2）**：起飞进入广播态，**拒绝一切写入**（GB 46750-2025 起飞后配置锁定）；落地恢复可连接广播并解除锁定。
+- 写入即校验 + 内存更新 + NVS 持久化；跨任务（NimBLE host 任务写 / 主循环读）由互斥锁保护。
+
+### 信号源识别（模块专属魔数）
+
+地面态可连接广播携带**模块专属识别魔数**，手机 / PC 检测工具据此按**字段**精确识别本模块，**不依赖广播名**。这是「可 GATT 配置的信号源」栏目的唯一判定标准。
+
+**为什么需要魔数**：早期版本靠「广播 16-bit Service Class UUID `0xFFF0`」识别可配置模块——但 `0xFFF0` 属蓝牙未分配保留区，任何第三方设备都能照抄广播该 UUID，导致非本模块设备被误收进配置列表。改用广播名判定更不可靠（名称可被任意修改 / 伪造）。故为地面态广播增加一层魔数载荷作为**模块专属指纹**。
+
+**魔数定义**（三端共享常量，修改需三端同步）：
+
+| 常量位置 | 名称 | 值 |
+|----------|------|-----|
+| 固件 `main/gatt/rid_config.h` | `RID_CONFIG_MAGIC` | `{'G','B','R','I','D',0x01}` |
+| 安卓 `GattConfig.kt` | `CONFIG_MAGIC` | `byteArrayOf(0x47,0x42,0x52,0x49,0x44,0x01)` |
+| PC `app/rid/ble_scanner.py` | `CONFIG_MAGIC` | `b"GBRID\x01"` |
+
+即 6 字节：ASCII `"GBRID"`（5 字节）+ 版本字节 `0x01`，十六进制 `47 42 52 49 44 01`。版本字节预留给魔数演进（新增识别维度时递增）。
+
+**地面可连接广播帧结构**（legacy PDU；固定名称 `GBI_RID_001` 下总长 29 字节）：
+
+| AD 结构 | AD 类型 | 内容 |
+|---------|---------|------|
+| Flags | `0x01` | `0x06`（LE 通用可发现 + BR/EDR 不支持） |
+| Complete Local Name | `0x09` | `GBI_RID_001`（仅供人类辨识，**不参与识别**） |
+| 16-bit Service Class UUID 列表 | `0x03` | `0xFFF0`（指示可 GATT 配置） |
+| Service Data（16-bit UUID） | `0x16` | UUID `0xFFF0` + 载荷 = 魔数 `47 42 52 49 44 01` |
+
+**识别规则**：设备被判为「可 GATT 配置模块」，**当且仅当**其广播的 Service Data `0xFFF0` 载荷与魔数逐字节相等。仅出现 `0xFFF0` UUID 列表、或仅出现同 UUID 的 Service Data 但载荷非魔数，都**不算**本模块（固件将二者一并发出，缺一即非本模块）。
+
+- 安卓：`BleScanner.isConfigTarget()` 精确匹配 `GattConfig.CONFIG_MAGIC`
+- PC：`rid/ble_scanner.py::is_config_target()` 精确匹配 `CONFIG_MAGIC`
+
+**与空中态广播的区分**：空中态广播使用 Service Data `0xFFFF` 承载纯 GB 数据包，**不携带魔数**；地面态可配置广播使用 `0xFFF0` + 魔数。两种模式由状态机互斥，同一时刻只会广播其中一种，可据此自动归类。
 
 ### 飞行日志存储
 
@@ -215,7 +276,7 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 
 **接线**: 飞控 USB 口 → ESP32-S3 "USB" 口（GPIO19/20）
 
-**详细操作**: 见 [`doc/esp32s3_migration.md`](doc/esp32s3_migration.md) 和 [`doc/usb_plug_and_play.md`](doc/usb_plug_and_play.md)
+**详细操作**: 见 [`doc/RID模块技术报告.md`](doc/RID模块技术报告.md)（§3 技术方案 / §5 真机验收与配套工具）
 
 ### 飞控交联（GB 46750-2025 5.1.7）
 
@@ -244,13 +305,15 @@ GB 46750-2025 5.1.7 要求运行识别发送模块与飞行控制功能模块互
 推荐使用本仓库自带的**安卓检测 APP**（`app_android/`）现场抓包验证，安装与使用见 [`app_android/README.md`](app_android/README.md)：
 
 - 安装 APK（`app_android/app/build/outputs/apk/debug/app-debug.apk`）→ 点 **开始扫描**；
-- App 实时列出所有广播 UUID `0x0D50` 的设备，点进详情可查看逐字段解码、合规判定、RSSI / 速率曲线，并生成 Word 报告 / 导出 CSV。
+- App 实时列出所有广播 UUID `0xFFFF` 的设备，点进详情可查看逐字段解码、合规判定、RSSI / 速率曲线，并生成 Word 报告 / 导出 CSV。
 
 也可用通用抓包工具 **nRF Connect**（Nordic Semiconductor）手动查看：
 
 - 设备名：`GBI_RID_001`
-- Service UUID：`0x0D50`（ASTM F3411 RID Service）
-- Service Data 中为 GB 46750-2025 编码的数据包（可复制完整 Raw 广播帧，贴进 RID 检测 APP 的「粘贴解码」做单包解析）
+- Service UUID：`0xFFFF`（广播式远程识别 Service Data，纯 GB 46750 数据包）
+- Service Data 格式：`[UUID 0xFFFF][GB46750 packet]`（`dataType=0xFF` 开头，不附加 ASTM F3411 字头；国标未定义帧级封装）
+
+**GATT 配置验证**：地面态模块以可连接广播（服务 `0xFFF0` + Service Data 识别魔数，见「信号源识别（模块专属魔数）」）出现，PC 版软件（`app/`，`配置` 标签页）或安卓 APP（`app_android/`，`配置` 标签页）按魔数精确识别后，扫描并写入 4 个身份字段，写入后读取确认；空中态模块转为 `0xFFFF` 广播并写锁定。
 
 ### 导出飞行日志
 
@@ -270,7 +333,7 @@ python tools/flight_log_dump.py COM3
 python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 ```
 
-**导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×96 bytes 二进制记录 → `+DONE\r\n`
+**导出协议**：PC 发送 `DUMP\r\n` → ESP32 响应 `+OK <N>\r\n` → N×128 bytes 二进制记录 → `+DONE\r\n`
 
 **CSV 输出**包含 27 列：记录序号、Flash 时间戳（ms + UTC）、GB 46750 全部 21 字段（唯一产品识别码、实名登记号、运行类别、无人机分类、遥控站位置、经纬度、高度、速度、航向等）、CRC 有效性标志。
 
@@ -300,14 +363,15 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 - [x] CRC 风暴检测与 USB 自恢复
 - [x] FlightLog 读取接口：`readRecord()` / `readLatestRecord()` + UART 命令行 DUMP 导出 + PC Python 脚本 (GB 46750-2025 5.1.8)
 - [x] 操作员位置三级回退：HOME_POSITION → 起飞点（首次解锁时记录）→ 表3未知哨兵值 0xFFFFFFFF
-- [x] PC 测试套件 8228 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试）
+- [x] PC 测试套件 82069 用例全部通过（含 1899 真实 .DAT 帧解析 + golden packet 逐字节验证 + 解析器压力测试 + 飞行日志 1.5 整卷耐力测试）
 - [x] Unix 时间戳从飞控 SYSTEM_TIME 获取，未授时正确填 0
+- [x] GATT 双向配置（地面态反写 001~004 身份字段 → NVS 持久化 → 空中态广播 + 写锁定），固件 / PC / 安卓三端同步
 - [ ] 将 `UAS_ID` 替换为 UOM 平台备案的唯一产品识别码
 - [ ] 将 `REALNAME_ID` 替换为实名登记系统获取的登记号后 8 位
 - [ ] 确认经纬度坐标系（WGS-84 或 CGCS2000）
 - [x] 验证 GPIO48 (WS2812B) LED 闪烁模式（绿色慢闪=待机 / 蓝色快闪=广播 / 橙色慢闪=降级 / 红色常亮=故障）
-- [ ] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
-- [ ] 场地实地验证：RID 检测安卓 APP（`app_android/`，见[验证方法](#验证方法)）扫描距离、数据正确性
+- [x] 验证飞行日志存储：串口导出记录数、估算容量是否满足 120h
+- [x] 场地实地验证：RID 检测安卓 APP（`app_android/`，见[验证方法](#验证方法)）扫描距离、数据正确性
 - [ ] 实现量产飞控交联后端（UART MAVLink / DroneCAN 或飞控内部调用），替换 `StubFcInterlink`（GB 46750-2025 5.1.7）
 - [ ] 向整机厂确认量产机网络报送功能（4 问，见「已知限制 → 网络式 RID」），确定本模块是否需实现网络式
 
@@ -389,8 +453,7 @@ python tools/flight_log_dump.py COM3 -o flight_20260731.csv
 
 ## 相关文档
 
-- [ESP32-S3 迁移指南](doc/esp32s3_migration.md) — 从 ESP32-C5 迁移到 ESP32-S3
-- [USB 即插即用指南](doc/usb_plug_and_play.md) — USB Host 配置与使用
+- [RID 模块技术报告](doc/RID模块技术报告.md) — 项目背景、合规对照、技术方案、测试验证、量产准备
 - [安卓检测 APP](app_android/README.md) — 手机端 BLE 抓包 / 解码 / 合规判定 / 报告导出
 
-**最后更新**: 2026-08-04
+**最后更新**: 2026-08-13

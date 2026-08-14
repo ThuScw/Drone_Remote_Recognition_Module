@@ -15,17 +15,25 @@
 
 static const char* TAG = "BCAST";
 
+// 堆/栈告警阈值 (bytes) — handleHeapMonitor 监测
+static constexpr size_t   kHeapMinFreeAlert = 10000;  // 最小可用堆
+static constexpr uint32_t kStackHwmAlert    = 1024;   // 主任务栈高水位
+
 // ======================== 构造 / 初始化 ========================
 
 RIDBroadcastManager::RIDBroadcastManager(
     BleRidBroadcaster& broadcaster,
     FlightLog& flightLog,
     StatusLed& statusLed,
-    IFcInterlink& interlink)
+    IFcInterlink& interlink,
+    RidConfigStore& configStore,
+    RidGattServer& gattServer)
     : _broadcaster(broadcaster)
     , _flightLog(flightLog)
     , _statusLed(statusLed)
     , _interlink(interlink)
+    , _configStore(configStore)
+    , _gattServer(gattServer)
     , _broadcastActive(false)
     , _nextBroadcastMs(0)
     , _lastBroadcastSuccessMs(0)
@@ -41,25 +49,18 @@ RIDBroadcastManager::RIDBroadcastManager(
 }
 
 bool RIDBroadcastManager::init() {
-    // 1. 配置校验
+    // 1. 配置校验 (从 GATT 配置存储读取 — 占位值或已持久化的上次配置)
     // UAS ID: 20 字符 ASCII [0-9A-HJ-NP-Z] (GB 46860-2025)
-    if (strlen(UAS_ID) != 20) {
-        ESP_LOGE(TAG, "UAS_ID must be 20 chars (current: %d)", (int)strlen(UAS_ID));
+    RidConfig cfg;
+    _configStore.get(cfg);
+    if (!ridConfigValidateUasId(cfg.uasId, RID_CONFIG_UAS_ID_LEN)) {
+        ESP_LOGE(TAG, "UAS_ID invalid (current: %.20s) — only 20x[0-9A-Z] without O/I",
+                 cfg.uasId);
         return false;
     }
-    for (int i = 0; i < 20; i++) {
-        char c = UAS_ID[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) {
-            ESP_LOGE(TAG, "UAS_ID[%d]='%c' — only [0-9A-Z] allowed", i, c);
-            return false;
-        }
-        if (c == 'O' || c == 'I') {
-            ESP_LOGE(TAG, "UAS_ID[%d]='%c' — O/I prohibited by GB 46860", i, c);
-            return false;
-        }
-    }
-    if (strlen(REALNAME_ID) != 8) {
-        ESP_LOGE(TAG, "REALNAME_ID must be 8 chars (current: %d)", (int)strlen(REALNAME_ID));
+    if (!ridConfigValidateRealName(cfg.realNameId, RID_CONFIG_REALNAME_LEN)) {
+        ESP_LOGE(TAG, "REALNAME_ID invalid (current: %.8s) — only 8 digits",
+                 cfg.realNameId);
         return false;
     }
     if (BROADCAST_INTERVAL_MS > 1000) {
@@ -192,15 +193,20 @@ void RIDBroadcastManager::validateAndBuildPacket(const FlightData& fd, uint64_t 
     }
 
     // 始终构建新包 (P0: 不再 "keeping previous packet")
-    // 精度: 直接用 GPS eph/epv 映射结果; eph/epv 不可用 (≤0) 时映射为 0 (unknown),
-    // 如实上报 unknown, 不做 fallback 伪造 (表3-017/018 unknown=0)
-    uint8_t horizAcc = gb46750_mapHorizAcc(broadcastFd.horizAccM);
-    uint8_t vertAcc  = gb46750_mapVertAcc(broadcastFd.vertAccM);
+    // 精度: 优先用 GPS eph/epv 实时映射; eph/epv 不可用 (≤0) 时 fallback 到 config 硬编码值
+    uint8_t horizAcc = (broadcastFd.horizAccM > 0.0f)
+        ? gb46750_mapHorizAcc(broadcastFd.horizAccM) : HORIZ_ACC;
+    uint8_t vertAcc  = (broadcastFd.vertAccM > 0.0f)
+        ? gb46750_mapVertAcc(broadcastFd.vertAccM) : VERT_ACC;
 
     uint8_t tsAcc = (broadcastFd.unixTimestampMs == 0) ? 0 : TS_ACC;
 
-    gb46750_buildPacket(_currentPacket, broadcastFd, UAS_ID, REALNAME_ID,
-                        OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
+    // 身份字段从 GATT 配置存储读取 (占位值或上次 GATT 写入值) — 无硬门槛
+    RidConfig cfg;
+    _configStore.get(cfg);
+
+    gb46750_buildPacket(_currentPacket, broadcastFd, cfg.uasId, cfg.realNameId,
+                        cfg.opCategory, cfg.uaClass, OP_LOCATION_TYPE, COORD_SYS,
                         horizAcc, vertAcc, SPEED_ACC, tsAcc,
                         broadcastFd.unixTimestampMs);
 }
@@ -300,17 +306,22 @@ void RIDBroadcastManager::applyStatusChange(uint8_t newStatus) {
 
     if (shouldBroadcast && !_broadcastActive) {
         ESP_LOGI(TAG, "Broadcast START (status=%d)", newStatus);
+        _configStore.setState(RID_STATE_AIRBORNE);  // 起飞: 配置写锁定
         if (_broadcaster.startBroadcast(_currentPacket)) {
             _broadcastActive = true;
             _statusLed.setState(LedState::BROADCASTING);
         } else {
             ESP_LOGE(TAG, "Failed to start broadcast");
         }
+        _gattServer.notifyState();  // 推送 AIRBORNE 到已连接手机
     } else if (!shouldBroadcast && _broadcastActive) {
         ESP_LOGI(TAG, "Broadcast STOP (status=%d, ground)", newStatus);
         _broadcaster.stopBroadcast();
         _broadcastActive = false;
+        _configStore.setState(RID_STATE_CONFIGURED);  // 落地: 解除写锁定
+        _broadcaster.startConnectableAdv();           // 恢复可连接广播, 等待下次配置
         _statusLed.setState(LedState::STANDBY);
+        _gattServer.notifyState();  // 推送 CONFIGURED 到已连接手机
     }
 }
 
@@ -428,7 +439,7 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
     ESP_LOGI(TAG, "Heap monitor: min_free=%u bytes, broadcast_count=%lu",
              (unsigned)freeHeap, (unsigned long)_broadcastCount);
 
-    if (freeHeap < 10000) {
+    if (freeHeap < kHeapMinFreeAlert) {
         ESP_LOGW(TAG, "LOW HEAP WARNING: only %u bytes remaining", (unsigned)freeHeap);
         faultLogRecord(FAULT_LOW_HEAP, nowMs);
     }
@@ -437,7 +448,7 @@ void RIDBroadcastManager::handleHeapMonitor(uint64_t nowMs) {
     // StackType_t 在 ESP32 上为 1 字节, 乘以 sizeof 以保持跨端口一致
     uint32_t stackHwm = (uint32_t)uxTaskGetStackHighWaterMark(NULL) * (uint32_t)sizeof(StackType_t);
     ESP_LOGI(TAG, "Main stack high-water: %lu bytes", (unsigned long)stackHwm);
-    if (stackHwm < 1024) {
+    if (stackHwm < kStackHwmAlert) {
         ESP_LOGW(TAG, "Main stack LOW (HWM=%lu) — consider increasing CONFIG_ESP_MAIN_TASK_STACK_SIZE",
                  (unsigned long)stackHwm);
     }

@@ -5,19 +5,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -29,59 +25,41 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import com.ridcheck.ble.RidScanService
 import com.ridcheck.core.AppState
 import com.ridcheck.core.DecodedPacket
 import com.ridcheck.core.Decoder
-import com.ridcheck.core.DeviceEntry
-import com.ridcheck.core.Health
-import com.ridcheck.core.HealthLevel
-import com.ridcheck.core.HealthReport
+import com.ridcheck.core.toHexJoined
+import com.ridcheck.ui.BottomBar
+import com.ridcheck.ui.ConfigDeviceAdapter
+import com.ridcheck.ui.ConfigPage
+import com.ridcheck.ui.DetailPage
 import com.ridcheck.ui.DeviceListAdapter
 import com.ridcheck.ui.ExplainPage
-import com.ridcheck.ui.RidChartView
-import com.ridcheck.ui.ShareUtil
 import com.ridcheck.ui.Theme
-import java.util.Locale
+import com.ridcheck.ui.button
+import com.ridcheck.ui.dp
+import com.ridcheck.ui.lpFill
+import com.ridcheck.ui.lpWeight
+import com.ridcheck.ui.sectionLabel
 
 /**
  * 安卓版 RID 检测工具：设备列表 + 详情页（自用，界面从简）。
- * 主界面列出所有广播 UUID 0x0D50 的信号源，点进某台设备实时查看判定/字段/原始数据。
+ * 主界面列出所有广播 UUID 0xFFFF 的信号源，点进某台设备实时查看判定/字段/原始数据。
+ * 详情页与底部导航分别由 DetailPage / BottomBar 承载，本类保留列表、扫描控制、
+ * 权限流、粘贴入口、页面切换、日志与每秒刷新。
  */
 class MainActivity : Activity() {
 
     companion object {
         private const val REQ_PERMISSIONS = 1001
         private const val REQ_BT_ENABLE = 1002
-        private const val MANUAL_ADDRESS = "手动"
-
-        private val C_VERDICT_BG = mapOf(
-            HealthLevel.PASS to Theme.PASS_BG,
-            HealthLevel.WARN to Theme.WARN_BG,
-            HealthLevel.FAIL to Theme.FAIL_BG
-        )
-        private val C_VERDICT_FG = mapOf(
-            HealthLevel.PASS to Theme.PASS,
-            HealthLevel.WARN to Theme.WARN,
-            HealthLevel.FAIL to Theme.FAIL
-        )
-        private val C_ISSUE = mapOf(
-            HealthLevel.PASS to Theme.PASS,
-            HealthLevel.WARN to Theme.WARN,
-            HealthLevel.FAIL to Theme.FAIL
-        )
     }
 
     private var pendingStart = false
 
-    /** 当前详情页关联的设备；null = 停留在列表。手动粘贴时为 MANUAL_ADDRESS。 */
-    private var currentDetailAddress: String? = null
-    private var currentDetailPkt: DecodedPacket? = null
-
     // UI
     private lateinit var listRoot: LinearLayout
-    private lateinit var detailRoot: ScrollView
     private lateinit var explainRoot: ScrollView
     private lateinit var adapter: DeviceListAdapter
     private lateinit var btnStart: Button
@@ -89,23 +67,13 @@ class MainActivity : Activity() {
     private lateinit var txtScanState: TextView
     private lateinit var txtCount: TextView
     private lateinit var txtLog: TextView
-    private lateinit var txtDetailTitle: TextView
-    private lateinit var txtVerdict: TextView
-    private lateinit var txtIssues: TextView
-    private lateinit var txtFields: TextView
-    private lateinit var txtRaw: TextView
-    private lateinit var txtManualBanner: TextView
-    private lateinit var recordSection: LinearLayout
-    private lateinit var chartView: RidChartView
+    private lateinit var detailPage: DetailPage
+    private lateinit var bottomBar: BottomBar
 
-    // 底部导航
-    private lateinit var tabMain: LinearLayout
-    private lateinit var tabExplain: LinearLayout
-    private lateinit var tabMainStripe: View
-    private lateinit var tabExplainStripe: View
-    private lateinit var tabMainText: TextView
-    private lateinit var tabExplainText: TextView
-    private lateinit var btnQuit: TextView
+    // GATT 双向配置（按选中的可配置模块地址动态构建）
+    private var configPage: ConfigPage? = null
+    private lateinit var configRoot: FrameLayout
+    private lateinit var configAdapter: ConfigDeviceAdapter
 
     /**
      * 每秒刷新 UI（扫描状态、列表、日志、详情）。
@@ -116,9 +84,10 @@ class MainActivity : Activity() {
         override fun run() {
             renderScanState()
             adapter.notifyDataSetChanged()
-            txtCount.text = "已发现 ${AppState.registry.size} 台设备"
+            configAdapter.notifyDataSetChanged()
+            txtCount.text = "广播 ${AppState.registry.size} · 可配置 ${AppState.configDeviceList.size}"
             renderLog()
-            if (currentDetailAddress != null) renderDetail()
+            if (detailPage.isShowing) detailPage.render()
             ticker.postDelayed(this, 1000)
         }
     }
@@ -126,7 +95,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        log("就绪。点击“开始扫描”收集所有 RID 广播设备，点设备进详情；或粘贴 nRF Connect 抓到的 HEX。")
+        log("就绪。点“开始扫描”收集广播（0xFFFF）与可配置模块（0xFFF0），点信号源进详情或配置；或粘贴 HEX。")
     }
 
     override fun onResume() {
@@ -142,10 +111,16 @@ class MainActivity : Activity() {
         ticker.removeCallbacks(tickRunnable)
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        configPage?.shutdown()
+    }
+
     override fun onBackPressed() {
         when {
-            detailRoot.visibility == View.VISIBLE -> showList()
+            detailPage.isShowing -> showList()
             explainRoot.visibility == View.VISIBLE -> showMainTab()
+            configRoot.visibility == View.VISIBLE -> showList()
             else -> super.onBackPressed()
         }
     }
@@ -157,19 +132,23 @@ class MainActivity : Activity() {
 
         val content = FrameLayout(this)
         listRoot = buildListPage()
-        detailRoot = buildDetailPage()
+        detailPage = DetailPage(this) { showList() }
+        configRoot = FrameLayout(this)
         explainRoot = ExplainPage.build(this)
         content.addView(listRoot, lpFill())
-        content.addView(detailRoot, lpFill())
+        content.addView(detailPage.root, lpFill())
+        content.addView(configRoot, lpFill())
         content.addView(explainRoot, lpFill())
-        detailRoot.visibility = View.GONE
+        detailPage.root.visibility = View.GONE
+        configRoot.visibility = View.GONE
         explainRoot.visibility = View.GONE
 
         // 内容区占满底部导航以上空间；宽 MATCH_PARENT + 高 0 + weight 1
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
-        root.addView(buildBottomBar(), LinearLayout.LayoutParams(
+        bottomBar = BottomBar(this, { showMainTab() }, { showExplainTab() })
+        root.addView(bottomBar.root, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(56)
         ))
 
@@ -217,7 +196,7 @@ class MainActivity : Activity() {
 
         txtScanState = TextView(this)
         txtScanState.text = "● 已停止"
-        txtScanState.setTextColor(Color.rgb(102, 102, 102))
+        txtScanState.setTextColor(Theme.TEXT_MUTED)
         txtScanState.setTypeface(null, Typeface.BOLD)
         statusRow.addView(txtScanState, lpWeight(1f))
 
@@ -226,7 +205,7 @@ class MainActivity : Activity() {
         txtCount.gravity = Gravity.END
         statusRow.addView(txtCount)
 
-        col.addView(sectionLabel("信号源（点击查看详情）"))
+        col.addView(sectionLabel("正在广播的信号源（点击查看详情）"))
 
         adapter = DeviceListAdapter(this) { AppState.registry.list }
         val listView = ListView(this)
@@ -240,371 +219,82 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
         ))
 
+        col.addView(sectionLabel("可 GATT 配置的信号源（点击进入配置）"))
+
+        configAdapter = ConfigDeviceAdapter(this) { AppState.configDeviceList }
+        val configList = ListView(this)
+        configList.adapter = configAdapter
+        configList.setOnItemClickListener { _, _, position, _ ->
+            showConfig(configAdapter.getItem(position).address)
+        }
+        col.addView(configList, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(130)
+        ))
+
         col.addView(sectionLabel("日志"))
         val logScroll = ScrollView(this)
         txtLog = TextView(this)
         txtLog.textSize = 12f
         txtLog.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-        txtLog.setTextColor(Color.rgb(80, 80, 80))
+        txtLog.setTextColor(Theme.TEXT_SECONDARY)
         logScroll.addView(txtLog, lpFill())
-        col.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)))
+        col.addView(logScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(130)))
 
         return col
     }
 
-    private fun buildDetailPage(): ScrollView {
-        val scroll = ScrollView(this)
-        val col = LinearLayout(this)
-        col.orientation = LinearLayout.VERTICAL
-        col.setPadding(dp(12), dp(8), dp(12), dp(24))
-        scroll.addView(col, lpFill())
-
-        val topRow = LinearLayout(this)
-        topRow.orientation = LinearLayout.HORIZONTAL
-        col.addView(topRow)
-
-        val btnBack = button("← 返回列表")
-        btnBack.setOnClickListener { showList() }
-        topRow.addView(btnBack)
-
-        txtDetailTitle = TextView(this)
-        txtDetailTitle.textSize = 16f
-        txtDetailTitle.setTypeface(null, Typeface.BOLD)
-        txtDetailTitle.setTextColor(Theme.PRIMARY)
-        txtDetailTitle.setPadding(dp(10), 0, 0, 0)
-        txtDetailTitle.gravity = Gravity.CENTER_VERTICAL
-        topRow.addView(txtDetailTitle, lpWeight(1f))
-
-        txtManualBanner = TextView(this)
-        txtManualBanner.text = "单包静态判定（不含流式统计）"
-        txtManualBanner.textSize = 12f
-        txtManualBanner.setTextColor(Color.rgb(178, 106, 0))
-        txtManualBanner.setPadding(dp(10), dp(6), dp(10), dp(6))
-        txtManualBanner.visibility = View.GONE
-        col.addView(txtManualBanner, lpMatch())
-
-        txtVerdict = TextView(this)
-        txtVerdict.setTextColor(Color.BLACK)
-        txtVerdict.setPadding(dp(10), dp(10), dp(10), dp(10))
-        txtVerdict.textSize = 15f
-        col.addView(txtVerdict, lpMatch())
-
-        col.addView(sectionLabel("问题清单"))
-        txtIssues = TextView(this)
-        txtIssues.textSize = 14f
-        txtIssues.setTextColor(Color.DKGRAY)
-        col.addView(txtIssues, lpMatch())
-
-        col.addView(sectionLabel("最新数据包"))
-        txtFields = TextView(this)
-        txtFields.textSize = 13f
-        txtFields.setTextColor(Color.DKGRAY)
-        col.addView(txtFields, lpMatch())
-
-        recordSection = LinearLayout(this)
-        recordSection.orientation = LinearLayout.VERTICAL
-        recordSection.addView(sectionLabel("记录与分析"))
-        chartView = RidChartView(this)
-        recordSection.addView(chartView, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(180)
-        ))
-        val actRow = LinearLayout(this)
-        actRow.orientation = LinearLayout.HORIZONTAL
-        actRow.setPadding(0, dp(8), 0, 0)
-        val btnReport = button("生成报告")
-        btnReport.setOnClickListener { shareDeviceReport() }
-        actRow.addView(btnReport, lpWeight(1f))
-        val btnExport = button("导出数据")
-        btnExport.setOnClickListener { exportCsv() }
-        actRow.addView(btnExport, lpWeight(1f))
-        recordSection.addView(actRow)
-        recordSection.visibility = View.GONE
-        col.addView(recordSection, lpMatch())
-
-        col.addView(sectionLabel("原始数据"))
-        val rawRow = LinearLayout(this)
-        rawRow.orientation = LinearLayout.HORIZONTAL
-        col.addView(rawRow)
-        val btnCopy = button("复制")
-        btnCopy.setOnClickListener { copyCurrentRaw() }
-        rawRow.addView(btnCopy)
-        val btnShare = button("分享")
-        btnShare.setOnClickListener { shareCurrentRaw() }
-        rawRow.addView(btnShare)
-        txtRaw = TextView(this)
-        txtRaw.textSize = 12f
-        txtRaw.setTypeface(Typeface.MONOSPACE, Typeface.NORMAL)
-        txtRaw.setTextColor(Color.BLACK)
-        txtRaw.setOnLongClickListener {
-            copyCurrentRaw()
-            true
-        }
-        col.addView(txtRaw, lpMatch())
-
-        return scroll
-    }
-
-    private fun button(text: String): Button {
-        val b = Button(this)
-        b.text = text
-        b.isAllCaps = false
-        return b
-    }
-
-    private fun sectionLabel(text: String): TextView {
-        val tv = TextView(this)
-        tv.text = text
-        tv.textSize = 14f
-        tv.setTypeface(null, Typeface.BOLD)
-        tv.setTextColor(Theme.PRIMARY)
-        tv.setPadding(0, dp(10), 0, dp(2))
-        return tv
-    }
-
-    private fun lpWeight(w: Float): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, w)
-
-    private fun lpMatch(): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-
-    private fun lpFill(): FrameLayout.LayoutParams =
-        FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    private fun roundedRect(color: Int): GradientDrawable =
-        GradientDrawable().apply {
-            cornerRadius = dp(10).toFloat()
-            setColor(color)
-        }
-
-    // ------------------------------------------------------------ bottom nav
-    private fun buildBottomBar(): LinearLayout {
-        val bar = LinearLayout(this)
-        bar.orientation = LinearLayout.HORIZONTAL
-        bar.setBackgroundColor(Color.rgb(250, 250, 250))
-        bar.setElevation(dp(8).toFloat())
-
-        tabMain = buildTab("主界面", isMain = true) { showMainTab() }
-        tabExplain = buildTab("说明", isMain = false) { showExplainTab() }
-        btnQuit = buildQuitButton()
-        bar.addView(tabMain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        bar.addView(tabExplain, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        bar.addView(btnQuit, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        setTabActive(true)
-        return bar
-    }
-
-    /** 底部栏「退出」键：红色加粗，与导航 tab 区分；点击弹出确认后彻底关闭程序。 */
-    private fun buildQuitButton(): TextView {
-        val text = TextView(this)
-        text.text = "退出"
-        text.textSize = 13f
-        text.setTextColor(Theme.FAIL)
-        text.setTypeface(null, Typeface.BOLD)
-        text.gravity = Gravity.CENTER
-        text.setOnClickListener { confirmQuit() }
-        return text
-    }
-
-    private fun confirmQuit() {
-        AlertDialog.Builder(this)
-            .setTitle("退出程序")
-            .setMessage("确定要完全关闭吗？将停止后台扫描、结束本次记录并退出程序。")
-            .setPositiveButton("退出") { _, _ -> quitApp() }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    /** 先同步停掉前台服务（onDestroy 内会停扫描并关闭问题时段），再关掉全部界面并结束进程，
-     *  保证彻底退出，START_STICKY 服务不会复活。 */
-    private fun quitApp() {
-        stopService(Intent(this, RidScanService::class.java))
-        AppState.scanning = false
-        finishAffinity()
-        Process.killProcess(Process.myPid())
-    }
-
-    /** 每个 tab = 顶部 3dp 色条 + 居中文字，点击切换。 */
-    private fun buildTab(label: String, isMain: Boolean, onClick: () -> Unit): LinearLayout {
-        val container = LinearLayout(this)
-        container.orientation = LinearLayout.VERTICAL
-        val stripe = View(this)
-        stripe.setBackgroundColor(Theme.PRIMARY)
-        container.addView(stripe, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
-        ))
-        val text = TextView(this)
-        text.text = label
-        text.textSize = 13f
-        text.gravity = Gravity.CENTER
-        container.addView(text, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-        ))
-        container.setOnClickListener { onClick() }
-        if (isMain) {
-            tabMain = container
-            tabMainStripe = stripe
-            tabMainText = text
-        } else {
-            tabExplain = container
-            tabExplainStripe = stripe
-            tabExplainText = text
-        }
-        return container
-    }
-
-    private fun setTabActive(main: Boolean) {
-        tabMainStripe.visibility = if (main) View.VISIBLE else View.GONE
-        tabExplainStripe.visibility = if (main) View.GONE else View.VISIBLE
-        tabMainText.setTextColor(if (main) Theme.PRIMARY else Color.rgb(120, 120, 120))
-        tabMainText.setTypeface(null, if (main) Typeface.BOLD else Typeface.NORMAL)
-        tabExplainText.setTextColor(if (main) Color.rgb(120, 120, 120) else Theme.PRIMARY)
-        tabExplainText.setTypeface(null, if (main) Typeface.NORMAL else Typeface.BOLD)
-    }
-
-    private fun showMainTab() {
-        explainRoot.visibility = View.GONE
-        showList()
-        setTabActive(true)
-    }
-
-    private fun showExplainTab() {
-        currentDetailAddress = null
-        currentDetailPkt = null
-        detailRoot.visibility = View.GONE
-        listRoot.visibility = View.GONE
-        explainRoot.visibility = View.VISIBLE
-        setTabActive(false)
-        adapter.notifyDataSetChanged()
-    }
-
     // ------------------------------------------------------------ view switch
     private fun showList() {
-        currentDetailAddress = null
-        currentDetailPkt = null
-        detailRoot.visibility = View.GONE
+        detailPage.clear()
+        detailPage.root.visibility = View.GONE
+        configRoot.visibility = View.GONE
         listRoot.visibility = View.VISIBLE
         adapter.notifyDataSetChanged()
     }
 
     private fun showDetail(address: String) {
-        currentDetailAddress = address
-        currentDetailPkt = null // BLE 实时数据在 renderDetail 里从 entry 读取
         listRoot.visibility = View.GONE
-        detailRoot.visibility = View.VISIBLE
+        configRoot.visibility = View.GONE
+        detailPage.root.visibility = View.VISIBLE
         explainRoot.visibility = View.GONE
-        setTabActive(true)
-        renderDetail()
+        setActiveTab(Tab.MAIN)
+        detailPage.showDevice(address)
     }
 
-    private fun renderDetail() {
-        val manual = currentDetailAddress == MANUAL_ADDRESS
-        val entry = if (manual) null else AppState.registry.list.firstOrNull { it.address == currentDetailAddress }
-        // 手动粘贴用静态包；BLE 设备实时读 entry.lastPkt（服务在后台持续更新）
-        val pkt = if (manual) currentDetailPkt else entry?.lastPkt
-        if (pkt == null) return
-
-        txtDetailTitle.text = buildString {
-            append(if (manual) "粘贴解码" else currentDetailAddress ?: "")
-            val rssi = entry?.rssi ?: pkt.rssi
-            if (rssi != 0) append("  ($rssi dBm)")
-        }
-        txtManualBanner.visibility = if (manual) View.VISIBLE else View.GONE
-
-        txtRaw.text = buildRawText(pkt)
-
-        val sb = StringBuilder()
-        if (pkt.structureError.isNotEmpty()) {
-            sb.append("结构错误: ").append(pkt.structureError).append('\n')
-        }
-        for ((k, v) in pkt.fmt) {
-            sb.append(k).append(": ").append(v).append('\n')
-        }
-        txtFields.text = sb.toString()
-
-        val report = if (entry != null) entry.assessor.report() else manualReport(pkt)
-        val extra = if (!manual && report.packetsSeen > 0) {
-            String.format(Locale.US, "   速率 %.1f 包/s", report.avgRateHz)
-        } else {
-            ""
-        }
-        txtVerdict.text = "${report.level.verdictLabel()}  ${report.note}$extra"
-        txtVerdict.background = roundedRect(C_VERDICT_BG[report.level] ?: Color.WHITE)
-        txtVerdict.setTextColor(C_VERDICT_FG[report.level] ?: Color.BLACK)
-
-        txtIssues.text = if (report.issues.isEmpty()) {
-            "未发现问题"
-        } else {
-            report.issues.joinToString("\n") { i ->
-                val clause = if (i.clause.isEmpty()) "" else " (${i.clause})"
-                "[${i.level.label()}] ${i.code}$clause: ${i.message}"
-            }
-        }
-        txtIssues.setTextColor(
-            if (report.issues.isEmpty()) Theme.PASS
-            else C_ISSUE[report.issues.maxOfOrNull { it.level }] ?: Color.DKGRAY
-        )
-
-        if (manual) {
-            recordSection.visibility = View.GONE
-        } else {
-            recordSection.visibility = View.VISIBLE
-            chartView.setData(entry?.samples ?: emptyList())
-        }
+    private fun showConfig(address: String) {
+        detailPage.clear()
+        detailPage.root.visibility = View.GONE
+        configPage?.shutdown()
+        configPage = ConfigPage(this, address) { showList() }
+        configRoot.removeAllViews()
+        configRoot.addView(configPage!!.root, lpFill())
+        listRoot.visibility = View.GONE
+        explainRoot.visibility = View.GONE
+        configRoot.visibility = View.VISIBLE
+        setActiveTab(Tab.MAIN)
     }
 
-    /** 手动粘贴包没有流式统计，退化为单包判定。 */
-    private fun manualReport(pkt: DecodedPacket): HealthReport {
-        val rep = HealthReport()
-        val issues = Health.assessPacket(pkt)
-        rep.issues.addAll(issues)
-        rep.packetsOk = if (issues.isEmpty()) 1 else 0
-        var worst = HealthLevel.PASS
-        for (i in rep.issues) if (i.level.ordinal > worst.ordinal) worst = i.level
-        rep.level = worst
-        rep.note = when (rep.level) {
-            HealthLevel.PASS -> "设备工作正常，广播符合 GB 46750-2025 要求"
-            HealthLevel.WARN -> "存在可改善项，不影响基本广播"
-            else -> "存在故障，请根据下方问题清单排查"
-        }
-        return rep
+    private fun showExplainTab() {
+        detailPage.clear()
+        detailPage.root.visibility = View.GONE
+        listRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
+        explainRoot.visibility = View.VISIBLE
+        setActiveTab(Tab.EXPLAIN)
+        adapter.notifyDataSetChanged()
     }
 
-    // ------------------------------------------------------- copy / share
-    private fun buildRawText(pkt: DecodedPacket): String =
-        "${pkt.address}\n" + pkt.raw.joinToString(" ") {
-            String.format("%02X", it.toInt() and 0xFF)
-        }
-
-    private fun copyCurrentRaw() {
-        val pkt = currentDetailPkt ?: return
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("RID 原始数据", buildRawText(pkt)))
-        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
-        log("已复制原始数据")
+    private fun showMainTab() {
+        explainRoot.visibility = View.GONE
+        configRoot.visibility = View.GONE
+        showList()
+        setActiveTab(Tab.MAIN)
     }
 
-    private fun shareCurrentRaw() {
-        val pkt = currentDetailPkt ?: return
-        ShareUtil.shareText(this, "RID 原始数据", buildRawText(pkt))
-    }
+    private enum class Tab { MAIN, EXPLAIN }
 
-    private fun shareDeviceReport() {
-        val entry = currentEntry() ?: return
-        ShareUtil.shareReport(this, entry)
-    }
-
-    private fun exportCsv() {
-        val entry = currentEntry() ?: return
-        ShareUtil.shareCsv(this, entry)
-    }
-
-    private fun currentEntry(): DeviceEntry? {
-        val addr = currentDetailAddress ?: return null
-        if (addr == MANUAL_ADDRESS) return null
-        return AppState.registry.list.firstOrNull { it.address == addr }
-    }
+    private fun setActiveTab(tab: Tab) =
+        bottomBar.setActive(if (tab == Tab.MAIN) BottomBar.Tab.MAIN else BottomBar.Tab.EXPLAIN)
 
     // ------------------------------------------------------------ permissions
     private fun ensurePermissionsThenScan() {
@@ -730,24 +420,21 @@ class MainActivity : Activity() {
         }
         val pkt = Decoder.decodeGbPacket(
             pktRaw,
-            address = MANUAL_ADDRESS,
+            address = DetailPage.MANUAL_ADDRESS,
             rssi = 0,
-            receivedAtMs = System.nanoTime() / 1_000_000,
-            source = "manual"
+            receivedAtMs = System.nanoTime() / 1_000_000
         )
         onManualPacket(pkt)
-        log("已手动解码 ${pktRaw.size} 字节: " +
-            pktRaw.joinToString("") { String.format("%02X", it.toInt() and 0xFF) })
+        log("已手动解码 ${pktRaw.size} 字节: " + pktRaw.toHexJoined())
     }
 
     private fun onManualPacket(pkt: DecodedPacket) {
-        currentDetailAddress = MANUAL_ADDRESS
-        currentDetailPkt = pkt
         listRoot.visibility = View.GONE
-        detailRoot.visibility = View.VISIBLE
+        configRoot.visibility = View.GONE
+        detailPage.root.visibility = View.VISIBLE
         explainRoot.visibility = View.GONE
-        setTabActive(true)
-        renderDetail()
+        setActiveTab(Tab.MAIN)
+        detailPage.showManual(pkt)
     }
 
     // ------------------------------------------------------------------ log

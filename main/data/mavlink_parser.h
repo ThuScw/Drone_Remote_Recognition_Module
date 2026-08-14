@@ -25,7 +25,6 @@
 #define MAVLINK_MSG_GLOBAL_POSITION_INT   33
 #define MAVLINK_MSG_VFR_HUD               74
 #define MAVLINK_MSG_SYSTEM_TIME            2
-#define MAVLINK_MSG_HIGHRES_IMU          105
 #define MAVLINK_MSG_HOME_POSITION        242
 
 // ================= 解析状态 =================
@@ -63,6 +62,16 @@ struct MavlinkParser {
     uint32_t parseErrors;
     uint32_t consecutiveCrcErrors;  // 连续 CRC 失败计数，成功帧归零
     uint64_t lastValidFrameMs;      // 最后一次成功解析帧的时间戳
+
+    // 最近一次 CRC 失败详情暂存 — 解析器在临界区内只写值, 不打印
+    // (ESP_LOG* 内部取锁, 关中断的临界区内调用有死锁风险; ESP32-S3 双核,
+    // portENTER_CRITICAL 互斥另一核)。由调用方 (FlightDataSource::onUsbData)
+    // 在临界区外读取并补打日志。mavlink_init memset 归零。
+    uint8_t  crcFailPending;   // 1 = 有待在锁外打印的 CRC 失败
+    bool     crcFailIsV2;
+    uint32_t crcFailMsgId;     // 完整 24-bit v2 msgid
+    uint16_t crcFailRecv;
+    uint16_t crcFailCalc;
 
     // 最新消息时间戳 (ms)
     uint64_t lastHeartbeatMs;
