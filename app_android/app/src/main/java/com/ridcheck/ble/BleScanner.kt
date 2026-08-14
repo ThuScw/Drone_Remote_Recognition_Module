@@ -9,6 +9,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
 import com.ridcheck.core.Decoder
+import com.ridcheck.core.GattConfig
 
 /**
  * 基于 BluetoothLeScanner 的统一扫描封装：一次扫描同时发现两类信号源。
@@ -141,14 +142,24 @@ class BleScanner(private val listener: Listener) {
             Decoder.parseAdServiceData(raw).containsKey(SERVICE_UUID_16BIT)
     }
 
-    /** 是否来自地面态可配置模块：广播 16-bit Service Class UUID 0xFFF0（不依赖广播名）。 */
+    /**
+     * 是否来自地面态可配置模块：Service Data (UUID 0xFFF0) 载荷精确匹配魔数
+     * GattConfig.CONFIG_MAGIC。不依赖广播名；即使其他设备广播 0xFFF0 服务也不会被误认。
+     */
     private fun isConfigTarget(rec: ScanRecord): Boolean {
-        val uuids = rec.serviceUuids
-        if (uuids != null && uuids.contains(CONFIG_SERVICE_UUID_128)) return true
+        // Android 将 16-bit Service Data 的 UUID 展开为 128-bit，作 SparseArray 的 key
+        val sd = rec.getServiceData()
+        if (sd != null) {
+            val data = sd.get(CONFIG_SERVICE_UUID_128)
+            if (data != null && data.contentEquals(GattConfig.CONFIG_MAGIC)) return true
+        }
 
         val raw = rec.getBytes()
-        return raw.isNotEmpty() &&
-            Decoder.parseAdServiceUuids(raw).contains(CONFIG_SERVICE_UUID_16BIT)
+        if (raw.isNotEmpty()) {
+            val found = Decoder.parseAdServiceData(raw)[CONFIG_SERVICE_UUID_16BIT]
+            if (found != null && found.contentEquals(GattConfig.CONFIG_MAGIC)) return true
+        }
+        return false
     }
 
     /** 提取原始 GB 包：优先归一化 Service Data，兜底解析原始 AD 字节。

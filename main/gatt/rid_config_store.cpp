@@ -26,10 +26,12 @@ bool RidConfigStore::init() {
 
     // 占位默认值 (config.h) — 首次启动无 NVS 记录时的广播内容
     memset(&_cfg, 0, sizeof(_cfg));
-    strncpy(_cfg.uasId, UAS_ID, RID_CONFIG_UAS_ID_LEN);
-    strncpy(_cfg.realNameId, REALNAME_ID, RID_CONFIG_REALNAME_LEN);
-    _cfg.opCategory = OP_CATEGORY;
-    _cfg.uaClass    = UA_CLASS;
+    memcpy(_cfg.uasId, CFG_UAS_ID, RID_CONFIG_UAS_ID_LEN);
+    _cfg.uasId[RID_CONFIG_UAS_ID_LEN] = '\0';
+    memcpy(_cfg.realNameId, CFG_REALNAME_ID, RID_CONFIG_REALNAME_LEN);
+    _cfg.realNameId[RID_CONFIG_REALNAME_LEN] = '\0';
+    _cfg.opCategory = CFG_OP_CATEGORY;
+    _cfg.uaClass    = CFG_UA_CLASS;
 
     // 尝试从 NVS 加载上次持久化配置
     nvs_handle_t h;

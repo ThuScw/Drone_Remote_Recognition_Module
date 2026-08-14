@@ -74,13 +74,22 @@ extern "C" void app_main(void) {
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
-    if (!broadcaster.begin("GBI_RID_001")) {
+    // NimBLE 主机初始化 (此时 host 未启动)。GATT 服务注册必须插在 initNimble 与
+    // startNimbleHost 之间: ble_gatts_add_svcs() 只排队, 真正进入 ATT 库的
+    // ble_gatts_start() 仅在 host 启动时运行一次, 跑完即释放排队区 — 此前曾因
+    // begin() 先启动 host 导致 0xFFF0 服务从未注册, Android 发现不到配置服务。
+    if (!broadcaster.initNimble("GBI_RID_001")) {
         ESP_LOGE(TAG, "FATAL: BLE init failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 
     if (!gattServer.init(configStore)) {
         ESP_LOGE(TAG, "FATAL: GATT server init failed — halting");
+        while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+    }
+
+    if (!broadcaster.startNimbleHost()) {
+        ESP_LOGE(TAG, "FATAL: BLE host start failed — halting");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
 

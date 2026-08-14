@@ -15,7 +15,15 @@ public:
     BleRidBroadcaster(const BleRidBroadcaster&) = delete;
     BleRidBroadcaster& operator=(const BleRidBroadcaster&) = delete;
 
-    bool begin(const char* deviceName);
+    // 初始化 NimBLE 主机 (nimble_port_init + GAP/GATT 服务排队 + 设备名 + 回调)。
+    // 必须在 startNimbleHost() 之前调用; 此步之后、host 启动之前是注册 GATT 服务的窗口:
+    // ble_gatts_add_svcs() 只排队, 真正进入 ATT 库的 ble_gatts_start() 在 host 启动时
+    // 仅运行一次, 跑完即释放排队区。
+    bool initNimble(const char* deviceName);
+
+    // 启动 NimBLE host 任务 (nimble_port_freertos_init + 同步等待 + TX 功率设置)。
+    // host 启动时 ble_gatts_start() 将排队中的全部服务注册进 ATT 库。
+    bool startNimbleHost();
     bool selfTest();
     bool runtimeCheck();
 

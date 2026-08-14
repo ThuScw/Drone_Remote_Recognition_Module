@@ -18,6 +18,54 @@ from typing import Any
 SERVICE_UUID_16BIT = 0xFFFF
 EXPECTED_NAME = "GBI_RID_001"
 
+# 地面可连接广播的识别魔数 (Service Data UUID 0xFFF0 的载荷)
+# 与固件 main/gatt/rid_config.h 的 RID_CONFIG_MAGIC 一致: 5 字节 ASCII "GBRID" + 1 字节版本 0x01
+CONFIG_UUID_16BIT = 0xFFF0
+CONFIG_MAGIC = b"GBRID\x01"
+
+
+def _match_config_uuid(key: str | int) -> bool:
+    """匹配配置服务 16-bit UUID 0xFFF0（bleak 后端 key 可能是 int 或 str）。"""
+    if isinstance(key, int):
+        return key == CONFIG_UUID_16BIT
+    k = str(key).strip().lower()
+    if k in ("fff0", "0000fff0"):
+        return True
+    try:
+        return int(k, 16) == CONFIG_UUID_16BIT
+    except ValueError:
+        pass
+    # canonical 128-bit form: 0000fff0-0000-1000-8000-00805f9b34fb
+    if len(k) == 36 and k.endswith("-0000-1000-8000-00805f9b34fb"):
+        return k[:8].lstrip("0") == "fff0"
+    return False
+
+
+def is_config_target(adv: Any) -> bool:
+    """True 当且仅当该广播是本模块的地面可配置态：Service Data (0xFFF0) 载荷精确匹配魔数。
+
+    不依赖广播名；即使其他设备广播 0xFFF0 服务（UUID 列表或 Service Data）也不会被误认。
+    """
+    sd = getattr(adv, "service_data", None)
+    if sd:
+        for key, data in sd.items():
+            if _match_config_uuid(key) and data and bytes(data) == CONFIG_MAGIC:
+                return True
+
+    raw = getattr(adv, "data", None)
+    if not raw:
+        pd = getattr(adv, "platform_data", None)
+        if (
+            isinstance(pd, tuple)
+            and len(pd) >= 2
+            and isinstance(pd[1], (bytes, bytearray, memoryview))
+        ):
+            raw = pd[1]
+    if raw:
+        if _parse_ad_service_data(bytes(raw)).get(CONFIG_UUID_16BIT) == CONFIG_MAGIC:
+            return True
+    return False
+
 
 def _match_uuid(key: str | int) -> bool:
     if isinstance(key, int):  # bleak may expose uuid as an int on some backends

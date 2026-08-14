@@ -85,7 +85,8 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 - **DTR/RTS 飞控安全**：USB CDC-ACM 打开后显式清除 DTR/RTS（`set_control_line_state(false, false)`），飞控 USB 口的 DTR 可能连接到 MCU BOOT0/NRST 引脚，断言 DTR 会导致飞控复位或进入 bootloader 失控
 - **USB 只读模式**：USB CDC 以只读模式打开（`out_buffer_size=0`），从物理层面杜绝任何数据反向注入飞控
 - **纯 GB 46750 广播包**：Service Data 直接承载 GB 46750 数据包（`dataType=0xFF` 开头），不附加 ASTM F3411 `0x0D`/滚动计数器字头（国标未定义帧级封装，附加字头会干扰第三方解码器）；广播 Service Data UUID `0xFFFF`，与配置服务 `0xFFF0` 严格区分
-- **GATT 双向配置（地面态）**：模块地面态切换为可连接广播（名称 `GBI_RID_001` + 服务 `0xFFF0`），手机/PC APP 通过 GATT 反写 4 个身份字段（001 唯一产品识别码 / 002 实名登记标志 / 003 运行类别 / 004 无人机分类），写入即 NVS 持久化；空中态广播 `0xFFFF` 并写锁定（GB 46750 起飞后配置锁定）
+- **GATT 双向配置（地面态）**：模块地面态切换为可连接广播（服务 `0xFFF0` + Service Data 识别魔数，见「信号源识别（模块专属魔数）」），手机/PC APP 按魔数精确识别后，通过 GATT 反写 4 个身份字段（001 唯一产品识别码 / 002 实名登记标志 / 003 运行类别 / 004 无人机分类），写入即 NVS 持久化；空中态广播 `0xFFFF` 并写锁定（GB 46750 起飞后配置锁定）
+- **GATT 服务注册时序（host 启动前）**：`ble_gatts_add_svcs()` 只排队服务定义，真正进入 ATT 数据库的 `ble_gatts_start()` 仅在 NimBLE host 启动时运行一次、跑完即释放排队区。固件将广播器拆为 `initNimble()`（host 初始化）与 `startNimbleHost()`（host 启动），`gattServer.init()` 插在两者之间，确保 `0xFFF0` 服务随 host 启动注册进 ATT 库——否则手机能连接却永远发现不到配置服务（曾导致「未找到 GATT 配置服务」）
 - **CRC 风暴恢复**：连续 200 帧 CRC 校验失败 → 自动关闭并重新打开 USB 设备、重置 MAVLink 解析器，配合 5s 冷却期防止反复重连
 - **MAVLink v1/v2 双协议**：同时支持 MAVLink v1 (0xFE) 和 v2 (0xFD)，覆盖 HEARTBEAT / GPS_RAW_INT / ATTITUDE / GLOBAL_POSITION_INT / VFR_HUD / HOME_POSITION / SYSTEM_TIME 七种消息，满足 GB 46750 全部 21 字段需求
 - **Unix 时间戳来源**：从飞控 MAVLink `SYSTEM_TIME` 消息获取 GPS 授时，计算 `unixBootOffsetMs = unixTime - bootMs`，广播时使用 `unixBootOffsetMs + lastPositionBootMs`；未授时时正确填 0（未知）
@@ -103,7 +104,7 @@ PC (Python) ──UART0──→ "DUMP\r\n" ──→ ConsoleCmd ──→ fligh
 
 ### 广播策略
 
-- **地面状态**：可连接广播（名称 `GBI_RID_001` + 服务 `0xFFF0`），等待手机 GATT 配置；LED 绿色慢闪(0.5Hz)
+- **地面状态**：可连接广播（服务 `0xFFF0` + Service Data 识别魔数），等待手机 GATT 配置；LED 绿色慢闪(0.5Hz)
 - **空中/紧急状态**：`startBroadcast()` 启动纯 GB 广播（Service Data `0xFFFF`）→ `updateBroadcastData()` 原地更新（不停止广播），写锁定；LED 蓝色快闪(2.5Hz)
 - **状态切换**：消抖确认后执行（地面→空中 300ms / 空中→地面 500ms），紧急状态绕过立即切换
 - **BLE 控制器复位**：自动检测 → 等待 NimBLE 重同步 → 触发三级自修复
@@ -168,21 +169,21 @@ idf.py -p <COM口> flash monitor
 核心配置集中在 `main/config.h`，关键项：
 
 ```c
-#define UAS_ID "CPNYMDL001234567890A"  // 唯一产品识别码（20字符，量产替换为 UOM 备案编码）
-#define REALNAME_ID "00000000"         // 实名登记号后 8 位
-#define OP_CATEGORY 1                  // 运行类别：0=未定义,1=开放类,2=特定类,3=审定类
-#define UA_CLASS 1                     // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
-#define OP_LOCATION_TYPE 0             // 遥控站位置类型：0=起飞点,1=遥控站位置
-#define COORD_SYS 0                    // 坐标系：0=WGS-84,1=CGCS2000
-#define BROADCAST_INTERVAL_MS 400      // 数据包广播间隔（GB 46750 要求 ≤1s）
-#define FLIGHT_LOG_INTERVAL_S 10       // 飞行日志记录间隔（GB 46750 要求 ≤10s）
-#define FLIGHT_LOG_PARTITION "flight_log"  // Flash 分区（见 partitions.csv）
-#define STATUS_LED_GPIO GPIO_NUM_48    // WS2812B RGB LED（RMT 驱动）
+#define CFG_UAS_ID "1581FA6QC25B500C2H74" // 唯一产品识别码占位值（20字符，量产替换为 UOM 备案编码）
+#define CFG_REALNAME_ID "07564244"        // 实名登记号后 8 位占位值
+#define CFG_OP_CATEGORY 1                 // 运行类别：0=未定义,1=开放类,2=特定类,3=审定类
+#define CFG_UA_CLASS 1                    // 无人机分类：0=微型,1=轻型,2=小型,3=中型,4=大型
+#define OP_LOCATION_TYPE 0                // 遥控站位置类型：0=起飞点,1=遥控站位置
+#define COORD_SYS 0                       // 坐标系：0=WGS-84,1=CGCS2000
+#define BROADCAST_INTERVAL_MS 400         // 数据包广播间隔（GB 46750 要求 ≤1s）
+#define FLIGHT_LOG_INTERVAL_S 10          // 飞行日志记录间隔（GB 46750 要求 ≤10s）
+#define FLIGHT_LOG_PARTITION "flight_log" // Flash 分区（见 partitions.csv）
+#define STATUS_LED_GPIO GPIO_NUM_48       // WS2812B RGB LED（RMT 驱动）
 ```
 
 完整参数（USB Host VID/PID、精度映射、定时、看门狗、CRC 风暴阈值、日志级别等）见 `main/config.h` 内注释。
 
-> **`config.h` 中的 4 个身份字段是「占位值」**（`UAS_ID` / `REALNAME_ID` / `OP_CATEGORY` / `UA_CLASS`）。模块支持起飞前通过 GATT 反写覆盖这些值并持久化到 NVS（见下文「GATT 双向配置」）；**未配置直接起飞时广播占位值或上次存储值**（无硬门槛，不会拒绝起飞）。
+> **`config.h` 中的 4 个身份字段是「占位值」**（`CFG_UAS_ID` / `CFG_REALNAME_ID` / `CFG_OP_CATEGORY` / `CFG_UA_CLASS`）。模块支持起飞前通过 GATT 反写覆盖这些值并持久化到 NVS（见下文「GATT 双向配置」）；**未配置直接起飞时广播占位值或上次存储值**（无硬门槛，不会拒绝起飞）。
 
 LED 状态指示 (GB 46750-2025, 5.1.5)：
 
@@ -212,6 +213,38 @@ LED 状态指示 (GB 46750-2025, 5.1.5)：
 - **已配置（1）**：至少一次成功 GATT 写入（或上次会话已持久化）。
 - **空中（2）**：起飞进入广播态，**拒绝一切写入**（GB 46750-2025 起飞后配置锁定）；落地恢复可连接广播并解除锁定。
 - 写入即校验 + 内存更新 + NVS 持久化；跨任务（NimBLE host 任务写 / 主循环读）由互斥锁保护。
+
+### 信号源识别（模块专属魔数）
+
+地面态可连接广播携带**模块专属识别魔数**，手机 / PC 检测工具据此按**字段**精确识别本模块，**不依赖广播名**。这是「可 GATT 配置的信号源」栏目的唯一判定标准。
+
+**为什么需要魔数**：早期版本靠「广播 16-bit Service Class UUID `0xFFF0`」识别可配置模块——但 `0xFFF0` 属蓝牙未分配保留区，任何第三方设备都能照抄广播该 UUID，导致非本模块设备被误收进配置列表。改用广播名判定更不可靠（名称可被任意修改 / 伪造）。故为地面态广播增加一层魔数载荷作为**模块专属指纹**。
+
+**魔数定义**（三端共享常量，修改需三端同步）：
+
+| 常量位置 | 名称 | 值 |
+|----------|------|-----|
+| 固件 `main/gatt/rid_config.h` | `RID_CONFIG_MAGIC` | `{'G','B','R','I','D',0x01}` |
+| 安卓 `GattConfig.kt` | `CONFIG_MAGIC` | `byteArrayOf(0x47,0x42,0x52,0x49,0x44,0x01)` |
+| PC `app/rid/ble_scanner.py` | `CONFIG_MAGIC` | `b"GBRID\x01"` |
+
+即 6 字节：ASCII `"GBRID"`（5 字节）+ 版本字节 `0x01`，十六进制 `47 42 52 49 44 01`。版本字节预留给魔数演进（新增识别维度时递增）。
+
+**地面可连接广播帧结构**（legacy PDU；固定名称 `GBI_RID_001` 下总长 29 字节）：
+
+| AD 结构 | AD 类型 | 内容 |
+|---------|---------|------|
+| Flags | `0x01` | `0x06`（LE 通用可发现 + BR/EDR 不支持） |
+| Complete Local Name | `0x09` | `GBI_RID_001`（仅供人类辨识，**不参与识别**） |
+| 16-bit Service Class UUID 列表 | `0x03` | `0xFFF0`（指示可 GATT 配置） |
+| Service Data（16-bit UUID） | `0x16` | UUID `0xFFF0` + 载荷 = 魔数 `47 42 52 49 44 01` |
+
+**识别规则**：设备被判为「可 GATT 配置模块」，**当且仅当**其广播的 Service Data `0xFFF0` 载荷与魔数逐字节相等。仅出现 `0xFFF0` UUID 列表、或仅出现同 UUID 的 Service Data 但载荷非魔数，都**不算**本模块（固件将二者一并发出，缺一即非本模块）。
+
+- 安卓：`BleScanner.isConfigTarget()` 精确匹配 `GattConfig.CONFIG_MAGIC`
+- PC：`rid/ble_scanner.py::is_config_target()` 精确匹配 `CONFIG_MAGIC`
+
+**与空中态广播的区分**：空中态广播使用 Service Data `0xFFFF` 承载纯 GB 数据包，**不携带魔数**；地面态可配置广播使用 `0xFFF0` + 魔数。两种模式由状态机互斥，同一时刻只会广播其中一种，可据此自动归类。
 
 ### 飞行日志存储
 
@@ -280,7 +313,7 @@ GB 46750-2025 5.1.7 要求运行识别发送模块与飞行控制功能模块互
 - Service UUID：`0xFFFF`（广播式远程识别 Service Data，纯 GB 46750 数据包）
 - Service Data 格式：`[UUID 0xFFFF][GB46750 packet]`（`dataType=0xFF` 开头，不附加 ASTM F3411 字头；国标未定义帧级封装）
 
-**GATT 配置验证**：地面态模块以可连接广播（服务 `0xFFF0`）出现，可用 PC 版软件（`app/`，`配置` 标签页）或安卓 APP（`app_android/`，`配置` 标签页）扫描并写入 4 个身份字段，写入后读取确认；空中态模块转为 `0xFFFF` 广播并写锁定。
+**GATT 配置验证**：地面态模块以可连接广播（服务 `0xFFF0` + Service Data 识别魔数，见「信号源识别（模块专属魔数）」）出现，PC 版软件（`app/`，`配置` 标签页）或安卓 APP（`app_android/`，`配置` 标签页）按魔数精确识别后，扫描并写入 4 个身份字段，写入后读取确认；空中态模块转为 `0xFFFF` 广播并写锁定。
 
 ### 导出飞行日志
 

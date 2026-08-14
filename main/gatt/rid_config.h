@@ -33,6 +33,16 @@ enum RidConfigState {
 //   (Bluetooth SIG 基础 UUID 展开, 与广播 Service Data 的 0xFFFF 区分)
 #define RID_GATT_SVC_UUID16        0xFFF0
 
+// ======================== 地面可连接广播识别魔数 ========================
+// 地面态可连接广播通过 Service Data (UUID 0xFFF0) 携带固定魔数, 供 App/PC 按字段
+// 精确识别本模块 (不依赖广播名, 不误收其他广播 0xFFF0 的设备)。
+// 载荷 = 5 字节 ASCII "GBRID" + 1 字节版本 0x01。
+// 此魔数为固件 / Android / PC 三端共享常量, 修改时需三端同步 (见 README)。
+#define RID_CONFIG_MAGIC_LEN    6
+static const uint8_t RID_CONFIG_MAGIC[RID_CONFIG_MAGIC_LEN] = {
+    'G', 'B', 'R', 'I', 'D', 0x01,
+};
+
 // 特征 UUID (16-bit, 挂载于 0xFFF0 服务下)
 #define RID_GATT_CHR_UAS_ID        0xFFF1  // 001 唯一产品识别码 (20 ASCII)
 #define RID_GATT_CHR_REALNAME      0xFFF2  // 002 实名登记标志 (8 ASCII)

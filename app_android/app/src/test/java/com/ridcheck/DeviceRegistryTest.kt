@@ -77,6 +77,26 @@ class DeviceRegistryTest {
     }
 
     @Test
+    fun removeDropsSingleAddressAndIgnoresMissing() {
+        val reg = DeviceRegistry()
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:02", -70, 2000), nowMs = 2000)
+
+        reg.remove("AA:BB:CC:DD:EE:01")
+        assertEquals(1, reg.size)
+        assertEquals(listOf("AA:BB:CC:DD:EE:02"), reg.list.map { it.address })
+
+        // 移除不存在的地址静默忽略
+        reg.remove("AA:BB:CC:DD:EE:99")
+        assertEquals(1, reg.size)
+
+        // 移除后可被 onPacket 重新收录
+        reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 3000), nowMs = 3000)
+        assertEquals(2, reg.size)
+        assertEquals(1, reg.list[1].packetCount)
+    }
+
+    @Test
     fun sampleAllAppendsOnePerSecondAndCaps() {
         val reg = DeviceRegistry()
         reg.onPacket(pkt("AA:BB:CC:DD:EE:01", -55, 1000), nowMs = 1000)

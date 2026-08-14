@@ -15,6 +15,7 @@
 #include "host/ble_hs_id.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nimble/ble.h"
@@ -98,7 +99,7 @@ int BleRidBroadcaster::onGapEvent(struct ble_gap_event* event, void* arg) {
 
 // --- Public API ---
 
-bool BleRidBroadcaster::begin(const char* deviceName) {
+bool BleRidBroadcaster::initNimble(const char* deviceName) {
     _initialized = false;
     _advertising = false;
     _connectableMode = false;
@@ -123,8 +124,20 @@ bool BleRidBroadcaster::begin(const char* deviceName) {
 
     nimble_port_init();
 
+    // 标准 NimBLE 流程: 先初始化并排队 GAP(0x1800)/GATT(0x1801) 强制服务。
+    // 之后 gattServer.init() 可在本步与 startNimbleHost() 之间排队 0xFFF0 服务,
+    // 三者随 host 启动时的 ble_gatts_start() 一起注册进 ATT 库。
+#if CONFIG_BT_NIMBLE_GAP_SERVICE
+    ble_svc_gap_init();
+#endif
+    ble_svc_gatt_init();
+
     ble_svc_gap_device_name_set(_deviceName);
 
+    return true;
+}
+
+bool BleRidBroadcaster::startNimbleHost() {
     nimble_port_freertos_init(host_task);
 
     if (xSemaphoreTake(s_syncSemaphore, pdMS_TO_TICKS(3000)) != pdTRUE) {
@@ -171,8 +184,8 @@ bool BleRidBroadcaster::selfTest() {
     testFd.freshness = FRESH_OK;
 
     GB46750Packet testPkt;
-    gb46750_buildPacket(testPkt, testFd, UAS_ID, REALNAME_ID,
-                        OP_CATEGORY, UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
+    gb46750_buildPacket(testPkt, testFd, CFG_UAS_ID, CFG_REALNAME_ID,
+                        CFG_OP_CATEGORY, CFG_UA_CLASS, OP_LOCATION_TYPE, COORD_SYS,
                         HORIZ_ACC, VERT_ACC, SPEED_ACC, TS_ACC, 0);
 
     // Functional test: actually start BLE extended advertising
@@ -321,10 +334,12 @@ struct os_mbuf* BleRidBroadcaster::buildAdvData(const GB46750Packet& pkt, uint16
 }
 
 // 可连接广播 AD Structure: Flags + Name + 16-bit GATT 服务 UUID (0xFFF0)
+// + 识别魔数 Service Data (0xFFF0)
 // 不携带 GB 数据包 — 地面状态只做"可发现 + 可连接", 供手机 APP 写入配置。
+// 魔数让 App/PC 按字段精确识别本模块 (不依赖广播名), 避免误收其他广播 0xFFF0 的设备。
 struct os_mbuf* BleRidBroadcaster::buildConnectableAdvData(uint16_t& outLen) {
-    // Flags(3) + Name(2+31) + 16-bit Service UUID(2+2) = 40 上限
-    uint8_t advData[3 + (2 + 31) + (2 + 2)];
+    // Flags(3) + Name(2+31) + 16-bit Service UUID(2+2) + Service Data 魔数(2+2+6) = 50 上限
+    uint8_t advData[3 + (2 + 31) + (2 + 2) + (1 + 1 + 2 + RID_CONFIG_MAGIC_LEN)];
     uint8_t* p = advData;
 
     *p++ = 0x02; *p++ = 0x01; *p++ = 0x06;  // AD Flags
@@ -340,7 +355,23 @@ struct os_mbuf* BleRidBroadcaster::buildConnectableAdvData(uint16_t& outLen) {
     *p++ = RID_GATT_SVC_UUID16 & 0xFF;
     *p++ = (RID_GATT_SVC_UUID16 >> 8) & 0xFF;
 
+    // 识别魔数: Service Data, 载荷 = RID_CONFIG_MAGIC (固件/App/PC 三端共享, 见 README)
+    *p++ = 1 + 2 + RID_CONFIG_MAGIC_LEN;    // len = Type(1) + UUID(2) + magic
+    *p++ = 0x16;                            // Service Data (16-bit UUID)
+    *p++ = RID_GATT_SVC_UUID16 & 0xFF;
+    *p++ = (RID_GATT_SVC_UUID16 >> 8) & 0xFF;
+    memcpy(p, RID_CONFIG_MAGIC, RID_CONFIG_MAGIC_LEN);
+    p += RID_CONFIG_MAGIC_LEN;
+
     outLen = p - advData;
+
+    // Legacy PDU 的 ADV 数据上限 31 字节; 超限上层 ble_gap_ext_adv_set_data 会失败。
+    // 当前固定名称 GBI_RID_001 (10 字符) 时总长 = 3 + 12 + 4 + 10 = 29, 满足上限。
+    if (outLen > BLE_HCI_MAX_ADV_DATA_LEN) {
+        ESP_LOGE(TAG, "Connectable adv data %uB exceeds legacy %d B limit",
+                 outLen, BLE_HCI_MAX_ADV_DATA_LEN);
+        return NULL;
+    }
 
     struct os_mbuf* data = os_msys_get_pkthdr(outLen, 0);
     if (!data) {

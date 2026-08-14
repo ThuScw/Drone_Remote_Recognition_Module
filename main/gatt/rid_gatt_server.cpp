@@ -67,37 +67,46 @@ static int gatt_chr_access(uint16_t conn_handle, uint16_t attr_handle,
 // 特征定义: FFF1~FFF5
 static uint16_t g_uasVal, g_rnVal, g_opcVal, g_uacVal, g_stateVal;
 
+// 16-bit UUID 静态实例 — BLE_UUID16_DECLARE 是 C99 复合字面量, 在 C++ 编译下为右值,
+// 对 .uuid 取地址会报 "taking address of rvalue"; 改用 static const + BLE_UUID16_INIT。
+static const ble_uuid16_t g_uuidUas   = BLE_UUID16_INIT(RID_GATT_CHR_UAS_ID);
+static const ble_uuid16_t g_uuidRn    = BLE_UUID16_INIT(RID_GATT_CHR_REALNAME);
+static const ble_uuid16_t g_uuidOpc   = BLE_UUID16_INIT(RID_GATT_CHR_OP_CATEGORY);
+static const ble_uuid16_t g_uuidUac   = BLE_UUID16_INIT(RID_GATT_CHR_UA_CLASS);
+static const ble_uuid16_t g_uuidState = BLE_UUID16_INIT(RID_GATT_CHR_STATE);
+static const ble_uuid16_t g_uuidSvc   = BLE_UUID16_INIT(RID_GATT_SVC_UUID16);
+
 static const struct ble_gatt_chr_def gatt_chrs[] = {
     {
-        .uuid       = BLE_UUID16_DECLARE(RID_GATT_CHR_UAS_ID),
+        .uuid       = &g_uuidUas.u,
         .access_cb  = gatt_chr_access,
         .arg        = (void*)0,
         .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
         .val_handle = &g_uasVal,
     },
     {
-        .uuid       = BLE_UUID16_DECLARE(RID_GATT_CHR_REALNAME),
+        .uuid       = &g_uuidRn.u,
         .access_cb  = gatt_chr_access,
         .arg        = (void*)1,
         .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
         .val_handle = &g_rnVal,
     },
     {
-        .uuid       = BLE_UUID16_DECLARE(RID_GATT_CHR_OP_CATEGORY),
+        .uuid       = &g_uuidOpc.u,
         .access_cb  = gatt_chr_access,
         .arg        = (void*)2,
         .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
         .val_handle = &g_opcVal,
     },
     {
-        .uuid       = BLE_UUID16_DECLARE(RID_GATT_CHR_UA_CLASS),
+        .uuid       = &g_uuidUac.u,
         .access_cb  = gatt_chr_access,
         .arg        = (void*)3,
         .flags      = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ,
         .val_handle = &g_uacVal,
     },
     {
-        .uuid       = BLE_UUID16_DECLARE(RID_GATT_CHR_STATE),
+        .uuid       = &g_uuidState.u,
         .access_cb  = gatt_chr_access,
         .arg        = (void*)4,
         .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
@@ -109,7 +118,7 @@ static const struct ble_gatt_chr_def gatt_chrs[] = {
 static const struct ble_gatt_svc_def gatt_svcs[] = {
     {
         .type            = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid            = BLE_UUID16_DECLARE(RID_GATT_SVC_UUID16),
+        .uuid            = &g_uuidSvc.u,
         .characteristics = gatt_chrs,
     },
     { 0 }

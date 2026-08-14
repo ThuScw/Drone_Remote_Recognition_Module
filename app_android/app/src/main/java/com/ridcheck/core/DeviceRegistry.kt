@@ -119,6 +119,15 @@ class DeviceRegistry {
 
     fun clear() = devices.clear()
 
+    /**
+     * 移除指定地址的广播信号源条目。当地面态可配置模块被识别出来时调用
+     * （该模块此刻不广播 GB 包），避免其残留在「正在广播的信号源」列表。
+     * 地址不存在时静默忽略。
+     */
+    fun remove(address: String) {
+        devices.remove(address)
+    }
+
     /** 收尾：关闭所有设备当前进行中的问题时段（停止扫描时调用，报告不再显示「进行中」）。 */
     fun closeIssueTimelines(nowMs: Long) {
         for (entry in devices.values) entry.issueTimeline.closeOpen(nowMs)

@@ -14,6 +14,14 @@ package com.ridcheck.core
  */
 object GattConfig {
     const val SERVICE_UUID_128 = "0000fff0-0000-1000-8000-00805f9b34fb"
+
+    /**
+     * 地面可连接广播的识别魔数：Service Data (UUID 0xFFF0) 的载荷字节。
+     * 与固件 main/gatt/rid_config.h 的 RID_CONFIG_MAGIC 一致：5 字节 ASCII
+     * "GBRID" + 1 字节版本 0x01。App 按此字段精确识别本模块（不依赖广播名），
+     * 修改需固件 / Android / PC 三端同步（见仓库 README）。
+     */
+    val CONFIG_MAGIC: ByteArray = byteArrayOf(0x47, 0x42, 0x52, 0x49, 0x44, 0x01)
     const val CHAR_UAS_ID = "0000fff1-0000-1000-8000-00805f9b34fb"
     const val CHAR_REALNAME = "0000fff2-0000-1000-8000-00805f9b34fb"
     const val CHAR_OP_CATEGORY = "0000fff3-0000-1000-8000-00805f9b34fb"

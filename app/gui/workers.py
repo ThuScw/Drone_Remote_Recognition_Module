@@ -8,7 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QThread, Signal
 
-from rid.ble_scanner import EXPECTED_NAME, extract_packet, format_mac, is_target
+from rid.ble_scanner import extract_packet, format_mac, is_config_target, is_target
 from rid.decoder import decode_gb_packet
 from rid.serial_dump import dump_flight_log, records_to_csv, verify_record
 
@@ -117,7 +117,7 @@ class ConfigScanWorker(QThread):
     async def _scan_loop(self) -> None:
         from bleak import BleakScanner
 
-        self.sig_log.emit("扫描可配置模块（名称 GBI_RID_001 / 服务 0xFFF0）...")
+        self.sig_log.emit("扫描可配置模块（Service Data 0xFFF0 魔数识别，不依赖名称）...")
         scanner = BleakScanner(detection_callback=self._on_detect)
         await scanner.start()
         try:
@@ -130,8 +130,7 @@ class ConfigScanWorker(QThread):
             self.sig_log.emit("扫描结束")
 
     def _on_detect(self, device: Any, adv: Any) -> None:
-        name = (device.name or "") or (getattr(adv, "local_name", "") or "")
-        if name.strip() != EXPECTED_NAME:
+        if not is_config_target(adv):
             return
         self.sig_device.emit(format_mac(str(device.address)))
 
